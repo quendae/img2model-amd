@@ -41,6 +41,12 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertNotIn("torch[device-gfx1030]", text)
         self.assertNotIn("rocm[libraries", text)
 
+    def test_texture_setup_uses_ninja_and_forces_cpp20_for_pytorch_213(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn("pip install --upgrade ninja", text)
+        self.assertIn('/std:c++20', text)
+        self.assertIn("Ninja build backend", text)
+
 
 if __name__ == "__main__":
     unittest.main()
