@@ -132,8 +132,23 @@ if ([string]::IsNullOrWhiteSpace([string]$Torch.rocm_home)) {
 }
 
 $RocmHome = [System.IO.Path]::GetFullPath([string]$Torch.rocm_home)
+$DeviceLibPath = Join-Path $RocmHome "lib\llvm\amdgcn\bitcode"
+if (-not (Test-Path -LiteralPath $DeviceLibPath -PathType Container)) {
+    $DeviceLibMarker = Get-ChildItem -LiteralPath $RocmHome -Filter "ocml.bc" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $DeviceLibMarker) {
+        $DeviceLibPath = $DeviceLibMarker.Directory.FullName
+    }
+}
+if (-not (Test-Path -LiteralPath $DeviceLibPath -PathType Container)) {
+    Show-LogTail
+    throw "ROCm device libraries were not found below the TheRock runtime: $RocmHome"
+}
+
 $env:ROCM_HOME = $RocmHome
 $env:ROCM_PATH = $RocmHome
+$env:HIP_PATH = $RocmHome
+$env:HIP_DEVICE_LIB_PATH = $DeviceLibPath
+$env:ROCM_DEVICE_LIB_PATH = $DeviceLibPath
 $env:PYTORCH_ROCM_ARCH = $GpuArch
 $env:PATH = $PythonScripts + ";" + (Join-Path $RocmHome "bin") + ";" + $env:PATH
 
@@ -145,6 +160,7 @@ Write-Host "ROCm extension compiler diagnostics:" -ForegroundColor Cyan
 Write-Host "  torch        : $($Torch.torch)"
 Write-Host "  HIP          : $($Torch.hip)"
 Write-Host "  ROCM_HOME    : $RocmHome"
+Write-Host "  device libs  : $DeviceLibPath"
 Write-Host "  HIP extension: $($Torch.is_hip_extension)"
 Write-Host "  hipcc        : $HipccPath"
 Write-Host "  clang++      : $ClangPath"
@@ -156,6 +172,7 @@ Add-LogLine "ROCm extension compiler diagnostics:"
 Add-LogLine ("torch         : {0}" -f $Torch.torch)
 Add-LogLine ("HIP           : {0}" -f $Torch.hip)
 Add-LogLine ("ROCM_HOME     : {0}" -f $RocmHome)
+Add-LogLine ("device libs   : {0}" -f $DeviceLibPath)
 Add-LogLine ("HIP extension : {0}" -f $Torch.is_hip_extension)
 Add-LogLine ("hipcc         : {0}" -f $HipccPath)
 Add-LogLine ("clang++       : {0}" -f $ClangPath)
@@ -235,7 +252,6 @@ $HostSafeContextBlock = @'
 
 if ($RasterizerHeaderText.Contains($CudaContextInclude)) {
     $RasterizerHeaderText = $RasterizerHeaderText.Replace($CudaContextInclude, $HostSafeContextBlock.TrimEnd())
-    Set-Content -LiteralPath $RasterizerHeader -Value $RasterizerHeaderText -Encoding UTF8 -NoNewline
     Add-LogLine "Applied host-safe rasterizer.h patch."
 } elseif ($RasterizerHeaderText.Contains('defined(__CUDACC__) || defined(__HIPCC__)')) {
     Add-LogLine "Host-safe rasterizer.h patch already present."
@@ -243,6 +259,13 @@ if ($RasterizerHeaderText.Contains($CudaContextInclude)) {
     Show-LogTail
     throw "Pinned Hunyuan rasterizer.h no longer matches the expected CUDAContext include; refusing to patch an unknown source layout."
 }
+
+# Windows PowerShell 5.1's Set-Content -Encoding UTF8 writes a BOM. Hipify can
+# preserve/move that BOM into rasterizer_hip.h after its generated prologue,
+# where MSVC sees EF BB BF in the middle of the file and rejects the #if line.
+$Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText($RasterizerHeader, $RasterizerHeaderText, $Utf8NoBom)
+Add-LogLine "Normalized rasterizer.h to UTF-8 without BOM."
 
 # PyTorch hipify leaves generated siblings next to the CUDA sources. Remove them
 # so a rerun after a failed build cannot reuse a pre-patch rasterizer_hip.h.
