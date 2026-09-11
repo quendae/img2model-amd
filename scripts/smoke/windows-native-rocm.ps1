@@ -26,38 +26,31 @@ Write-Host "  Worker : $Worker"
 Write-Host ""
 
 Write-Host "[1/3] Worker health..."
-& $PythonExe $Worker health --json
-if ($LASTEXITCODE -ne 0) {
-    throw "Worker health command failed."
+$HealthLines = @(& $PythonExe $Worker health --json)
+$HealthExitCode = $LASTEXITCODE
+$HealthLines | ForEach-Object { Write-Host $_ }
+if ($HealthExitCode -ne 0) {
+    throw "Worker health command failed with exit code $HealthExitCode."
+}
+
+$HealthJson = $HealthLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1
+if ([string]::IsNullOrWhiteSpace($HealthJson)) {
+    throw "Worker health command returned no JSON output."
+}
+
+try {
+    $Health = $HealthJson | ConvertFrom-Json
+} catch {
+    throw "Worker health output was not valid JSON: $HealthJson"
+}
+
+if (-not $Health.ok) {
+    $Details = if ([string]::IsNullOrWhiteSpace([string]$Health.error)) { "health reported ok=false" } else { [string]$Health.error }
+    throw "Worker health check failed: $Details"
 }
 
 Write-Host "[2/3] HIP/GPU tensor probe..."
-$Probe = @'
-import json
-import torch
-
-if not getattr(torch.version, "hip", None):
-    raise SystemExit("torch.version.hip is empty; this is not an ROCm PyTorch build")
-if not torch.cuda.is_available():
-    raise SystemExit("ROCm PyTorch does not expose an available GPU")
-
-device = torch.device("cuda")
-a = torch.arange(1024 * 1024, dtype=torch.float32, device=device).reshape(1024, 1024)
-b = torch.eye(1024, dtype=torch.float32, device=device)
-c = a @ b
-checksum = float(c[0, 0].item() + c[-1, -1].item())
-
-print(json.dumps({
-    "ok": True,
-    "torch": torch.__version__,
-    "hip": torch.version.hip,
-    "device": torch.cuda.get_device_name(0),
-    "vram_gb": round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 2),
-    "checksum": checksum,
-}, indent=2))
-'@
-
-& $PythonExe -c $Probe
+& $PythonExe $Worker probe --json
 if ($LASTEXITCODE -ne 0) {
     throw "GPU tensor probe failed."
 }
