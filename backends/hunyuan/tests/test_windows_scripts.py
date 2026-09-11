@@ -71,6 +71,24 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn("rasterizer_hip.h", text)
         self.assertIn("Remove-Item", text)
 
+    def test_texture_setup_points_hipcc_at_therock_device_bitcode(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn('lib\\llvm\\amdgcn\\bitcode', text)
+        self.assertIn('$env:HIP_DEVICE_LIB_PATH', text)
+        self.assertIn('$env:ROCM_DEVICE_LIB_PATH', text)
+        self.assertIn('$env:HIP_PATH', text)
+        self.assertIn('ROCm device libraries', text)
+
+    def test_texture_setup_writes_patched_rasterizer_header_as_utf8_without_bom(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn('System.Text.UTF8Encoding', text)
+        self.assertIn('WriteAllText($RasterizerHeader', text)
+        self.assertNotIn(
+            'Set-Content -LiteralPath $RasterizerHeader -Value $RasterizerHeaderText -Encoding UTF8',
+            text,
+            'Windows PowerShell 5.1 UTF8 Set-Content writes a BOM that hipify can move into rasterizer_hip.h',
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
