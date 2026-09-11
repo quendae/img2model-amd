@@ -55,6 +55,15 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn('Get-Content -LiteralPath $LogPath -Tail 80', text)
         self.assertIn('Full log', text)
 
+    def test_texture_setup_keeps_hip_runtime_headers_out_of_msvc_host_compilation(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn("Patching Hunyuan rasterizer header for MSVC/HIP split", text)
+        self.assertIn("defined(__CUDACC__) || defined(__HIPCC__)", text)
+        self.assertIn("#define __host__", text)
+        self.assertIn("#define __device__", text)
+        self.assertIn("rasterizer_hip.h", text)
+        self.assertIn("Remove-Item", text)
+
 
 if __name__ == "__main__":
     unittest.main()
