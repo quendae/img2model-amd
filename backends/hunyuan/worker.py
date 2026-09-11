@@ -97,6 +97,7 @@ def run_generate(args: argparse.Namespace) -> int:
         pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
             args.model,
             subfolder=args.subfolder,
+            variant=args.variant,
         )
 
         generator = None
@@ -127,6 +128,7 @@ def run_generate(args: argparse.Namespace) -> int:
             output=str(output_path),
             model=args.model,
             subfolder=args.subfolder,
+            variant=args.variant,
         )
         return 0
     except Exception as exc:
@@ -147,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--output", required=True)
     generate.add_argument("--model", default="tencent/Hunyuan3D-2mini")
     generate.add_argument("--subfolder", default="hunyuan3d-dit-v2-mini")
+    generate.add_argument("--variant", default="fp16")
     generate.add_argument("--steps", type=int, default=30)
     generate.add_argument("--seed", type=int, default=1234)
     generate.add_argument("--remove-background", action="store_true")
