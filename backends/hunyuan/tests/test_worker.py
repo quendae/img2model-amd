@@ -114,7 +114,45 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(args.model, "tencent/Hunyuan3D-2")
         self.assertEqual(args.subfolder, "hunyuan3d-paint-v2-0-turbo")
+        self.assertEqual(args.max_faces, 40000)
         self.assertFalse(args.cpu_offload)
+
+    def test_texture_preprocess_matches_official_hunyuan_flow(self) -> None:
+        module = self.load_worker_module()
+        calls: list[object] = []
+
+        class Floater:
+            def __call__(self, mesh):
+                calls.append(("floater", mesh))
+                return "after-floater"
+
+        class Degenerate:
+            def __call__(self, mesh):
+                calls.append(("degenerate", mesh))
+                return "after-degenerate"
+
+        class Reducer:
+            def __call__(self, mesh, max_facenum):
+                calls.append(("reduce", mesh, max_facenum))
+                return "after-reduce"
+
+        result = module.prepare_texture_mesh(
+            "input-mesh",
+            max_faces=40000,
+            floater_remover_cls=Floater,
+            degenerate_face_remover_cls=Degenerate,
+            face_reducer_cls=Reducer,
+        )
+
+        self.assertEqual(result, "after-reduce")
+        self.assertEqual(
+            calls,
+            [
+                ("floater", "input-mesh"),
+                ("degenerate", "after-floater"),
+                ("reduce", "after-degenerate", 40000),
+            ],
+        )
 
     def test_texture_rejects_missing_mesh_with_json_error(self) -> None:
         missing_mesh = Path(__file__).resolve().parent / "does-not-exist.glb"
