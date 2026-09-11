@@ -6,6 +6,8 @@ interface GenerationPanelProps {
   seed: number;
   steps: number;
   removeBackground: boolean;
+  texture: boolean;
+  textureAvailable: boolean;
   busy: boolean;
   canGenerate: boolean;
   onBackendChange: (backend: BackendId) => void;
@@ -13,6 +15,7 @@ interface GenerationPanelProps {
   onSeedChange: (seed: number) => void;
   onStepsChange: (steps: number) => void;
   onRemoveBackgroundChange: (enabled: boolean) => void;
+  onTextureChange: (enabled: boolean) => void;
   onGenerate: () => void;
 }
 
@@ -28,6 +31,8 @@ export function GenerationPanel({
   seed,
   steps,
   removeBackground,
+  texture,
+  textureAvailable,
   busy,
   canGenerate,
   onBackendChange,
@@ -35,6 +40,7 @@ export function GenerationPanel({
   onSeedChange,
   onStepsChange,
   onRemoveBackgroundChange,
+  onTextureChange,
   onGenerate,
 }: GenerationPanelProps) {
   const backendReady = backend === 'native-rocm';
@@ -44,7 +50,7 @@ export function GenerationPanel({
       <div className="panel-heading">
         <div>
           <h2 id="generation-heading">Generation</h2>
-          <p>Hunyuan3D 2 Mini · shape-first pipeline</p>
+          <p>Hunyuan3D 2 Mini · shape + optional paint stage</p>
         </div>
       </div>
 
@@ -109,13 +115,31 @@ export function GenerationPanel({
         </span>
       </label>
 
+      <label className="toggle-row">
+        <input
+          type="checkbox"
+          checked={texture}
+          disabled={!textureAvailable}
+          aria-label="Generate texture"
+          onChange={(event) => onTextureChange(event.target.checked)}
+        />
+        <span>
+          <strong>Generate texture</strong>
+          <small>
+            {textureAvailable
+              ? 'Hunyuan Paint runs as a separate stage with CPU offload on 16 GB VRAM.'
+              : 'Texture runtime is not ready. Install the AMD texture extensions first.'}
+          </small>
+        </span>
+      </label>
+
       <button
         type="button"
         className="primary-button"
         disabled={!canGenerate || !backendReady || busy}
         onClick={onGenerate}
       >
-        {busy ? 'Generating…' : 'Generate shape'}
+        {busy ? 'Generating…' : texture ? 'Generate shape + texture' : 'Generate shape'}
       </button>
     </section>
   );
