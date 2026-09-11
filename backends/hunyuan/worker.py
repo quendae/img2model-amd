@@ -48,7 +48,7 @@ def health_payload() -> dict[str, Any]:
             gpu_available = bool(torch.cuda.is_available())
             if gpu_available:
                 device_name = torch.cuda.get_device_name(0)
-        except Exception as exc:  # health must remain callable on broken installs
+        except Exception as exc:
             errors.append(f"PyTorch probe failed: {type(exc).__name__}: {exc}")
 
     if hunyuan_available:
@@ -56,7 +56,7 @@ def health_payload() -> dict[str, Any]:
             from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline  # type: ignore  # noqa: F401
 
             hunyuan_import_ok = True
-        except Exception as exc:  # keep diagnostics callable on dependency mismatches
+        except Exception as exc:
             errors.append(f"Hunyuan import failed: {type(exc).__name__}: {exc}")
 
     usable = bool(
@@ -143,14 +143,7 @@ def load_hunyuan_paint_pipeline(
     model: str,
     subfolder: str,
 ) -> Any:
-    """Load Hunyuan Paint while allowing its bundled local Diffusers pipeline.
-
-    Newer Diffusers/Hugging Face Hub releases require trust_remote_code=True even
-    when Hunyuan passes a local custom_pipeline directory. Upstream Hunyuan3D-2
-    does not pass that flag. Patch only the module-local DiffusionPipeline symbol
-    during construction so the compatibility shim cannot affect shape inference
-    or unrelated Diffusers users in the worker process.
-    """
+    """Load Hunyuan Paint while allowing its bundled local Diffusers pipeline."""
 
     original_diffusion_pipeline = multiview_module.DiffusionPipeline
 
@@ -165,6 +158,28 @@ def load_hunyuan_paint_pipeline(
         return paint_pipeline_class.from_pretrained(model, subfolder=subfolder)
     finally:
         multiview_module.DiffusionPipeline = original_diffusion_pipeline
+
+
+def prepare_texture_mesh(
+    mesh: Any,
+    *,
+    max_faces: int,
+    floater_remover_cls: Any,
+    degenerate_face_remover_cls: Any,
+    face_reducer_cls: Any,
+) -> Any:
+    """Match the official Hunyuan texture preprocessing flow.
+
+    Tencent's API worker removes floaters and degenerate faces and then reduces
+    the shape to 40k faces by default before Hunyuan Paint. Feeding the raw
+    multi-million-face shape directly into UV wrapping/rasterization can make the
+    texture stage impractically slow and memory hungry.
+    """
+
+    mesh = floater_remover_cls()(mesh)
+    mesh = degenerate_face_remover_cls()(mesh)
+    mesh = face_reducer_cls()(mesh, max_facenum=max_faces)
+    return mesh
 
 
 def run_health(_args: argparse.Namespace) -> int:
@@ -210,16 +225,7 @@ def run_probe(_args: argparse.Namespace) -> int:
         )
         return 0
     except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), flush=True)
         return 1
 
 
@@ -230,7 +236,6 @@ def run_generate(args: argparse.Namespace) -> int:
     if not input_path.is_file():
         emit("error", ok=False, error=f"Input image does not exist: {input_path}")
         return 2
-
     if output_path.suffix.lower() not in {".glb", ".obj"}:
         emit("error", ok=False, error="Output must use .glb or .obj extension")
         return 2
@@ -306,6 +311,9 @@ def run_texture(args: argparse.Namespace) -> int:
     if output_path.suffix.lower() not in {".glb", ".obj"}:
         emit("error", ok=False, error="Texture output must use .glb or .obj extension")
         return 2
+    if args.max_faces <= 0:
+        emit("error", ok=False, error="--max-faces must be greater than zero")
+        return 2
 
     capability = texture_health_payload()
     if not capability["ok"]:
@@ -325,10 +333,11 @@ def run_texture(args: argparse.Namespace) -> int:
         import torch  # type: ignore
         import trimesh  # type: ignore
         from PIL import Image  # type: ignore
+        from hy3dgen.shapegen import DegenerateFaceRemover, FaceReducer, FloaterRemover  # type: ignore
         from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore
         import hy3dgen.texgen.utils.multiview_utils as multiview_utils  # type: ignore
 
-        emit("progress", ok=True, stage="preparing_input", progress=0.12)
+        emit("progress", ok=True, stage="preparing_input", progress=0.10)
         mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
         image = Image.open(image_path).convert("RGBA")
         if args.remove_background:
@@ -336,10 +345,36 @@ def run_texture(args: argparse.Namespace) -> int:
 
             image = BackgroundRemover()(image)
 
+        faces_before = int(len(mesh.faces))
+        emit(
+            "progress",
+            ok=True,
+            stage="preparing_mesh",
+            progress=0.14,
+            faces_before=faces_before,
+            max_faces=args.max_faces,
+        )
+        mesh = prepare_texture_mesh(
+            mesh,
+            max_faces=args.max_faces,
+            floater_remover_cls=FloaterRemover,
+            degenerate_face_remover_cls=DegenerateFaceRemover,
+            face_reducer_cls=FaceReducer,
+        )
+        faces_after = int(len(mesh.faces))
+        emit(
+            "progress",
+            ok=True,
+            stage="mesh_ready",
+            progress=0.18,
+            faces_before=faces_before,
+            faces_after=faces_after,
+        )
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        emit("progress", ok=True, stage="loading_model", progress=0.2)
+        emit("progress", ok=True, stage="loading_model", progress=0.22)
         pipeline = load_hunyuan_paint_pipeline(
             Hunyuan3DPaintPipeline,
             multiview_utils,
@@ -363,6 +398,9 @@ def run_texture(args: argparse.Namespace) -> int:
             output=str(output_path),
             model=args.model,
             subfolder=args.subfolder,
+            max_faces=args.max_faces,
+            faces_before=faces_before,
+            faces_after=faces_after,
             cpu_offload=bool(args.cpu_offload),
         )
         return 0
@@ -407,6 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     texture.add_argument("--output", required=True)
     texture.add_argument("--model", default="tencent/Hunyuan3D-2")
     texture.add_argument("--subfolder", default="hunyuan3d-paint-v2-0-turbo")
+    texture.add_argument("--max-faces", type=int, default=40000)
     texture.add_argument("--cpu-offload", action="store_true")
     texture.add_argument("--remove-background", action="store_true")
     texture.set_defaults(func=run_texture)
