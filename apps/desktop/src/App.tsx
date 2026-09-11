@@ -124,6 +124,7 @@ export function App() {
     if (!output) return;
 
     const shapeOutput = texture ? addSuffixBeforeExtension(output, '-shape') : output;
+    let preservedShapePath: string | null = null;
 
     setBusy(true);
     setError(null);
@@ -146,16 +147,16 @@ export function App() {
         return;
       }
 
-      const generatedShapePath = result.output ?? shapeOutput;
-      setModelPath(generatedShapePath);
+      preservedShapePath = result.output ?? shapeOutput;
+      setModelPath(preservedShapePath);
 
       if (!texture) {
-        setMessage(`Shape completed: ${generatedShapePath}`);
+        setMessage(`Shape completed: ${preservedShapePath}`);
         return;
       }
 
       if (!textureHealth?.ok) {
-        setError(`Texture runtime is not healthy. Shape was preserved at: ${generatedShapePath}`);
+        setError(`Texture runtime is not healthy. Shape was preserved at: ${preservedShapePath}`);
         setMessage('Shape completed; texture stage was skipped.');
         return;
       }
@@ -163,7 +164,7 @@ export function App() {
       setMessage('Shape completed. Running Hunyuan Paint texture stage…');
       const textureResult = await textureMesh({
         backend,
-        mesh: generatedShapePath,
+        mesh: preservedShapePath,
         image: inputPath,
         output,
         model: 'tencent/Hunyuan3D-2',
@@ -174,7 +175,7 @@ export function App() {
 
       if (!textureResult.ok) {
         setError(
-          `${textureResult.error ?? 'Texture generation failed without an error message.'}\n\nShape preserved at: ${generatedShapePath}`,
+          `${textureResult.error ?? 'Texture generation failed without an error message.'}\n\nShape preserved at: ${preservedShapePath}`,
         );
         setMessage('Shape completed; texture stage failed.');
         return;
@@ -184,8 +185,13 @@ export function App() {
       setModelPath(texturedPath);
       setMessage(`Shape + texture completed: ${texturedPath}`);
     } catch (reason) {
-      setError(String(reason));
-      setMessage(modelPath ? 'Texture stage failed; shape output was preserved.' : 'Generation failed.');
+      if (preservedShapePath) {
+        setError(`${String(reason)}\n\nShape preserved at: ${preservedShapePath}`);
+        setMessage('Texture stage failed; shape output was preserved.');
+      } else {
+        setError(String(reason));
+        setMessage('Generation failed.');
+      }
     } finally {
       setBusy(false);
     }
