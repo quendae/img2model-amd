@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npm test -- --run
+      - run: npm run build
+
+  python-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s backends/hunyuan/tests -v
+
+  rust-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
+
+  desktop-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm install
+      - run: npm run build
+      - name: Validate PowerShell scripts
+        shell: powershell
+        run: |
+          [void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/smoke/windows-native-rocm.ps1 -Raw))
+      - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml

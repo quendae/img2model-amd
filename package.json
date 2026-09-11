@@ -1,0 +1,11 @@
+{
+  "name": "img2model-amd",
+  "private": true,
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "dev": "npm --workspace @img2model/desktop run dev",
+    "build": "npm --workspace @img2model/desktop run build",
+    "test": "npm --workspace @img2model/desktop run test",
+    "tauri": "npm --workspace @img2model/desktop run tauri"
+  }
+}

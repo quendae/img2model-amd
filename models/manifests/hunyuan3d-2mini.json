@@ -1,0 +1,15 @@
+{
+  "id": "hunyuan3d-2mini",
+  "displayName": "Hunyuan3D 2 Mini",
+  "provider": "Tencent Hunyuan",
+  "repository": "tencent/Hunyuan3D-2mini",
+  "subfolder": "hunyuan3d-dit-v2-mini",
+  "task": "image-to-shape",
+  "supportedBackends": ["native-rocm", "wsl-rocm"],
+  "recommendedVramGb": 8,
+  "defaultProfile": "balanced",
+  "defaultSteps": 30,
+  "outputFormats": ["glb", "obj"],
+  "texture": false,
+  "experimentalOn": ["gfx1030"]
+}
