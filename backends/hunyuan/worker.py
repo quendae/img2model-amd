@@ -81,8 +81,51 @@ def health_payload() -> dict[str, Any]:
     }
 
 
+def texture_health_payload() -> dict[str, Any]:
+    texgen_available = module_available("hy3dgen.texgen")
+    custom_rasterizer_available = module_available("custom_rasterizer")
+    mesh_processor_available = module_available("mesh_processor")
+    texture_import_ok = False
+    errors: list[str] = []
+
+    if texgen_available:
+        try:
+            from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore  # noqa: F401
+
+            texture_import_ok = True
+        except Exception as exc:
+            errors.append(f"Hunyuan texture import failed: {type(exc).__name__}: {exc}")
+    else:
+        errors.append("hy3dgen.texgen is not installed")
+
+    if not custom_rasterizer_available:
+        errors.append("custom_rasterizer is not installed")
+    if not mesh_processor_available:
+        errors.append("mesh_processor is not installed")
+
+    usable = bool(
+        texgen_available
+        and custom_rasterizer_available
+        and mesh_processor_available
+        and texture_import_ok
+    )
+    return {
+        "ok": usable,
+        "texgen_available": texgen_available,
+        "custom_rasterizer_available": custom_rasterizer_available,
+        "mesh_processor_available": mesh_processor_available,
+        "texture_import_ok": texture_import_ok,
+        "error": "; ".join(errors) if errors else None,
+    }
+
+
 def run_health(_args: argparse.Namespace) -> int:
     print(json.dumps(health_payload(), ensure_ascii=False), flush=True)
+    return 0
+
+
+def run_texture_health(_args: argparse.Namespace) -> int:
+    print(json.dumps(texture_health_payload(), ensure_ascii=False), flush=True)
     return 0
 
 
@@ -201,6 +244,82 @@ def run_generate(args: argparse.Namespace) -> int:
         return 1
 
 
+def run_texture(args: argparse.Namespace) -> int:
+    mesh_path = Path(args.mesh).expanduser().resolve()
+    image_path = Path(args.image).expanduser().resolve()
+    output_path = Path(args.output).expanduser().resolve()
+
+    if not mesh_path.is_file():
+        emit("error", ok=False, error=f"Input mesh does not exist: {mesh_path}")
+        return 2
+    if not image_path.is_file():
+        emit("error", ok=False, error=f"Input image does not exist: {image_path}")
+        return 2
+    if output_path.suffix.lower() not in {".glb", ".obj"}:
+        emit("error", ok=False, error="Texture output must use .glb or .obj extension")
+        return 2
+
+    capability = texture_health_payload()
+    if not capability["ok"]:
+        emit(
+            "error",
+            ok=False,
+            error=(
+                "Hunyuan texture runtime is unavailable: "
+                f"{capability['error']}. Run scripts/setup/windows-hunyuan-texture.ps1 first."
+            ),
+        )
+        return 3
+
+    try:
+        emit("progress", ok=True, stage="starting_backend", progress=0.05)
+
+        import torch  # type: ignore
+        import trimesh  # type: ignore
+        from PIL import Image  # type: ignore
+        from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore
+
+        emit("progress", ok=True, stage="preparing_input", progress=0.12)
+        mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
+        image = Image.open(image_path).convert("RGBA")
+        if args.remove_background:
+            from hy3dgen.rembg import BackgroundRemover  # type: ignore
+
+            image = BackgroundRemover()(image)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        emit("progress", ok=True, stage="loading_model", progress=0.2)
+        pipeline = Hunyuan3DPaintPipeline.from_pretrained(
+            args.model,
+            subfolder=args.subfolder,
+        )
+        if args.cpu_offload:
+            pipeline.enable_model_cpu_offload()
+
+        emit("progress", ok=True, stage="running_texture", progress=0.35)
+        textured_mesh = pipeline(mesh, image=image)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        emit("progress", ok=True, stage="postprocessing", progress=0.92)
+        textured_mesh.export(str(output_path))
+        emit(
+            "completed",
+            ok=True,
+            stage="completed",
+            progress=1.0,
+            output=str(output_path),
+            model=args.model,
+            subfolder=args.subfolder,
+            cpu_offload=bool(args.cpu_offload),
+        )
+        return 0
+    except Exception as exc:
+        emit("error", ok=False, error=f"{type(exc).__name__}: {exc}")
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Img2Model AMD Hunyuan worker")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -208,6 +327,13 @@ def build_parser() -> argparse.ArgumentParser:
     health = subparsers.add_parser("health", help="Probe the Python/ROCm/Hunyuan runtime")
     health.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
     health.set_defaults(func=run_health)
+
+    texture_health = subparsers.add_parser(
+        "texture-health",
+        help="Probe Hunyuan texture pipeline and native rasterizer capability",
+    )
+    texture_health.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
+    texture_health.set_defaults(func=run_texture_health)
 
     probe = subparsers.add_parser("probe", help="Run a real ROCm tensor operation on the selected GPU")
     probe.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
@@ -223,6 +349,16 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--seed", type=int, default=1234)
     generate.add_argument("--remove-background", action="store_true")
     generate.set_defaults(func=run_generate)
+
+    texture = subparsers.add_parser("texture", help="Texture an existing mesh from the source image")
+    texture.add_argument("--mesh", required=True)
+    texture.add_argument("--image", required=True)
+    texture.add_argument("--output", required=True)
+    texture.add_argument("--model", default="tencent/Hunyuan3D-2")
+    texture.add_argument("--subfolder", default="hunyuan3d-paint-v2-0-turbo")
+    texture.add_argument("--cpu-offload", action="store_true")
+    texture.add_argument("--remove-background", action="store_true")
+    texture.set_defaults(func=run_texture)
 
     return parser
 
