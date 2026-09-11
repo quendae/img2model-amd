@@ -17,6 +17,14 @@ class WindowsScriptRegressionTests(unittest.TestCase):
                 f"{path.name} must not pass multiline Python through Windows native argv quoting",
             )
 
+    def test_stable_gfx1030_setup_installs_matching_rocm_torchvision(self) -> None:
+        text = SETUP.read_text(encoding="utf-8")
+        self.assertIn(
+            'torchvision[device-gfx1030]==0.28.0+rocm10.0.0',
+            text,
+            "Hunyuan imports torchvision, so the Windows ROCm setup must install the matching gfx1030 wheel",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
