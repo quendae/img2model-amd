@@ -94,6 +94,26 @@ You can override the runtime destination explicitly:
 .\scripts\setup\windows-native-rocm.ps1 -RuntimeDir "D:\Img2ModelRuntime"
 ```
 
+### RX 6950 XT smoke test
+
+After setup, open a fresh PowerShell and run:
+
+```powershell
+.\scripts\smoke\windows-native-rocm.ps1
+```
+
+This performs a worker health check and a real ROCm tensor operation on the GPU, then prints the detected device, HIP version and VRAM.
+
+To exercise the full image-to-3D path as well:
+
+```powershell
+.\scripts\smoke\windows-native-rocm.ps1 `
+  -InputImage "C:\path\to\input.png" `
+  -Output "C:\path\to\smoke.glb"
+```
+
+The end-to-end mode uses Hunyuan3D-2 Mini `fp16`, verifies the process exit code and confirms that a non-empty output file was produced.
+
 ## Run the desktop app
 
 ```powershell
