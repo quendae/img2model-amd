@@ -1,3 +1,22 @@
+use std::collections::HashSet;
+
+pub fn parse_gpu_names(output: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+
+    for line in output.lines() {
+        let name = line.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if seen.insert(name.to_string()) {
+            names.push(name.to_string());
+        }
+    }
+
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_gpu_names;

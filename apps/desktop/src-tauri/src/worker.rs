@@ -1,3 +1,15 @@
+use std::path::{Path, PathBuf};
+
+pub fn resolve_worker_path(start: &Path) -> Option<PathBuf> {
+    for ancestor in start.ancestors() {
+        let candidate = ancestor.join("backends").join("hunyuan").join("worker.py");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::resolve_worker_path;
