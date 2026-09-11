@@ -47,5 +47,6 @@ jobs:
         shell: powershell
         run: |
           [void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/setup/windows-hunyuan-texture.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content scripts/smoke/windows-native-rocm.ps1 -Raw))
       - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
