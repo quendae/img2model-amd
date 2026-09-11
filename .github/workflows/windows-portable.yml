@@ -35,7 +35,7 @@ jobs:
         run: '[void][scriptblock]::Create((Get-Content scripts/package/windows-portable.ps1 -Raw))'
 
       - name: Build Tauri executable
-        run: npm run tauri -- build --no-bundle
+        run: npm --workspace @img2model/desktop run tauri -- build --no-bundle
 
       - name: Assemble portable package
         shell: powershell
