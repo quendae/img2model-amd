@@ -18,6 +18,14 @@ class WorkerProtocolTests(unittest.TestCase):
             check=False,
         )
 
+    def load_worker_module(self):
+        spec = importlib.util.spec_from_file_location("img2model_hunyuan_worker", WORKER)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
     def test_health_returns_machine_readable_status_without_ml_runtime(self) -> None:
         result = self.run_worker("health", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -30,6 +38,17 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertIn("hip_version", payload)
         self.assertIn("gpu_available", payload)
         self.assertIn("device_name", payload)
+
+    def test_texture_health_returns_machine_readable_capability(self) -> None:
+        result = self.run_worker("texture-health", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn("ok", payload)
+        self.assertIn("texgen_available", payload)
+        self.assertIn("custom_rasterizer_available", payload)
+        self.assertIn("mesh_processor_available", payload)
+        self.assertIn("texture_import_ok", payload)
+        self.assertIn("error", payload)
 
     def test_probe_always_returns_machine_readable_result(self) -> None:
         result = self.run_worker("probe", "--json")
@@ -65,12 +84,7 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertIn("Input image does not exist", payload["error"])
 
     def test_generate_defaults_to_official_mini_fp16_variant(self) -> None:
-        spec = importlib.util.spec_from_file_location("img2model_hunyuan_worker", WORKER)
-        self.assertIsNotNone(spec)
-        self.assertIsNotNone(spec.loader)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
+        module = self.load_worker_module()
         parser = module.build_parser()
         args = parser.parse_args(
             [
@@ -82,6 +96,60 @@ class WorkerProtocolTests(unittest.TestCase):
             ]
         )
         self.assertEqual(args.variant, "fp16")
+
+    def test_texture_defaults_to_official_paint_model(self) -> None:
+        module = self.load_worker_module()
+        parser = module.build_parser()
+        args = parser.parse_args(
+            [
+                "texture",
+                "--mesh",
+                "input.glb",
+                "--image",
+                "input.png",
+                "--output",
+                "textured.glb",
+            ]
+        )
+        self.assertEqual(args.model, "tencent/Hunyuan3D-2")
+        self.assertEqual(args.subfolder, "hunyuan3d-paint-v2-0-turbo")
+        self.assertFalse(args.cpu_offload)
+
+    def test_texture_rejects_missing_mesh_with_json_error(self) -> None:
+        missing_mesh = Path(__file__).resolve().parent / "does-not-exist.glb"
+        output = Path(__file__).resolve().parent / "unused-textured.glb"
+        result = self.run_worker(
+            "texture",
+            "--mesh",
+            str(missing_mesh),
+            "--image",
+            str(__file__),
+            "--output",
+            str(output),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["event"], "error")
+        self.assertIn("Input mesh does not exist", payload["error"])
+
+    def test_texture_rejects_missing_image_with_json_error(self) -> None:
+        missing_image = Path(__file__).resolve().parent / "does-not-exist.png"
+        output = Path(__file__).resolve().parent / "unused-textured.glb"
+        result = self.run_worker(
+            "texture",
+            "--mesh",
+            str(__file__),
+            "--image",
+            str(missing_image),
+            "--output",
+            str(output),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["event"], "error")
+        self.assertIn("Input image does not exist", payload["error"])
 
 
 if __name__ == "__main__":
