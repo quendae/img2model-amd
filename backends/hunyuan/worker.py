@@ -182,6 +182,47 @@ def prepare_texture_mesh(
     return mesh
 
 
+def configure_texture_memory_profile(
+    pipeline: Any,
+    *,
+    cpu_offload: bool,
+    attention_slicing: str,
+) -> None:
+    """Apply the validated low-VRAM profile for Hunyuan Paint.
+
+    The RX 6950 XT 16 GB hardware validation requires model CPU offload plus
+    maximum Diffusers attention slicing on the bundled multiview pipeline. Keep
+    these controls explicit so higher-memory GPUs can opt out without changing
+    the model or mesh preprocessing path.
+    """
+
+    if cpu_offload:
+        if not hasattr(pipeline, "enable_model_cpu_offload"):
+            raise RuntimeError("Hunyuan Paint pipeline does not support CPU model offload")
+        pipeline.enable_model_cpu_offload()
+
+    if attention_slicing == "off":
+        return
+    if attention_slicing != "max":
+        raise ValueError(f"Unsupported attention slicing mode: {attention_slicing}")
+
+    try:
+        multiview_pipeline = pipeline.models["multiview_model"].pipeline
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise RuntimeError("Hunyuan Paint multiview pipeline is unavailable for attention slicing") from exc
+
+    if hasattr(multiview_pipeline, "enable_attention_slicing"):
+        multiview_pipeline.enable_attention_slicing("max")
+        return
+
+    unet = getattr(multiview_pipeline, "unet", None)
+    if unet is not None and hasattr(unet, "set_attention_slice"):
+        unet.set_attention_slice("max")
+        return
+
+    raise RuntimeError("Hunyuan Paint multiview pipeline does not expose attention slicing")
+
+
 def run_health(_args: argparse.Namespace) -> int:
     print(json.dumps(health_payload(), ensure_ascii=False), flush=True)
     return 0
@@ -381,10 +422,23 @@ def run_texture(args: argparse.Namespace) -> int:
             args.model,
             args.subfolder,
         )
-        if args.cpu_offload:
-            pipeline.enable_model_cpu_offload()
+        configure_texture_memory_profile(
+            pipeline,
+            cpu_offload=bool(args.cpu_offload),
+            attention_slicing=args.attention_slicing,
+        )
 
-        emit("progress", ok=True, stage="running_texture", progress=0.35)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        emit(
+            "progress",
+            ok=True,
+            stage="running_texture",
+            progress=0.35,
+            cpu_offload=bool(args.cpu_offload),
+            attention_slicing=args.attention_slicing,
+        )
         textured_mesh = pipeline(mesh, image=image)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -402,6 +456,7 @@ def run_texture(args: argparse.Namespace) -> int:
             faces_before=faces_before,
             faces_after=faces_after,
             cpu_offload=bool(args.cpu_offload),
+            attention_slicing=args.attention_slicing,
         )
         return 0
     except Exception as exc:
@@ -446,7 +501,18 @@ def build_parser() -> argparse.ArgumentParser:
     texture.add_argument("--model", default="tencent/Hunyuan3D-2")
     texture.add_argument("--subfolder", default="hunyuan3d-paint-v2-0-turbo")
     texture.add_argument("--max-faces", type=int, default=40000)
-    texture.add_argument("--cpu-offload", action="store_true")
+    texture.add_argument(
+        "--cpu-offload",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Offload Hunyuan Paint modules to CPU between use; enabled by default for 16 GB GPUs",
+    )
+    texture.add_argument(
+        "--attention-slicing",
+        choices=("max", "off"),
+        default="max",
+        help="Diffusers multiview attention slicing mode; max is the validated RX 6950 XT setting",
+    )
     texture.add_argument("--remove-background", action="store_true")
     texture.set_defaults(func=run_texture)
 
