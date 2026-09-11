@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { modelFormatFromUrl } from './modelPreview';
 
 interface ModelViewerProps {
   modelUrl: string | null;
@@ -61,32 +63,39 @@ export function ModelViewer({ modelUrl, busy }: ModelViewerProps) {
     let loadedRoot: THREE.Object3D | null = null;
     let disposed = false;
 
+    const attachModel = (root: THREE.Object3D) => {
+      if (disposed) return;
+      loadedRoot = root;
+      scene.add(root);
+
+      const box = new THREE.Box3().setFromObject(root);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const maxDimension = Math.max(size.x, size.y, size.z, 0.001);
+      const scale = 1.8 / maxDimension;
+      root.scale.setScalar(scale);
+      root.position.sub(center.multiplyScalar(scale));
+      root.position.y += size.y * scale * 0.5;
+      controls.target.set(0, Math.min(size.y * scale * 0.4, 0.8), 0);
+      controls.update();
+    };
+
     if (modelUrl) {
       setLoadError(null);
-      const loader = new GLTFLoader();
-      loader.load(
-        modelUrl,
-        (gltf) => {
-          if (disposed) return;
-          loadedRoot = gltf.scene;
-          scene.add(gltf.scene);
+      try {
+        const format = modelFormatFromUrl(modelUrl);
+        const onError = (error: unknown) => {
+          if (!disposed) setLoadError(`Could not load generated ${format.toUpperCase()}: ${String(error)}`);
+        };
 
-          const box = new THREE.Box3().setFromObject(gltf.scene);
-          const size = box.getSize(new THREE.Vector3());
-          const center = box.getCenter(new THREE.Vector3());
-          const maxDimension = Math.max(size.x, size.y, size.z, 0.001);
-          const scale = 1.8 / maxDimension;
-          gltf.scene.scale.setScalar(scale);
-          gltf.scene.position.sub(center.multiplyScalar(scale));
-          gltf.scene.position.y += size.y * scale * 0.5;
-          controls.target.set(0, Math.min(size.y * scale * 0.4, 0.8), 0);
-          controls.update();
-        },
-        undefined,
-        (error) => {
-          if (!disposed) setLoadError(`Could not load generated GLB: ${String(error)}`);
-        },
-      );
+        if (format === 'obj') {
+          new OBJLoader().load(modelUrl, attachModel, undefined, onError);
+        } else {
+          new GLTFLoader().load(modelUrl, (gltf) => attachModel(gltf.scene), undefined, onError);
+        }
+      } catch (error) {
+        setLoadError(String(error));
+      }
     }
 
     const animate = () => {
@@ -122,7 +131,7 @@ export function ModelViewer({ modelUrl, busy }: ModelViewerProps) {
         <div className="viewer-empty">
           <div className="wire-cube" aria-hidden="true" />
           <strong>3D preview</strong>
-          <span>Your generated GLB will appear here.</span>
+          <span>Your generated GLB or OBJ will appear here.</span>
         </div>
       )}
       {busy && (
