@@ -4,7 +4,7 @@ A Windows desktop image-to-3D application focused on AMD Radeon GPUs.
 
 The initial hardware target is the **Radeon RX 6950 XT (16 GB, gfx1030)**. The app uses a native Tauri/React desktop UI, Three.js for preview, and an out-of-process Python worker for Hunyuan3D shape and optional texture generation.
 
-> **Current status:** MVP / experimental. Native ROCm/TheRock shape generation is hardware-validated on an RX 6950 XT. Hunyuan Paint texture generation is implemented as a separate optional stage; its Windows ROCm/HIP native extensions still require hardware validation. WSL2 ROCm and Vulkan/TRELLIS remain experimental future backends.
+> **Current status:** MVP / experimental. Native ROCm/TheRock Hunyuan shape generation and Hunyuan Paint texture generation are hardware-validated on an RX 6950 XT. WSL2 ROCm and Vulkan/TRELLIS remain experimental future backends.
 
 ## What works
 
@@ -14,8 +14,9 @@ The initial hardware target is the **Radeon RX 6950 XT (16 GB, gfx1030)**. The a
 - Hunyuan shape and texture capability health checks
 - Hunyuan3D-2 Mini image-to-shape worker using the `fp16` Mini weights by default
 - Optional Hunyuan Paint mesh + image texture stage
+- Official Hunyuan texture mesh cleanup/reduction before Paint
 - Texture failure preserves the successful untextured shape output
-- CPU model offload for the texture stage on 16 GB cards
+- CPU model offload plus MAX attention slicing as the validated 16 GB texture profile
 - PNG/JPG/WEBP input selection
 - Fast / Balanced / Quality step presets
 - Seed and optional background removal
@@ -54,7 +55,7 @@ TheRock publishes Windows ROCm/PyTorch packages for `gfx1030`. This project inst
 - Node.js 22+ for development builds
 - Rust stable toolchain for development builds
 - Microsoft WebView2 Runtime (normally already present on Windows 11)
-- For experimental native texture-extension compilation: a usable Windows C++ build toolchain if PyTorch requests it
+- For native texture-extension compilation: a usable Windows C++ build toolchain if PyTorch requests it
 
 ### Automated runtime setup
 
@@ -106,8 +107,11 @@ The native Windows path has been validated on a Radeon RX 6950 XT with:
 - approximately 16 GB VRAM detected
 - a real 1024×1024 matrix multiplication executed on the Radeon GPU
 - Hunyuan3D-2 Mini `fp16` shape generation completed successfully and exported a GLB
+- Hunyuan Paint native extensions compiled and imported successfully through TheRock/ROCm
+- the official Hunyuan cleanup/reduction flow reduced a multi-million-triangle shape to a 40k working mesh
+- Hunyuan Paint completed a real textured GLB using CPU model offload plus MAX Diffusers attention slicing
 
-The shape path is therefore considered verified on the target card. Texture-extension compilation is the next hardware checkpoint.
+Both the shape and texture paths are therefore considered verified on the target card. The 40k value is a **texture working-mesh ceiling**, not a recommended in-game triangle count; lower game-ready targets are planned as explicit UI presets and a custom polycount control.
 
 ### RX 6950 XT smoke test
 
@@ -129,9 +133,9 @@ To exercise the full image-to-shape path as well:
 
 The end-to-end mode uses Hunyuan3D-2 Mini `fp16`, verifies the process exit code and confirms that a non-empty output file was produced.
 
-## Experimental Hunyuan texture setup on Windows AMD
+## Hunyuan texture setup on Windows AMD
 
-Hunyuan's paint stage uses a native `custom_rasterizer` extension. Upstream defines it as a PyTorch `CUDAExtension`, but ROCm PyTorch can route CUDA extensions through its HIP extension / HIPify path. Img2Model AMD attempts that path first instead of maintaining a hand-forked rasterizer.
+Hunyuan's paint stage uses a native `custom_rasterizer` extension. Upstream defines it as a PyTorch `CUDAExtension`, but ROCm PyTorch can route CUDA extensions through its HIP extension / HIPify path. Img2Model AMD uses that route instead of maintaining a hand-forked rasterizer.
 
 The texture setup **reuses the existing native ROCm runtime**. It does not reinstall PyTorch or ROCm:
 
@@ -143,14 +147,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 The script:
 
 1. verifies that the existing PyTorch build reports HIP;
-2. resolves TheRock's `ROCM_HOME` through `torch.utils.cpp_extension`;
-3. sets `PYTORCH_ROCM_ARCH=gfx1030`;
-4. downloads Hunyuan3D-2 source into the runtime's `texture-build` directory;
+2. resolves TheRock's core and development trees through the installed ROCm SDK tooling;
+3. sets `PYTORCH_ROCM_ARCH=gfx1030` plus the required device-library/include paths;
+4. downloads pinned Hunyuan3D-2 source into the runtime's texture build directory;
 5. builds upstream `custom_rasterizer` through PyTorch's ROCm/HIPify extension path;
 6. builds the upstream differentiable-renderer extension;
 7. runs a real import-based `texture-health` check.
-
-If the Windows HIP extension compiler rejects the upstream CUDA source, keep the complete compiler error. Do **not** remove the working shape runtime: the next fallback is a CPU rasterizer, not a change to the verified shape backend.
 
 Texture capability check:
 
@@ -160,7 +162,7 @@ Texture capability check:
 
 A healthy result requires the Hunyuan texgen package plus successfully importable native rasterizer extensions.
 
-### Manual first texture test
+### Manual texture test
 
 With an existing untextured mesh and the original source image:
 
@@ -171,11 +173,12 @@ With an existing untextured mesh and the original source image:
   --output "$env:USERPROFILE\Desktop\img2model-smoke-textured.glb" `
   --model "tencent/Hunyuan3D-2" `
   --subfolder "hunyuan3d-paint-v2-0-turbo" `
-  --cpu-offload `
   --remove-background
 ```
 
-`--cpu-offload` is recommended for the 16 GB RX 6950 XT. The first texture run downloads additional Hunyuan Paint / delight model weights. The original untextured mesh remains untouched if the texture stage fails.
+On the validated RX 6950 XT profile, CPU model offload and `attention-slicing=max` are enabled by default. Advanced users can opt out explicitly with `--no-cpu-offload` and/or `--attention-slicing off` on higher-memory hardware. The default texture preprocessing follows Hunyuan's official cleanup path and caps the working mesh at 40,000 triangles via `--max-faces 40000`.
+
+The first texture run downloads additional Hunyuan Paint / delight model weights. The original untextured mesh remains untouched if the texture stage fails.
 
 ## Run the desktop app
 
@@ -226,11 +229,11 @@ Texture generation:
   --mesh .\outputs\model.glb `
   --image .\input.png `
   --output .\outputs\model-textured.glb `
-  --cpu-offload `
+  --max-faces 40000 `
   --remove-background
 ```
 
-The worker emits newline-delimited JSON progress events and finishes with either a `completed` or `error` event.
+The worker emits newline-delimited JSON progress events and finishes with either a `completed` or `error` event. Texture progress/completion events include the face count before/after preprocessing and the active low-VRAM settings.
 
 ## Development
 
@@ -267,7 +270,7 @@ cargo check --manifest-path apps\desktop\src-tauri\Cargo.toml
 
 Backends are deliberately explicit:
 
-- `native-rocm` — implemented and shape-validated on RX 6950 XT
+- `native-rocm` — implemented and shape/texture-validated on RX 6950 XT
 - `wsl-rocm` — planned
 - `vulkan` — planned / experimental
 
@@ -275,7 +278,7 @@ Selecting an unavailable backend does **not** cause an automatic switch to anoth
 
 ## Current limitations
 
-- Hunyuan Paint native ROCm texture extensions are implemented but not yet hardware-validated on Windows gfx1030.
+- The 40k Hunyuan texture working-mesh limit is far above many real-time game budgets; game-ready presets and a custom 300-40k triangle control are planned next.
 - Generation progress is produced by the Python worker but the current Tauri bridge waits for each worker stage to finish instead of streaming events live.
 - Cancellation is modeled in the domain state machine but process cancellation is not yet connected to the UI.
 - The runtime installer is currently a PowerShell setup script; it is not yet integrated into the desktop UI or MSI/NSIS installer.
@@ -284,7 +287,7 @@ Selecting an unavailable backend does **not** cause an automatic switch to anoth
 
 ## Why Hunyuan3D-2 Mini first?
 
-Tencent documents the Mini shape pipeline as a 0.6B image-to-shape model. The texture path is substantially more memory-intensive and has native rasterization dependencies, so Img2Model AMD stages geometry and texture separately and uses CPU model offload for the first 16 GB texture experiments.
+Tencent documents the Mini shape pipeline as a 0.6B image-to-shape model. The texture path is substantially more memory-intensive and has native rasterization dependencies, so Img2Model AMD stages geometry and texture separately. On the 16 GB RX 6950 XT, the validated texture profile combines CPU model offload with maximum attention slicing.
 
 ## References
 
@@ -297,13 +300,13 @@ Tencent documents the Mini shape pipeline as a 0.6B image-to-shape model. The te
 ## Roadmap
 
 1. Native ROCm Hunyuan shape generation — **validated on RX 6950 XT**
-2. Native ROCm/HIP Hunyuan Paint rasterizer — **in progress / hardware validation next**
-3. CPU rasterizer fallback if Windows HIP compilation blocks upstream rasterizer
-4. Runtime/model installer inside the UI
-5. Live progress + cancellation
-6. Mesh cleanup / decimation controls
+2. Native ROCm/HIP Hunyuan Paint rasterizer + textured GLB — **validated on RX 6950 XT**
+3. Game-ready triangle presets and custom polycount control
+4. Optional quality-first low-poly baking pipeline if direct low-poly Paint needs more fidelity
+5. Runtime/model installer inside the UI
+6. Live progress + cancellation
 7. WSL2 ROCm worker
 8. Experimental TRELLIS / Vulkan or ROCm backend
 9. Packaged Windows installer and releases
 
-See `docs/superpowers/specs/2026-09-11-img2model-amd-design.md`, `docs/superpowers/plans/2026-09-11-mvp-bootstrap.md`, and `docs/superpowers/plans/2026-09-11-hunyuan-texture-amd.md`.
+See `docs/superpowers/specs/2026-09-11-img2model-amd-design.md`, `docs/superpowers/plans/2026-09-11-mvp-bootstrap.md`, `docs/superpowers/plans/2026-09-11-hunyuan-texture-amd.md`, `docs/superpowers/plans/2026-09-11-texture-mvp-hardening.md`, and `docs/superpowers/plans/2026-09-11-game-ready-polycount.md`.
