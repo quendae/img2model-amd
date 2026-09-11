@@ -43,7 +43,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
       - run: npm run build
-      - name: Validate native ROCm setup script syntax
+      - name: Validate PowerShell scripts
         shell: powershell
-        run: "[void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))"
+        run: |
+          [void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/smoke/windows-native-rocm.ps1 -Raw))
       - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
