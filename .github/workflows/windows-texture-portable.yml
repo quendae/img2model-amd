@@ -1,0 +1,86 @@
+name: Windows Texture Portable Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hunyuan-texture-portable
+    paths:
+      - 'apps/desktop/**'
+      - 'backends/hunyuan/**'
+      - 'scripts/setup/**'
+      - 'scripts/smoke/**'
+      - 'scripts/package/**'
+      - '.github/workflows/windows-texture-portable.yml'
+      - 'package.json'
+      - 'README.md'
+
+jobs:
+  build-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install JavaScript dependencies
+        run: npm install
+
+      - name: Validate packaging and runtime scripts
+        shell: powershell
+        run: |
+          [void][scriptblock]::Create((Get-Content scripts/package/windows-portable.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/package/verify-windows-pe.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/setup/windows-hunyuan-texture.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/smoke/windows-native-rocm.ps1 -Raw))
+
+      - name: Build Tauri executable
+        run: npm --workspace @img2model/desktop run tauri -- build --no-bundle
+
+      - name: Verify Windows GUI executable
+        shell: powershell
+        run: |
+          .\scripts\package\verify-windows-pe.ps1 `
+            -ExePath '.\apps\desktop\src-tauri\target\release\img2model-amd.exe'
+
+      - name: Assemble portable package
+        shell: powershell
+        run: |
+          .\scripts\package\windows-portable.ps1 `
+            -ExePath '.\apps\desktop\src-tauri\target\release\img2model-amd.exe'
+
+      - name: Verify portable package
+        shell: powershell
+        run: |
+          $root = Resolve-Path '.\dist-portable\Img2ModelAMD'
+          $required = @(
+            'Img2ModelAMD.exe',
+            'README.md',
+            'run-img2model-amd.cmd',
+            'setup-amd-runtime.cmd',
+            'setup-texture-runtime.cmd',
+            'smoke-test-amd.cmd',
+            'scripts\setup\windows-native-rocm.ps1',
+            'scripts\setup\windows-hunyuan-texture.ps1',
+            'scripts\smoke\windows-native-rocm.ps1',
+            'backends\hunyuan\worker.py',
+            'backends\hunyuan\requirements-base.txt'
+          )
+          foreach ($relative in $required) {
+            $path = Join-Path $root $relative
+            if (-not (Test-Path $path)) { throw "Missing portable file: $path" }
+          }
+          Get-ChildItem -Recurse $root | Select-Object FullName, Length
+
+      - name: Upload Windows texture portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Img2ModelAMD-windows-texture-portable
+          path: dist-portable/Img2ModelAMD/
+          if-no-files-found: error
+          retention-days: 14
