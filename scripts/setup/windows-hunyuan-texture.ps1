@@ -29,6 +29,8 @@ if ([string]::IsNullOrWhiteSpace($PythonExe)) {
 }
 $PythonExe = [System.IO.Path]::GetFullPath($PythonExe)
 $PythonScripts = Split-Path -Parent $PythonExe
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
 $InstalledWorker = Join-Path $RuntimeDir "worker.py"
 $SourceRoot = Join-Path $RuntimeDir "texture-build\hunyuan-src"
 $ArchivePath = Join-Path $RuntimeDir "texture-build\hunyuan.zip"
@@ -63,8 +65,23 @@ function Invoke-Checked([string]$Label, [scriptblock]$Command) {
     Add-LogLine ("==== {0} ====" -f $Label)
     Add-LogLine ("Started: {0:o}" -f (Get-Date))
 
-    & $Command 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Null
-    $ExitCode = $LASTEXITCODE
+    # Windows PowerShell 5.1 promotes redirected native stderr to ErrorRecord
+    # objects. With ErrorActionPreference=Stop that can terminate this wrapper
+    # before pip prints the actual compiler traceback. Convert each record back
+    # to text and append it explicitly as UTF-8 instead of using Tee-Object,
+    # whose Windows PowerShell file encoding would otherwise corrupt this UTF-8
+    # log with UTF-16/NUL bytes.
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Command 2>&1 | ForEach-Object {
+            Add-Content -LiteralPath $LogPath -Value ([string]$_) -Encoding UTF8
+        }
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+
     Add-LogLine ("Exit code: {0}" -f $ExitCode)
 
     if ($ExitCode -ne 0) {
@@ -266,7 +283,7 @@ try {
     Push-Location $CustomRasterizer
     try {
         Invoke-Checked "Building custom_rasterizer through PyTorch ROCm/HIPify..." {
-            & $PythonExe -m pip install --no-build-isolation --force-reinstall --no-deps .
+            & $PythonExe -m pip install --verbose --no-build-isolation --force-reinstall --no-deps .
         }
     } finally {
         Pop-Location
@@ -282,7 +299,7 @@ try {
 Push-Location $DifferentiableRenderer
 try {
     Invoke-Checked "Building differentiable_renderer mesh_processor extension..." {
-        & $PythonExe -m pip install --no-build-isolation --force-reinstall --no-deps .
+        & $PythonExe -m pip install --verbose --no-build-isolation --force-reinstall --no-deps .
     }
 } finally {
     Pop-Location
@@ -290,8 +307,18 @@ try {
 
 Write-Host ""
 Write-Host "Texture runtime health:" -ForegroundColor Cyan
-$HealthLines = @(& $PythonExe $InstalledWorker texture-health --json 2>&1 | Tee-Object -FilePath $LogPath -Append)
-$HealthExitCode = $LASTEXITCODE
+$PreviousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = "Continue"
+    $HealthLines = @(& $PythonExe $InstalledWorker texture-health --json 2>&1 | ForEach-Object {
+        $Line = [string]$_
+        Add-Content -LiteralPath $LogPath -Value $Line -Encoding UTF8
+        $Line
+    })
+    $HealthExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
 if ($HealthExitCode -ne 0) {
     Show-LogTail
     throw "Texture health command failed with exit code $HealthExitCode."
