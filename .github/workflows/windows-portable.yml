@@ -1,0 +1,73 @@
+name: Windows Portable Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/windows-portable-build
+    paths:
+      - 'apps/desktop/**'
+      - 'backends/hunyuan/**'
+      - 'scripts/setup/**'
+      - 'scripts/smoke/**'
+      - 'scripts/package/**'
+      - '.github/workflows/windows-portable.yml'
+      - 'package.json'
+      - 'README.md'
+
+jobs:
+  build-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install JavaScript dependencies
+        run: npm install
+
+      - name: Validate packaging script syntax
+        shell: powershell
+        run: '[void][scriptblock]::Create((Get-Content scripts/package/windows-portable.ps1 -Raw))'
+
+      - name: Build Tauri executable
+        run: npm run tauri -- build --no-bundle
+
+      - name: Assemble portable package
+        shell: powershell
+        run: |
+          .\scripts\package\windows-portable.ps1 `
+            -ExePath '.\apps\desktop\src-tauri\target\release\img2model-amd.exe'
+
+      - name: Verify portable package
+        shell: powershell
+        run: |
+          $root = Resolve-Path '.\dist-portable\Img2ModelAMD'
+          $required = @(
+            'Img2ModelAMD.exe',
+            'README.md',
+            'run-img2model-amd.cmd',
+            'setup-amd-runtime.cmd',
+            'smoke-test-amd.cmd',
+            'scripts\setup\windows-native-rocm.ps1',
+            'scripts\smoke\windows-native-rocm.ps1',
+            'backends\hunyuan\worker.py',
+            'backends\hunyuan\requirements-base.txt'
+          )
+          foreach ($relative in $required) {
+            $path = Join-Path $root $relative
+            if (-not (Test-Path $path)) { throw "Missing portable file: $path" }
+          }
+          Get-ChildItem -Recurse $root | Select-Object FullName, Length
+
+      - name: Upload Windows portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Img2ModelAMD-windows-portable
+          path: dist-portable/Img2ModelAMD/
+          if-no-files-found: error
+          retention-days: 14
