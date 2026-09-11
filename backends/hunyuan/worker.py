@@ -137,6 +137,36 @@ def texture_health_payload() -> dict[str, Any]:
     }
 
 
+def load_hunyuan_paint_pipeline(
+    paint_pipeline_class: Any,
+    multiview_module: Any,
+    model: str,
+    subfolder: str,
+) -> Any:
+    """Load Hunyuan Paint while allowing its bundled local Diffusers pipeline.
+
+    Newer Diffusers/Hugging Face Hub releases require trust_remote_code=True even
+    when Hunyuan passes a local custom_pipeline directory. Upstream Hunyuan3D-2
+    does not pass that flag. Patch only the module-local DiffusionPipeline symbol
+    during construction so the compatibility shim cannot affect shape inference
+    or unrelated Diffusers users in the worker process.
+    """
+
+    original_diffusion_pipeline = multiview_module.DiffusionPipeline
+
+    class TrustedLocalDiffusionPipeline:
+        @staticmethod
+        def from_pretrained(*args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("trust_remote_code", True)
+            return original_diffusion_pipeline.from_pretrained(*args, **kwargs)
+
+    multiview_module.DiffusionPipeline = TrustedLocalDiffusionPipeline
+    try:
+        return paint_pipeline_class.from_pretrained(model, subfolder=subfolder)
+    finally:
+        multiview_module.DiffusionPipeline = original_diffusion_pipeline
+
+
 def run_health(_args: argparse.Namespace) -> int:
     print(json.dumps(health_payload(), ensure_ascii=False), flush=True)
     return 0
@@ -296,6 +326,7 @@ def run_texture(args: argparse.Namespace) -> int:
         import trimesh  # type: ignore
         from PIL import Image  # type: ignore
         from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore
+        import hy3dgen.texgen.utils.multiview_utils as multiview_utils  # type: ignore
 
         emit("progress", ok=True, stage="preparing_input", progress=0.12)
         mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
@@ -309,9 +340,11 @@ def run_texture(args: argparse.Namespace) -> int:
             torch.cuda.empty_cache()
 
         emit("progress", ok=True, stage="loading_model", progress=0.2)
-        pipeline = Hunyuan3DPaintPipeline.from_pretrained(
+        pipeline = load_hunyuan_paint_pipeline(
+            Hunyuan3DPaintPipeline,
+            multiview_utils,
             args.model,
-            subfolder=args.subfolder,
+            args.subfolder,
         )
         if args.cpu_offload:
             pipeline.enable_model_cpu_offload()
