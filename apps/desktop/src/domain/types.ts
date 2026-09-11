@@ -65,3 +65,12 @@ export interface WorkerHealth {
   device_name?: string | null;
   error?: string | null;
 }
+
+export interface TextureHealth {
+  ok: boolean;
+  texgen_available: boolean;
+  custom_rasterizer_available: boolean;
+  mesh_processor_available: boolean;
+  texture_import_ok: boolean;
+  error?: string | null;
+}
