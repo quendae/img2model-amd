@@ -51,9 +51,16 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         text = TEXTURE_SETUP.read_text(encoding="utf-8")
         self.assertIn('Join-Path $RuntimeDir "logs"', text)
         self.assertIn('texture-setup-', text)
-        self.assertIn('Tee-Object -FilePath $LogPath -Append', text)
         self.assertIn('Get-Content -LiteralPath $LogPath -Tail 80', text)
         self.assertIn('Full log', text)
+
+    def test_texture_setup_native_logging_is_utf8_verbose_and_does_not_abort_on_stderr(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn('$env:PYTHONIOENCODING = "utf-8"', text)
+        self.assertIn('$ErrorActionPreference = "Continue"', text)
+        self.assertNotIn('Tee-Object -FilePath $LogPath -Append', text)
+        self.assertIn('Add-Content -LiteralPath $LogPath -Value ([string]$_) -Encoding UTF8', text)
+        self.assertIn('-m pip install --verbose --no-build-isolation', text)
 
     def test_texture_setup_keeps_hip_runtime_headers_out_of_msvc_host_compilation(self) -> None:
         text = TEXTURE_SETUP.read_text(encoding="utf-8")
