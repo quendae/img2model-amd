@@ -26,8 +26,23 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertIn("python", payload)
         self.assertIn("torch_available", payload)
         self.assertIn("hunyuan_available", payload)
+        self.assertIn("hunyuan_import_ok", payload)
         self.assertIn("hip_version", payload)
+        self.assertIn("gpu_available", payload)
         self.assertIn("device_name", payload)
+
+    def test_probe_always_returns_machine_readable_result(self) -> None:
+        result = self.run_worker("probe", "--json")
+        self.assertTrue(result.stdout.strip(), result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn("ok", payload)
+        if payload["ok"]:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("checksum", payload)
+            self.assertIn("device", payload)
+        else:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("error", payload)
 
     def test_generate_rejects_missing_input_with_json_error(self) -> None:
         missing = Path(__file__).resolve().parent / "does-not-exist.png"
