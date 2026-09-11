@@ -24,3 +24,10 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m unittest discover -s backends/hunyuan/tests -v
+
+  rust-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
