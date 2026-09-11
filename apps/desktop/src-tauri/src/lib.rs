@@ -15,8 +15,20 @@ fn hunyuan_health() -> Result<worker::WorkerHealth, String> {
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+fn hunyuan_texture_health() -> Result<worker::TextureHealth, String> {
+    worker::worker_texture_health()
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 fn generate_shape(request: worker::GenerateRequest) -> Result<worker::GenerateResult, String> {
     worker::generate_shape(request)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn texture_mesh(request: worker::TextureRequest) -> Result<worker::GenerateResult, String> {
+    worker::texture_mesh(request)
 }
 
 #[cfg(feature = "desktop")]
@@ -27,7 +39,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_system_diagnostics,
             hunyuan_health,
-            generate_shape
+            hunyuan_texture_health,
+            generate_shape,
+            texture_mesh
         ])
         .run(tauri::generate_context!())
         .expect("error while running Img2Model AMD");
