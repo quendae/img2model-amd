@@ -16,6 +16,16 @@ pub struct WorkerHealth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextureHealth {
+    pub ok: bool,
+    pub texgen_available: bool,
+    pub custom_rasterizer_available: bool,
+    pub mesh_processor_available: bool,
+    pub texture_import_ok: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateRequest {
     pub backend: String,
@@ -25,6 +35,19 @@ pub struct GenerateRequest {
     pub subfolder: Option<String>,
     pub steps: u32,
     pub seed: u64,
+    pub remove_background: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextureRequest {
+    pub backend: String,
+    pub mesh: String,
+    pub image: String,
+    pub output: String,
+    pub model: Option<String>,
+    pub subfolder: Option<String>,
+    pub cpu_offload: bool,
     pub remove_background: bool,
 }
 
@@ -113,6 +136,19 @@ pub fn worker_health() -> Result<WorkerHealth, String> {
     }
 }
 
+pub fn worker_texture_health() -> Result<TextureHealth, String> {
+    let output = run_worker(&["texture-health".to_string(), "--json".to_string()])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let health: TextureHealth = parse_last_json_line(&stdout)?;
+
+    if output.status.success() {
+        Ok(health)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Texture health command failed: {}", stderr.trim()))
+    }
+}
+
 pub fn generate_shape(request: GenerateRequest) -> Result<GenerateResult, String> {
     if !backend_is_implemented(&request.backend) {
         return Err(format!(
@@ -157,6 +193,61 @@ pub fn generate_shape(request: GenerateRequest) -> Result<GenerateResult, String
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Generation worker failed: {}", stderr.trim()))
+    }
+}
+
+pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String> {
+    if !backend_is_implemented(&request.backend) {
+        return Err(format!(
+            "Backend '{}' is not implemented for texture generation. Select native-rocm; no silent fallback was applied.",
+            request.backend
+        ));
+    }
+
+    let model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| "tencent/Hunyuan3D-2".to_string());
+    let subfolder = request
+        .subfolder
+        .clone()
+        .unwrap_or_else(|| "hunyuan3d-paint-v2-0-turbo".to_string());
+
+    let mut arguments = vec![
+        "texture".to_string(),
+        "--mesh".to_string(),
+        request.mesh.clone(),
+        "--image".to_string(),
+        request.image.clone(),
+        "--output".to_string(),
+        request.output.clone(),
+        "--model".to_string(),
+        model,
+        "--subfolder".to_string(),
+        subfolder,
+    ];
+
+    if request.cpu_offload {
+        arguments.push("--cpu-offload".to_string());
+    }
+    if request.remove_background {
+        arguments.push("--remove-background".to_string());
+    }
+
+    Ok(arguments)
+}
+
+pub fn texture_mesh(request: TextureRequest) -> Result<GenerateResult, String> {
+    let arguments = texture_arguments(&request)?;
+    let output = run_worker(&arguments)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: GenerateResult = parse_last_json_line(&stdout)?;
+
+    if output.status.success() || !result.ok {
+        Ok(result)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Texture worker failed: {}", stderr.trim()))
     }
 }
 
