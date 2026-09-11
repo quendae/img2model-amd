@@ -31,10 +31,12 @@ def module_available(name: str) -> bool:
 def health_payload() -> dict[str, Any]:
     torch_available = module_available("torch")
     hunyuan_available = module_available("hy3dgen")
+    hunyuan_import_ok = False
     torch_version: str | None = None
     hip_version: str | None = None
+    gpu_available = False
     device_name: str | None = None
-    error: str | None = None
+    errors: list[str] = []
 
     if torch_available:
         try:
@@ -43,28 +45,91 @@ def health_payload() -> dict[str, Any]:
             torch_version = getattr(torch, "__version__", None)
             version = getattr(torch, "version", None)
             hip_version = getattr(version, "hip", None) if version else None
-            if torch.cuda.is_available():
+            gpu_available = bool(torch.cuda.is_available())
+            if gpu_available:
                 device_name = torch.cuda.get_device_name(0)
         except Exception as exc:  # health must remain callable on broken installs
-            error = f"PyTorch probe failed: {exc}"
+            errors.append(f"PyTorch probe failed: {type(exc).__name__}: {exc}")
 
-    usable = bool(torch_available and hunyuan_available and hip_version)
+    if hunyuan_available:
+        try:
+            from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline  # type: ignore  # noqa: F401
+
+            hunyuan_import_ok = True
+        except Exception as exc:  # keep diagnostics callable on dependency mismatches
+            errors.append(f"Hunyuan import failed: {type(exc).__name__}: {exc}")
+
+    usable = bool(
+        torch_available
+        and hunyuan_available
+        and hunyuan_import_ok
+        and hip_version
+        and gpu_available
+    )
     return {
         "ok": usable,
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "torch_available": torch_available,
         "hunyuan_available": hunyuan_available,
+        "hunyuan_import_ok": hunyuan_import_ok,
         "torch_version": torch_version,
         "hip_version": hip_version,
+        "gpu_available": gpu_available,
         "device_name": device_name,
-        "error": error,
+        "error": "; ".join(errors) if errors else None,
     }
 
 
 def run_health(_args: argparse.Namespace) -> int:
     print(json.dumps(health_payload(), ensure_ascii=False), flush=True)
     return 0
+
+
+def run_probe(_args: argparse.Namespace) -> int:
+    try:
+        import torch  # type: ignore
+
+        hip_version = getattr(torch.version, "hip", None)
+        if not hip_version:
+            raise RuntimeError("torch.version.hip is empty; this is not an ROCm PyTorch build")
+        if not torch.cuda.is_available():
+            raise RuntimeError("ROCm PyTorch does not expose an available GPU")
+
+        device = torch.device("cuda")
+        a = torch.arange(1024 * 1024, dtype=torch.float32, device=device).reshape(1024, 1024)
+        b = torch.eye(1024, dtype=torch.float32, device=device)
+        c = a @ b
+        checksum = float(c[0, 0].item() + c[-1, -1].item())
+        properties = torch.cuda.get_device_properties(0)
+
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "torch": torch.__version__,
+                    "hip": hip_version,
+                    "device": torch.cuda.get_device_name(0),
+                    "vram_gb": round(properties.total_memory / (1024**3), 2),
+                    "checksum": checksum,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return 0
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return 1
 
 
 def run_generate(args: argparse.Namespace) -> int:
@@ -143,6 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
     health = subparsers.add_parser("health", help="Probe the Python/ROCm/Hunyuan runtime")
     health.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
     health.set_defaults(func=run_health)
+
+    probe = subparsers.add_parser("probe", help="Run a real ROCm tensor operation on the selected GPU")
+    probe.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
+    probe.set_defaults(func=run_probe)
 
     generate = subparsers.add_parser("generate", help="Generate a shape from one image")
     generate.add_argument("--input", required=True)
