@@ -28,6 +28,7 @@ if ([string]::IsNullOrWhiteSpace($PythonExe)) {
     $PythonExe = Join-Path $RuntimeDir "Scripts\python.exe"
 }
 $PythonExe = [System.IO.Path]::GetFullPath($PythonExe)
+$PythonScripts = Split-Path -Parent $PythonExe
 $InstalledWorker = Join-Path $RuntimeDir "worker.py"
 $SourceRoot = Join-Path $RuntimeDir "texture-build\hunyuan-src"
 $ArchivePath = Join-Path $RuntimeDir "texture-build\hunyuan.zip"
@@ -77,7 +78,7 @@ $RocmHome = [System.IO.Path]::GetFullPath([string]$Torch.rocm_home)
 $env:ROCM_HOME = $RocmHome
 $env:ROCM_PATH = $RocmHome
 $env:PYTORCH_ROCM_ARCH = $GpuArch
-$env:PATH = (Join-Path $RocmHome "bin") + ";" + $env:PATH
+$env:PATH = $PythonScripts + ";" + (Join-Path $RocmHome "bin") + ";" + $env:PATH
 
 Write-Host "ROCm extension compiler diagnostics:" -ForegroundColor Cyan
 Write-Host "  torch        : $($Torch.torch)"
@@ -87,6 +88,19 @@ Write-Host "  HIP extension: $($Torch.is_hip_extension)"
 Write-Host "  hipcc        : $((Get-Command hipcc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue))"
 Write-Host "  clang++      : $((Get-Command clang++.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue))"
 Write-Host "  cl.exe       : $((Get-Command cl.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue))"
+Write-Host ""
+
+# PyTorch 2.13's Windows ROCm extension path is substantially more reliable with
+# Ninja. In particular, the distutils fallback observed on the RX 6950 XT omitted
+# the C++20 language flag required by current PyTorch headers.
+Invoke-Checked "Installing/upgrading Ninja build backend..." {
+    & $PythonExe -m pip install --upgrade ninja
+}
+$NinjaPath = Get-Command ninja.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+if ([string]::IsNullOrWhiteSpace([string]$NinjaPath)) {
+    throw "Ninja was installed into the runtime but ninja.exe is still not visible on PATH: $PythonScripts"
+}
+Write-Host "  Ninja build backend: $NinjaPath"
 Write-Host ""
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArchivePath) | Out-Null
@@ -121,13 +135,31 @@ Assert-File (Join-Path $DifferentiableRenderer "setup.py") "differentiable_rende
 
 Copy-Item -Force $WorkerSource $InstalledWorker
 
-Push-Location $CustomRasterizer
+# The upstream custom_rasterizer setup.py does not specify a language standard.
+# PyTorch 2.13 headers require C++20. Force it for MSVC even if BuildExtension
+# unexpectedly falls back from Ninja again; restore the user's CL afterwards.
+$PreviousCl = [Environment]::GetEnvironmentVariable("CL", "Process")
 try {
-    Invoke-Checked "Building custom_rasterizer through PyTorch ROCm/HIPify..." {
-        & $PythonExe -m pip install --no-build-isolation --force-reinstall --no-deps .
+    if ([string]::IsNullOrWhiteSpace($PreviousCl)) {
+        $env:CL = "/std:c++20"
+    } elseif ($PreviousCl -notmatch "(^|\s)/std:c\+\+(20|latest)(\s|$)") {
+        $env:CL = "/std:c++20 $PreviousCl"
+    }
+
+    Push-Location $CustomRasterizer
+    try {
+        Invoke-Checked "Building custom_rasterizer through PyTorch ROCm/HIPify..." {
+            & $PythonExe -m pip install --no-build-isolation --force-reinstall --no-deps .
+        }
+    } finally {
+        Pop-Location
     }
 } finally {
-    Pop-Location
+    if ($null -eq $PreviousCl) {
+        Remove-Item Env:CL -ErrorAction SilentlyContinue
+    } else {
+        $env:CL = $PreviousCl
+    }
 }
 
 Push-Location $DifferentiableRenderer
