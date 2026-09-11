@@ -1,7 +1,7 @@
 param(
     [string]$PythonExe = $env:IMG2MODEL_PYTHON,
     [string]$RuntimeDir = "",
-    [string]$HunyuanRef = "main",
+    [string]$HunyuanRef = "f8db63096c8282cb27354314d896feba5ba6ff8a",
     [string]$GpuArch = "gfx1030",
     [switch]$ForceRebuild
 )
