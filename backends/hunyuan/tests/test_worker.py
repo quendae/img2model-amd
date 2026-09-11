@@ -4,6 +4,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 WORKER = Path(__file__).resolve().parents[1] / "worker.py"
@@ -150,6 +151,38 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["event"], "error")
         self.assertIn("Input image does not exist", payload["error"])
+
+    def test_hunyuan_paint_loader_trusts_local_custom_pipeline_and_restores_module(self) -> None:
+        module = self.load_worker_module()
+        calls: list[dict[str, object]] = []
+
+        class OriginalDiffusionPipeline:
+            @staticmethod
+            def from_pretrained(*args, **kwargs):
+                calls.append(dict(kwargs))
+                return "inner-pipeline"
+
+        multiview_module = SimpleNamespace(DiffusionPipeline=OriginalDiffusionPipeline)
+
+        class FakePaintPipeline:
+            @staticmethod
+            def from_pretrained(model, subfolder):
+                inner = multiview_module.DiffusionPipeline.from_pretrained(
+                    "local-checkpoint",
+                    custom_pipeline="local-custom-pipeline",
+                )
+                return (model, subfolder, inner)
+
+        result = module.load_hunyuan_paint_pipeline(
+            FakePaintPipeline,
+            multiview_module,
+            "tencent/Hunyuan3D-2",
+            "hunyuan3d-paint-v2-0-turbo",
+        )
+
+        self.assertEqual(result[2], "inner-pipeline")
+        self.assertTrue(calls[-1]["trust_remote_code"])
+        self.assertIs(multiview_module.DiffusionPipeline, OriginalDiffusionPipeline)
 
 
 if __name__ == "__main__":
