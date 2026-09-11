@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import subprocess
 import sys
@@ -47,6 +48,25 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["event"], "error")
         self.assertIn("Input image does not exist", payload["error"])
+
+    def test_generate_defaults_to_official_mini_fp16_variant(self) -> None:
+        spec = importlib.util.spec_from_file_location("img2model_hunyuan_worker", WORKER)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        parser = module.build_parser()
+        args = parser.parse_args(
+            [
+                "generate",
+                "--input",
+                "input.png",
+                "--output",
+                "output.glb",
+            ]
+        )
+        self.assertEqual(args.variant, "fp16")
 
 
 if __name__ == "__main__":
