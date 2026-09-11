@@ -3,14 +3,22 @@ import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { GenerationPanel } from './components/GenerationPanel';
 import { InputPanel } from './components/InputPanel';
 import { ModelViewer } from './components/ModelViewer';
-import type { BackendId, GenerationOptions, SystemDiagnostics, WorkerHealth } from './domain/types';
+import type {
+  BackendId,
+  GenerationOptions,
+  SystemDiagnostics,
+  TextureHealth,
+  WorkerHealth,
+} from './domain/types';
 import {
   chooseInputImage,
   chooseOutputModel,
   generateShape,
   getHunyuanHealth,
+  getHunyuanTextureHealth,
   getSystemDiagnostics,
   localAssetUrl,
+  textureMesh,
 } from './lib/tauri';
 
 const profileSteps: Record<GenerationOptions['profile'], number> = {
@@ -18,6 +26,13 @@ const profileSteps: Record<GenerationOptions['profile'], number> = {
   balanced: 30,
   quality: 50,
 };
+
+function addSuffixBeforeExtension(path: string, suffix: string): string {
+  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const dot = path.lastIndexOf('.');
+  if (dot <= separator) return `${path}${suffix}`;
+  return `${path.slice(0, dot)}${suffix}${path.slice(dot)}`;
+}
 
 export function App() {
   const [inputPath, setInputPath] = useState<string | null>(null);
@@ -27,11 +42,13 @@ export function App() {
   const [seed, setSeed] = useState(1234);
   const [steps, setSteps] = useState(profileSteps.balanced);
   const [removeBackground, setRemoveBackground] = useState(true);
+  const [texture, setTexture] = useState(false);
   const [busy, setBusy] = useState(false);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [healthLoading, setHealthLoading] = useState(false);
   const [diagnostics, setDiagnostics] = useState<SystemDiagnostics | null>(null);
   const [health, setHealth] = useState<WorkerHealth | null>(null);
+  const [textureHealth, setTextureHealth] = useState<TextureHealth | null>(null);
   const [message, setMessage] = useState('Choose a source image to begin.');
   const [error, setError] = useState<string | null>(null);
 
@@ -59,9 +76,28 @@ export function App() {
     try {
       const result = await getHunyuanHealth();
       setHealth(result);
-      setMessage(result.ok ? 'Hunyuan runtime is ready.' : 'Hunyuan runtime needs setup or repair.');
+
+      try {
+        const textureResult = await getHunyuanTextureHealth();
+        setTextureHealth(textureResult);
+        if (!textureResult.ok) setTexture(false);
+        setMessage(
+          result.ok
+            ? textureResult.ok
+              ? 'Hunyuan shape and texture runtimes are ready.'
+              : 'Hunyuan shape is ready; texture extensions still need setup.'
+            : 'Hunyuan runtime needs setup or repair.',
+        );
+      } catch (textureReason) {
+        setTextureHealth(null);
+        setTexture(false);
+        setMessage(result.ok ? 'Hunyuan shape is ready; texture runtime is not available.' : 'Hunyuan runtime needs setup or repair.');
+        if (!result.ok) setError(String(textureReason));
+      }
     } catch (reason) {
       setHealth(null);
+      setTextureHealth(null);
+      setTexture(false);
       setError(String(reason));
     } finally {
       setHealthLoading(false);
@@ -87,6 +123,8 @@ export function App() {
     const output = await chooseOutputModel();
     if (!output) return;
 
+    const shapeOutput = texture ? addSuffixBeforeExtension(output, '-shape') : output;
+
     setBusy(true);
     setError(null);
     setMessage('Running Hunyuan shape generation…');
@@ -94,7 +132,7 @@ export function App() {
       const result = await generateShape({
         backend,
         input: inputPath,
-        output,
+        output: shapeOutput,
         model: 'tencent/Hunyuan3D-2mini',
         subfolder: 'hunyuan3d-dit-v2-mini',
         steps,
@@ -108,12 +146,46 @@ export function App() {
         return;
       }
 
-      const generatedPath = result.output ?? output;
-      setModelPath(generatedPath);
-      setMessage(`Completed: ${generatedPath}`);
+      const generatedShapePath = result.output ?? shapeOutput;
+      setModelPath(generatedShapePath);
+
+      if (!texture) {
+        setMessage(`Shape completed: ${generatedShapePath}`);
+        return;
+      }
+
+      if (!textureHealth?.ok) {
+        setError(`Texture runtime is not healthy. Shape was preserved at: ${generatedShapePath}`);
+        setMessage('Shape completed; texture stage was skipped.');
+        return;
+      }
+
+      setMessage('Shape completed. Running Hunyuan Paint texture stage…');
+      const textureResult = await textureMesh({
+        backend,
+        mesh: generatedShapePath,
+        image: inputPath,
+        output,
+        model: 'tencent/Hunyuan3D-2',
+        subfolder: 'hunyuan3d-paint-v2-0-turbo',
+        cpuOffload: true,
+        removeBackground,
+      });
+
+      if (!textureResult.ok) {
+        setError(
+          `${textureResult.error ?? 'Texture generation failed without an error message.'}\n\nShape preserved at: ${generatedShapePath}`,
+        );
+        setMessage('Shape completed; texture stage failed.');
+        return;
+      }
+
+      const texturedPath = textureResult.output ?? output;
+      setModelPath(texturedPath);
+      setMessage(`Shape + texture completed: ${texturedPath}`);
     } catch (reason) {
       setError(String(reason));
-      setMessage('Generation failed.');
+      setMessage(modelPath ? 'Texture stage failed; shape output was preserved.' : 'Generation failed.');
     } finally {
       setBusy(false);
     }
@@ -153,6 +225,8 @@ export function App() {
             seed={seed}
             steps={steps}
             removeBackground={removeBackground}
+            texture={texture}
+            textureAvailable={Boolean(textureHealth?.ok)}
             busy={busy}
             canGenerate={Boolean(inputPath)}
             onBackendChange={setBackend}
@@ -160,6 +234,7 @@ export function App() {
             onSeedChange={setSeed}
             onStepsChange={setSteps}
             onRemoveBackgroundChange={setRemoveBackground}
+            onTextureChange={setTexture}
             onGenerate={runGeneration}
           />
         </aside>
@@ -191,7 +266,7 @@ export function App() {
             <div className="activity-meta">
               <span>Model</span><strong>Hunyuan3D 2 Mini</strong>
               <span>Output</span><strong>GLB / OBJ</strong>
-              <span>Texture</span><strong>Shape only (MVP)</strong>
+              <span>Texture</span><strong>{textureHealth?.ok ? 'Hunyuan Paint ready' : 'Optional · runtime not ready'}</strong>
             </div>
           </section>
         </aside>
