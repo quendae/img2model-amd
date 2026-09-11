@@ -98,7 +98,7 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(args.variant, "fp16")
 
-    def test_texture_defaults_to_official_paint_model(self) -> None:
+    def test_texture_defaults_to_validated_rx6950xt_safe_profile(self) -> None:
         module = self.load_worker_module()
         parser = module.build_parser()
         args = parser.parse_args(
@@ -115,7 +115,28 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(args.model, "tencent/Hunyuan3D-2")
         self.assertEqual(args.subfolder, "hunyuan3d-paint-v2-0-turbo")
         self.assertEqual(args.max_faces, 40000)
+        self.assertTrue(args.cpu_offload)
+        self.assertEqual(args.attention_slicing, "max")
+
+    def test_texture_allows_explicitly_disabling_low_vram_features(self) -> None:
+        module = self.load_worker_module()
+        parser = module.build_parser()
+        args = parser.parse_args(
+            [
+                "texture",
+                "--mesh",
+                "input.glb",
+                "--image",
+                "input.png",
+                "--output",
+                "textured.glb",
+                "--no-cpu-offload",
+                "--attention-slicing",
+                "off",
+            ]
+        )
         self.assertFalse(args.cpu_offload)
+        self.assertEqual(args.attention_slicing, "off")
 
     def test_texture_preprocess_matches_official_hunyuan_flow(self) -> None:
         module = self.load_worker_module()
@@ -153,6 +174,51 @@ class WorkerProtocolTests(unittest.TestCase):
                 ("reduce", "after-degenerate", 40000),
             ],
         )
+
+    def test_texture_memory_profile_enables_cpu_offload_and_max_attention_slicing(self) -> None:
+        module = self.load_worker_module()
+        calls: list[object] = []
+
+        class MultiviewPipeline:
+            def enable_attention_slicing(self, slice_size):
+                calls.append(("attention_slicing", slice_size))
+
+        class PaintPipeline:
+            def __init__(self):
+                self.models = {
+                    "multiview_model": SimpleNamespace(pipeline=MultiviewPipeline())
+                }
+
+            def enable_model_cpu_offload(self):
+                calls.append(("cpu_offload",))
+
+        pipeline = PaintPipeline()
+        module.configure_texture_memory_profile(
+            pipeline,
+            cpu_offload=True,
+            attention_slicing="max",
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                ("cpu_offload",),
+                ("attention_slicing", "max"),
+            ],
+        )
+
+    def test_texture_memory_profile_rejects_missing_attention_slicing_api(self) -> None:
+        module = self.load_worker_module()
+        pipeline = SimpleNamespace(
+            models={"multiview_model": SimpleNamespace(pipeline=SimpleNamespace())}
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "attention slicing"):
+            module.configure_texture_memory_profile(
+                pipeline,
+                cpu_offload=False,
+                attention_slicing="max",
+            )
 
     def test_texture_rejects_missing_mesh_with_json_error(self) -> None:
         missing_mesh = Path(__file__).resolve().parent / "does-not-exist.glb"
