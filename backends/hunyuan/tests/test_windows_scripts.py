@@ -89,6 +89,17 @@ class WindowsScriptRegressionTests(unittest.TestCase):
             'Windows PowerShell 5.1 UTF8 Set-Content writes a BOM that hipify can move into rasterizer_hip.h',
         )
 
+    def test_texture_setup_initializes_therock_devel_tree_for_thrust_headers(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn('rocm-sdk.exe', text)
+        self.assertIn('Initializing TheRock development tree', text)
+        self.assertIn('path --root', text)
+        self.assertIn('thrust\\complex.h', text)
+        self.assertIn('$RocmDevelRoot', text)
+        self.assertIn('$env:ROCM_HOME = $RocmDevelRoot', text)
+        self.assertIn('$env:CPATH', text)
+        self.assertIn('$env:CPLUS_INCLUDE_PATH', text)
+
 
 if __name__ == "__main__":
     unittest.main()
