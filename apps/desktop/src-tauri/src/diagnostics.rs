@@ -19,7 +19,7 @@ pub fn parse_gpu_names(output: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_gpu_names;
+    use super::{parse_gpu_names, python_executable_from_override};
 
     #[test]
     fn parses_and_deduplicates_amd_gpu_names() {
@@ -36,5 +36,23 @@ mod tests {
     #[test]
     fn ignores_empty_gpu_lines() {
         assert_eq!(parse_gpu_names("\r\n  \n"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn explicit_python_override_wins() {
+        assert_eq!(
+            python_executable_from_override(Some("C:\\amd-python\\python.exe")),
+            "C:\\amd-python\\python.exe"
+        );
+    }
+
+    #[test]
+    fn python_defaults_to_platform_launcher_name() {
+        let value = python_executable_from_override(None);
+        if cfg!(windows) {
+            assert_eq!(value, "python.exe");
+        } else {
+            assert_eq!(value, "python3");
+        }
     }
 }

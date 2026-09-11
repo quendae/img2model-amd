@@ -12,7 +12,8 @@ pub fn resolve_worker_path(start: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_worker_path;
+    use super::{backend_is_implemented, parse_last_json_line, resolve_worker_path};
+    use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
 
@@ -35,5 +36,26 @@ mod tests {
     fn returns_none_when_worker_is_not_present() {
         let start = PathBuf::from("/definitely/not/a/repository");
         assert_eq!(resolve_worker_path(&start), None);
+    }
+
+    #[test]
+    fn parses_final_json_event_after_progress_lines() {
+        let stdout = "{\"event\":\"progress\",\"progress\":0.5}\n{\"event\":\"completed\",\"ok\":true,\"output\":\"mesh.glb\"}\n";
+        let value: Value = parse_last_json_line(stdout).unwrap();
+        assert_eq!(value["event"], "completed");
+        assert_eq!(value["output"], "mesh.glb");
+    }
+
+    #[test]
+    fn malformed_final_worker_line_is_an_error() {
+        let error = parse_last_json_line("progress\nnot-json\n").unwrap_err();
+        assert!(error.contains("valid JSON"));
+    }
+
+    #[test]
+    fn only_native_rocm_is_executable_in_first_vertical_slice() {
+        assert!(backend_is_implemented("native-rocm"));
+        assert!(!backend_is_implemented("wsl-rocm"));
+        assert!(!backend_is_implemented("vulkan"));
     }
 }
