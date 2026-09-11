@@ -12,14 +12,14 @@ The initial hardware target is the **Radeon RX 6950 XT (16 GB, gfx1030)**. The a
 - React/TypeScript generation UI
 - AMD GPU, WSL and Python diagnostics
 - Hunyuan runtime health check
-- Hunyuan3D-2 Mini image-to-shape worker
+- Hunyuan3D-2 Mini image-to-shape worker using the `fp16` Mini weights by default
 - PNG/JPG/WEBP input selection
 - Fast / Balanced / Quality step presets
 - Seed and optional background removal
 - GLB and OBJ worker export
-- Interactive Three.js GLB preview
+- Interactive Three.js GLB and OBJ preview
 - Explicit backend policy: **no silent fallback**
-- Unit tests for backend selection, job state transitions, worker protocol and Rust bridge helpers
+- Unit tests for backend selection, job state transitions, preview formats, worker protocol and Rust bridge helpers
 - CI on Linux plus Windows desktop compilation
 
 ## Architecture
@@ -31,7 +31,7 @@ Tauri desktop app
   ├─ Rust diagnostics + process bridge
   │    └─ native-rocm worker
   │         └─ Python + ROCm PyTorch + Hunyuan3D
-  ├─ wsl-rocm      (planned)
+  ├─ wsl-rocm       (planned)
   └─ Vulkan/TRELLIS (planned / experimental)
 ```
 
@@ -39,15 +39,15 @@ The ML runtime is kept outside the desktop process. A failed model import or inf
 
 ## RX 6950 XT / gfx1030 setup on Windows
 
-TheRock now publishes Windows ROCm/PyTorch packages for `gfx1030`. This project installs them into a repository-local virtual environment rather than modifying global Python.
+TheRock now publishes Windows ROCm/PyTorch packages for `gfx1030`. This project installs them into an isolated per-user runtime rather than modifying global Python.
 
 ### Prerequisites
 
 - Windows 11
 - current AMD display driver
 - Python **3.11 x64** with the Windows `py` launcher
-- Node.js 22+
-- Rust stable toolchain
+- Node.js 22+ for development builds
+- Rust stable toolchain for development builds
 - Microsoft WebView2 Runtime (normally already present on Windows 11)
 
 ### Automated runtime setup
@@ -73,26 +73,25 @@ If the stable stream has a packaging regression or lacks a dependency needed by 
 
 Nightly packages can occasionally have ABI regressions, so stable is preferred when it works.
 
-The runtime is created at:
+By default the runtime is created at:
 
 ```text
-.runtime/native-rocm/
+%LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\
 ```
 
-and is ignored by Git.
+The setup script copies `worker.py` into that persistent runtime and saves these per-user environment variables:
 
-### Point the desktop app at the runtime
-
-For the current PowerShell session:
-
-```powershell
-$env:IMG2MODEL_PYTHON="$PWD\.runtime\native-rocm\Scripts\python.exe"
+```text
+IMG2MODEL_PYTHON=%LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\Scripts\python.exe
+IMG2MODEL_WORKER=%LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\worker.py
 ```
 
-Optional override if the worker lives somewhere else:
+They are also set for the PowerShell process running setup. This lets a packaged desktop app find the AMD runtime without depending on the repository location.
+
+You can override the runtime destination explicitly:
 
 ```powershell
-$env:IMG2MODEL_WORKER="C:\path\to\img2model-amd\backends\hunyuan\worker.py"
+.\scripts\setup\windows-native-rocm.ps1 -RuntimeDir "D:\Img2ModelRuntime"
 ```
 
 ## Run the desktop app
@@ -108,27 +107,28 @@ Then:
 2. Select an image.
 3. Keep **Native ROCm / TheRock** selected.
 4. Choose a quality profile, seed and background-removal setting.
-5. Click **Generate shape** and select a `.glb` output path.
-6. The generated GLB is loaded into the center 3D viewer.
+5. Click **Generate shape** and select a `.glb` or `.obj` output path.
+6. The generated model is loaded into the center 3D viewer.
 
 The first generation can download several GB of Hunyuan model weights from Hugging Face.
 
 ## Worker CLI
 
-Health check:
+After running setup, start a fresh PowerShell and use the persisted runtime variables:
 
 ```powershell
-.runtime\native-rocm\Scripts\python.exe backends\hunyuan\worker.py health --json
+& $env:IMG2MODEL_PYTHON $env:IMG2MODEL_WORKER health --json
 ```
 
 Shape generation:
 
 ```powershell
-.runtime\native-rocm\Scripts\python.exe backends\hunyuan\worker.py generate `
+& $env:IMG2MODEL_PYTHON $env:IMG2MODEL_WORKER generate `
   --input .\input.png `
   --output .\outputs\model.glb `
   --model tencent/Hunyuan3D-2mini `
   --subfolder hunyuan3d-dit-v2-mini `
+  --variant fp16 `
   --steps 30 `
   --seed 1234 `
   --remove-background
@@ -180,9 +180,9 @@ Selecting an unavailable backend does **not** cause an automatic switch to anoth
 ## Current limitations
 
 - Shape generation only; Hunyuan texture generation is not wired yet.
-- The preview currently loads GLB; the worker can also export OBJ, but OBJ preview is not yet implemented.
 - Generation progress is produced by the Python worker but the first Tauri bridge waits for the worker to finish instead of streaming events live.
 - Cancellation is modeled in the domain state machine but process cancellation is not yet connected to the UI.
+- The runtime installer is currently a PowerShell setup script; it is not yet integrated into the desktop UI or MSI/NSIS installer.
 - WSL2 and Vulkan execution are not yet implemented.
 - The Hunyuan model/runtime is third-party software with its own license terms. Model weights are not bundled with this repository.
 
