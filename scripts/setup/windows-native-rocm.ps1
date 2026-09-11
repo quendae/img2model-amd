@@ -31,8 +31,18 @@ $InstalledWorker = Join-Path $RuntimeDir "worker.py"
 $BaseRequirements = Join-Path $RepoRoot "backends\hunyuan\requirements-base.txt"
 
 switch ($Channel) {
-    "stable"  { $IndexUrl = "https://stable.repo.amd.com/rocm/whl-next/" }
-    "nightly" { $IndexUrl = "https://nightly.repo.amd.com/rocm/whl-next/" }
+    "stable" {
+        $IndexUrl = "https://stable.repo.amd.com/rocm/whl-next/"
+        $RocmSpec = "rocm[libraries,devel,device-gfx1030]==10.0.0"
+        $TorchSpec = "torch[device-gfx1030]==2.13.0+rocm10.0.0"
+        $TorchVisionSpec = "torchvision[device-gfx1030]==0.28.0+rocm10.0.0"
+    }
+    "nightly" {
+        $IndexUrl = "https://nightly.repo.amd.com/rocm/whl-next/"
+        $RocmSpec = "rocm[libraries,devel,device-gfx1030]"
+        $TorchSpec = "torch[device-gfx1030]"
+        $TorchVisionSpec = "torchvision[device-gfx1030]"
+    }
 }
 
 Write-Host "Img2Model AMD native ROCm setup" -ForegroundColor Cyan
@@ -64,7 +74,7 @@ if (-not (Test-Path $PythonExe)) {
 
 if ($VerifyOnly) {
     Write-Host "[2/7] Packaging tools install skipped (VerifyOnly)."
-    Write-Host "[3/7] ROCm/PyTorch install skipped (VerifyOnly)."
+    Write-Host "[3/7] ROCm/PyTorch/torchvision install skipped (VerifyOnly)."
     Write-Host "[4/7] Worker dependency install skipped (VerifyOnly)."
     Write-Host "[5/7] Hunyuan3D install skipped (VerifyOnly)."
 } else {
@@ -72,12 +82,13 @@ if ($VerifyOnly) {
     & $PythonExe -m pip install --upgrade pip setuptools wheel
     if ($LASTEXITCODE -ne 0) { throw "pip bootstrap failed." }
 
-    Write-Host "[3/7] Installing AMD ROCm runtime and PyTorch for gfx1030..."
+    Write-Host "[3/7] Installing AMD ROCm, PyTorch and torchvision for gfx1030..."
     & $PythonExe -m pip install --index-url $IndexUrl `
-        "rocm[libraries,devel,device-gfx1030]" `
-        "torch[device-gfx1030]"
+        $RocmSpec `
+        $TorchSpec `
+        $TorchVisionSpec
     if ($LASTEXITCODE -ne 0) {
-        throw "ROCm/PyTorch installation failed. Try -Channel nightly if stable does not yet contain a compatible gfx1030 build."
+        throw "ROCm/PyTorch/torchvision installation failed. Try -Channel nightly if stable does not contain a compatible gfx1030 build."
     }
 
     Write-Host "[4/7] Installing lightweight Img2Model worker dependencies..."
