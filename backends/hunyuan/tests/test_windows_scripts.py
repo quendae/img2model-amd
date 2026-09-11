@@ -100,6 +100,13 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn('$env:CPATH', text)
         self.assertIn('$env:CPLUS_INCLUDE_PATH', text)
 
+    def test_texture_setup_allows_hunyuanpaint_local_custom_pipeline_code(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn('multiview_utils.py', text)
+        self.assertIn('trust_remote_code=True', text)
+        self.assertIn('Patching Hunyuan Paint custom pipeline trust', text)
+        self.assertIn('WriteAllText($MultiviewUtilsPath', text)
+
 
 if __name__ == "__main__":
     unittest.main()
