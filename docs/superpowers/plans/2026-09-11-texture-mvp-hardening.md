@@ -2,6 +2,8 @@
 
 **Goal:** Turn the hardware-proven RX 6950 XT Hunyuan Paint path into the normal worker flow, with no one-off BAT patches required.
 
+**Status:** Implemented on PR #3. Full CI run `34644540897` passed frontend, Python worker, Rust core, and Windows desktop checks.
+
 **Validated hardware path:** Windows + TheRock/ROCm, Radeon RX 6950 XT 16 GB, Hunyuan3D-2 Paint, official mesh cleanup/reduction, CPU model offload, and maximum Diffusers attention slicing.
 
 ## Scope
@@ -20,14 +22,14 @@
 - [x] Validate the ROCm/HIP texture extensions on RX 6950 XT.
 - [x] Validate an actual textured GLB on RX 6950 XT.
 - [x] Write RED tests requiring CPU offload + MAX attention slicing as defaults.
-- [ ] Make CPU offload + MAX attention slicing the worker defaults and keep opt-out controls.
-- [ ] Emit the active memory profile in texture progress/completion events.
-- [ ] Run Python, frontend, Rust, and Windows CI to green.
-- [ ] Update the PR description and README with the hardware-validated path.
+- [x] Make CPU offload + MAX attention slicing the worker defaults and keep opt-out controls.
+- [x] Emit the active memory profile in texture progress/completion events.
+- [x] Run Python, frontend, Rust, and Windows CI to green.
+- [x] Update the PR description and README with the hardware-validated path.
 
 ## Acceptance criteria
 
-The normal `worker.py texture` command, with no test BAT and no extra patching, must use the same configuration that produced the successful RX 6950 XT textured log asset:
+The normal `worker.py texture` command, with no test BAT and no extra patching, uses the same configuration that produced the successful RX 6950 XT textured log asset:
 
 - mesh cleanup + reduction (`--max-faces 40000` by default),
 - CPU model offload enabled by default,
@@ -35,4 +37,4 @@ The normal `worker.py texture` command, with no test BAT and no extra patching, 
 - explicit `--no-cpu-offload` and `--attention-slicing off` escape hatches,
 - separate output path so the original shape survives any texture failure.
 
-A successful run must report the face count before/after preprocessing plus the selected memory profile in its JSON events.
+A successful run reports the face count before/after preprocessing plus the selected memory profile in its JSON events.
