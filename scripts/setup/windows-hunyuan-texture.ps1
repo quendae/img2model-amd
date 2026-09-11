@@ -131,26 +131,92 @@ if ([string]::IsNullOrWhiteSpace([string]$Torch.rocm_home)) {
     throw "PyTorch could not locate ROCM_HOME from the TheRock runtime."
 }
 
-$RocmHome = [System.IO.Path]::GetFullPath([string]$Torch.rocm_home)
-$DeviceLibPath = Join-Path $RocmHome "lib\llvm\amdgcn\bitcode"
-if (-not (Test-Path -LiteralPath $DeviceLibPath -PathType Container)) {
-    $DeviceLibMarker = Get-ChildItem -LiteralPath $RocmHome -Filter "ocml.bc" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $DeviceLibMarker) {
-        $DeviceLibPath = $DeviceLibMarker.Directory.FullName
+# torch.utils.cpp_extension initially sees the compact _rocm_sdk_core tree. That
+# is sufficient for runtime use, but external HIP extension compilation also
+# needs the development tree (rocThrust/rocPRIM headers such as thrust/complex.h).
+$TorchRocmHome = [System.IO.Path]::GetFullPath([string]$Torch.rocm_home)
+$RocmSdkPath = Join-Path $PythonScripts "rocm-sdk.exe"
+if (-not (Test-Path -LiteralPath $RocmSdkPath -PathType Leaf)) {
+    $RocmSdkCommand = Get-Command rocm-sdk.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace([string]$RocmSdkCommand)) {
+        $RocmSdkPath = $RocmSdkCommand
     }
 }
-if (-not (Test-Path -LiteralPath $DeviceLibPath -PathType Container)) {
-    Show-LogTail
-    throw "ROCm device libraries were not found below the TheRock runtime: $RocmHome"
+Assert-File $RocmSdkPath "TheRock rocm-sdk CLI"
+
+Invoke-Checked "Initializing TheRock development tree..." {
+    & $RocmSdkPath init
 }
 
-$env:ROCM_HOME = $RocmHome
-$env:ROCM_PATH = $RocmHome
-$env:HIP_PATH = $RocmHome
+$PreviousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = "Continue"
+    $RocmRootLines = @(& $RocmSdkPath path --root 2>&1 | ForEach-Object {
+        $Line = [string]$_
+        Add-LogLine $Line
+        $Line
+    })
+    $RocmRootExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
+if ($RocmRootExitCode -ne 0) {
+    Show-LogTail
+    throw "rocm-sdk path --root failed with exit code $RocmRootExitCode."
+}
+
+$RocmDevelRoot = $null
+foreach ($CandidateRootLine in $RocmRootLines) {
+    $CandidateRoot = $CandidateRootLine.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($CandidateRoot) -and (Test-Path -LiteralPath $CandidateRoot -PathType Container)) {
+        $RocmDevelRoot = [System.IO.Path]::GetFullPath($CandidateRoot)
+    }
+}
+if ([string]::IsNullOrWhiteSpace([string]$RocmDevelRoot)) {
+    Show-LogTail
+    throw "rocm-sdk path --root did not return an existing TheRock development tree."
+}
+
+$RocmIncludePath = Join-Path $RocmDevelRoot "include"
+$ThrustHeader = Join-Path $RocmIncludePath "thrust\complex.h"
+Assert-File $ThrustHeader "rocThrust header thrust\complex.h"
+
+$DeviceLibCandidates = @(
+    (Join-Path $RocmDevelRoot "lib\llvm\amdgcn\bitcode"),
+    (Join-Path $TorchRocmHome "lib\llvm\amdgcn\bitcode")
+)
+$DeviceLibPath = $DeviceLibCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace([string]$DeviceLibPath)) {
+    foreach ($SearchRoot in @($RocmDevelRoot, $TorchRocmHome)) {
+        $DeviceLibMarker = Get-ChildItem -LiteralPath $SearchRoot -Filter "ocml.bc" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $DeviceLibMarker) {
+            $DeviceLibPath = $DeviceLibMarker.Directory.FullName
+            break
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace([string]$DeviceLibPath) -or -not (Test-Path -LiteralPath $DeviceLibPath -PathType Container)) {
+    Show-LogTail
+    throw "ROCm device libraries were not found below the TheRock core/devel runtime."
+}
+
+$env:ROCM_HOME = $RocmDevelRoot
+$env:ROCM_PATH = $RocmDevelRoot
+$env:HIP_PATH = $RocmDevelRoot
 $env:HIP_DEVICE_LIB_PATH = $DeviceLibPath
 $env:ROCM_DEVICE_LIB_PATH = $DeviceLibPath
 $env:PYTORCH_ROCM_ARCH = $GpuArch
-$env:PATH = $PythonScripts + ";" + (Join-Path $RocmHome "bin") + ";" + $env:PATH
+if ([string]::IsNullOrWhiteSpace($env:CPATH)) {
+    $env:CPATH = $RocmIncludePath
+} else {
+    $env:CPATH = $RocmIncludePath + [System.IO.Path]::PathSeparator + $env:CPATH
+}
+if ([string]::IsNullOrWhiteSpace($env:CPLUS_INCLUDE_PATH)) {
+    $env:CPLUS_INCLUDE_PATH = $RocmIncludePath
+} else {
+    $env:CPLUS_INCLUDE_PATH = $RocmIncludePath + [System.IO.Path]::PathSeparator + $env:CPLUS_INCLUDE_PATH
+}
+$env:PATH = $PythonScripts + ";" + (Join-Path $RocmDevelRoot "bin") + ";" + $env:PATH
 
 $HipccPath = Get-Command hipcc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
 $ClangPath = Get-Command clang++.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
@@ -159,7 +225,9 @@ $ClPath = Get-Command cl.exe -ErrorAction SilentlyContinue | Select-Object -Expa
 Write-Host "ROCm extension compiler diagnostics:" -ForegroundColor Cyan
 Write-Host "  torch        : $($Torch.torch)"
 Write-Host "  HIP          : $($Torch.hip)"
-Write-Host "  ROCM_HOME    : $RocmHome"
+Write-Host "  core root    : $TorchRocmHome"
+Write-Host "  devel root   : $RocmDevelRoot"
+Write-Host "  include root : $RocmIncludePath"
 Write-Host "  device libs  : $DeviceLibPath"
 Write-Host "  HIP extension: $($Torch.is_hip_extension)"
 Write-Host "  hipcc        : $HipccPath"
@@ -171,7 +239,9 @@ Add-LogLine ""
 Add-LogLine "ROCm extension compiler diagnostics:"
 Add-LogLine ("torch         : {0}" -f $Torch.torch)
 Add-LogLine ("HIP           : {0}" -f $Torch.hip)
-Add-LogLine ("ROCM_HOME     : {0}" -f $RocmHome)
+Add-LogLine ("core root     : {0}" -f $TorchRocmHome)
+Add-LogLine ("devel root    : {0}" -f $RocmDevelRoot)
+Add-LogLine ("include root  : {0}" -f $RocmIncludePath)
 Add-LogLine ("device libs   : {0}" -f $DeviceLibPath)
 Add-LogLine ("HIP extension : {0}" -f $Torch.is_hip_extension)
 Add-LogLine ("hipcc         : {0}" -f $HipccPath)
