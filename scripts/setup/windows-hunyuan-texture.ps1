@@ -188,8 +188,66 @@ if ($ForceRebuild -or -not (Test-Path -LiteralPath $SourceRoot -PathType Contain
 
 $CustomRasterizer = Join-Path $SourceRoot "hy3dgen\texgen\custom_rasterizer"
 $DifferentiableRenderer = Join-Path $SourceRoot "hy3dgen\texgen\differentiable_renderer"
+$RasterizerKernelDir = Join-Path $CustomRasterizer "lib\custom_rasterizer_kernel"
+$RasterizerHeader = Join-Path $RasterizerKernelDir "rasterizer.h"
 Assert-File (Join-Path $CustomRasterizer "setup.py") "custom_rasterizer setup.py"
 Assert-File (Join-Path $DifferentiableRenderer "setup.py") "differentiable_renderer setup.py"
+Assert-File $RasterizerHeader "custom_rasterizer rasterizer.h"
+
+# On Windows PyTorch compiles .cpp host sources with MSVC and the .cu/.hip source
+# with hipcc. Hipify changes CUDAContext.h to HIPContext.h in the shared header;
+# if host MSVC includes that header, ROCm's Clang-only __attribute__ syntax fails.
+# Keep the device context include behind the device compiler guard and make the
+# CUDA/HIP function annotations no-ops for the host-only translation units.
+Write-Host "Patching Hunyuan rasterizer header for MSVC/HIP split..." -ForegroundColor Cyan
+Add-LogLine "Patching Hunyuan rasterizer header for MSVC/HIP split..."
+$RasterizerHeaderText = Get-Content -LiteralPath $RasterizerHeader -Raw
+$CudaContextInclude = '#include <ATen/cuda/CUDAContext.h> // For CUDA context'
+$HostSafeContextBlock = @'
+#if defined(__CUDACC__) || defined(__HIPCC__)
+#include <ATen/cuda/CUDAContext.h> // For CUDA/HIP device context
+#else
+#ifndef __host__
+#define __host__
+#endif
+#ifndef __device__
+#define __device__
+#endif
+#endif
+'@
+
+if ($RasterizerHeaderText.Contains($CudaContextInclude)) {
+    $RasterizerHeaderText = $RasterizerHeaderText.Replace($CudaContextInclude, $HostSafeContextBlock.TrimEnd())
+    Set-Content -LiteralPath $RasterizerHeader -Value $RasterizerHeaderText -Encoding UTF8 -NoNewline
+    Add-LogLine "Applied host-safe rasterizer.h patch."
+} elseif ($RasterizerHeaderText.Contains('defined(__CUDACC__) || defined(__HIPCC__)')) {
+    Add-LogLine "Host-safe rasterizer.h patch already present."
+} else {
+    Show-LogTail
+    throw "Pinned Hunyuan rasterizer.h no longer matches the expected CUDAContext include; refusing to patch an unknown source layout."
+}
+
+# PyTorch hipify leaves generated siblings next to the CUDA sources. Remove them
+# so a rerun after a failed build cannot reuse a pre-patch rasterizer_hip.h.
+$GeneratedHipNames = @(
+    "rasterizer_hip.h",
+    "rasterizer_hip.cpp",
+    "grid_neighbor_hip.cpp",
+    "rasterizer_gpu.hip"
+)
+foreach ($GeneratedHipName in $GeneratedHipNames) {
+    $GeneratedHipPath = Join-Path $RasterizerKernelDir $GeneratedHipName
+    if (Test-Path -LiteralPath $GeneratedHipPath) {
+        Remove-Item -LiteralPath $GeneratedHipPath -Force
+        Add-LogLine ("Removed stale hipify output: {0}" -f $GeneratedHipPath)
+    }
+}
+$CustomBuildDir = Join-Path $CustomRasterizer "build"
+if (Test-Path -LiteralPath $CustomBuildDir) {
+    Remove-Item -LiteralPath $CustomBuildDir -Recurse -Force
+    Add-LogLine ("Removed stale extension build directory: {0}" -f $CustomBuildDir)
+}
+Write-Host "  OK" -ForegroundColor Green
 
 Copy-Item -Force $WorkerSource $InstalledWorker
 
