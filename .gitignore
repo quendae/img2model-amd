@@ -1,0 +1,26 @@
+# Node / frontend
+node_modules/
+apps/desktop/dist/
+
+# Rust / Tauri
+apps/desktop/src-tauri/target/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local model/runtime data
+.runtime/
+models/cache/
+outputs/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
