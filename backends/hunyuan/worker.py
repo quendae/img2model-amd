@@ -83,8 +83,10 @@ def health_payload() -> dict[str, Any]:
 
 def texture_health_payload() -> dict[str, Any]:
     texgen_available = module_available("hy3dgen.texgen")
-    custom_rasterizer_available = module_available("custom_rasterizer")
-    mesh_processor_available = module_available("mesh_processor")
+    custom_rasterizer_detected = module_available("custom_rasterizer")
+    mesh_processor_detected = module_available("mesh_processor")
+    custom_rasterizer_available = False
+    mesh_processor_available = False
     texture_import_ok = False
     errors: list[str] = []
 
@@ -98,9 +100,25 @@ def texture_health_payload() -> dict[str, Any]:
     else:
         errors.append("hy3dgen.texgen is not installed")
 
-    if not custom_rasterizer_available:
+    if custom_rasterizer_detected:
+        try:
+            import custom_rasterizer  # type: ignore  # noqa: F401
+            import custom_rasterizer_kernel  # type: ignore  # noqa: F401
+
+            custom_rasterizer_available = True
+        except Exception as exc:
+            errors.append(f"custom_rasterizer import failed: {type(exc).__name__}: {exc}")
+    else:
         errors.append("custom_rasterizer is not installed")
-    if not mesh_processor_available:
+
+    if mesh_processor_detected:
+        try:
+            import mesh_processor  # type: ignore  # noqa: F401
+
+            mesh_processor_available = True
+        except Exception as exc:
+            errors.append(f"mesh_processor import failed: {type(exc).__name__}: {exc}")
+    else:
         errors.append("mesh_processor is not installed")
 
     usable = bool(
