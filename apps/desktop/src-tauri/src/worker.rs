@@ -162,7 +162,10 @@ pub fn generate_shape(request: GenerateRequest) -> Result<GenerateResult, String
 
 #[cfg(test)]
 mod tests {
-    use super::{backend_is_implemented, parse_last_json_line, resolve_worker_path};
+    use super::{
+        backend_is_implemented, parse_last_json_line, resolve_worker_path, texture_arguments,
+        TextureRequest,
+    };
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
@@ -207,5 +210,27 @@ mod tests {
         assert!(backend_is_implemented("native-rocm"));
         assert!(!backend_is_implemented("wsl-rocm"));
         assert!(!backend_is_implemented("vulkan"));
+    }
+
+    #[test]
+    fn texture_arguments_keep_paths_as_separate_process_arguments() {
+        let request = TextureRequest {
+            backend: "native-rocm".to_string(),
+            mesh: "C:\\input folder\\shape.glb".to_string(),
+            image: "C:\\input folder\\source.png".to_string(),
+            output: "C:\\output folder\\textured.glb".to_string(),
+            model: None,
+            subfolder: None,
+            cpu_offload: true,
+            remove_background: true,
+        };
+
+        let arguments = texture_arguments(&request).unwrap();
+        assert_eq!(arguments[0], "texture");
+        assert!(arguments.windows(2).any(|pair| pair == ["--mesh", "C:\\input folder\\shape.glb"]));
+        assert!(arguments.windows(2).any(|pair| pair == ["--image", "C:\\input folder\\source.png"]));
+        assert!(arguments.windows(2).any(|pair| pair == ["--output", "C:\\output folder\\textured.glb"]));
+        assert!(arguments.contains(&"--cpu-offload".to_string()));
+        assert!(arguments.contains(&"--remove-background".to_string()));
     }
 }
