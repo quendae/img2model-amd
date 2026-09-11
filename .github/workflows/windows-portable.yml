@@ -32,10 +32,18 @@ jobs:
 
       - name: Validate packaging script syntax
         shell: powershell
-        run: '[void][scriptblock]::Create((Get-Content scripts/package/windows-portable.ps1 -Raw))'
+        run: |
+          [void][scriptblock]::Create((Get-Content scripts/package/windows-portable.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/package/verify-windows-pe.ps1 -Raw))
 
       - name: Build Tauri executable
         run: npm --workspace @img2model/desktop run tauri -- build --no-bundle
+
+      - name: Verify Windows GUI executable
+        shell: powershell
+        run: |
+          .\scripts\package\verify-windows-pe.ps1 `
+            -ExePath '.\apps\desktop\src-tauri\target\release\img2model-amd.exe'
 
       - name: Assemble portable package
         shell: powershell
