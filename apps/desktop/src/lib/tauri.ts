@@ -1,6 +1,6 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { SystemDiagnostics, WorkerHealth } from '../domain/types';
+import type { SystemDiagnostics, TextureHealth, WorkerHealth } from '../domain/types';
 
 export interface GenerateShapeRequest {
   backend: 'native-rocm' | 'wsl-rocm' | 'vulkan';
@@ -10,6 +10,17 @@ export interface GenerateShapeRequest {
   subfolder?: string;
   steps: number;
   seed: number;
+  removeBackground: boolean;
+}
+
+export interface TextureMeshRequest {
+  backend: 'native-rocm' | 'wsl-rocm' | 'vulkan';
+  mesh: string;
+  image: string;
+  output: string;
+  model?: string;
+  subfolder?: string;
+  cpuOffload: boolean;
   removeBackground: boolean;
 }
 
@@ -55,6 +66,20 @@ export async function getHunyuanHealth(): Promise<WorkerHealth> {
   return invoke<WorkerHealth>('hunyuan_health');
 }
 
+export async function getHunyuanTextureHealth(): Promise<TextureHealth> {
+  if (!isTauri()) {
+    return {
+      ok: false,
+      texgen_available: false,
+      custom_rasterizer_available: false,
+      mesh_processor_available: false,
+      texture_import_ok: false,
+      error: 'Texture health is available inside the Tauri desktop app.',
+    };
+  }
+  return invoke<TextureHealth>('hunyuan_texture_health');
+}
+
 export async function chooseInputImage(): Promise<string | null> {
   if (!isTauri()) return null;
   const selected = await open({
@@ -82,6 +107,13 @@ export async function generateShape(request: GenerateShapeRequest): Promise<Gene
     throw new Error('Generation requires the Tauri desktop runtime.');
   }
   return invoke<GenerateShapeResult>('generate_shape', { request });
+}
+
+export async function textureMesh(request: TextureMeshRequest): Promise<GenerateShapeResult> {
+  if (!isTauri()) {
+    throw new Error('Texture generation requires the Tauri desktop runtime.');
+  }
+  return invoke<GenerateShapeResult>('texture_mesh', { request });
 }
 
 export function localAssetUrl(path: string): string {
