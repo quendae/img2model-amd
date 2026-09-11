@@ -47,6 +47,14 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn('/std:c++20', text)
         self.assertIn("Ninja build backend", text)
 
+    def test_texture_setup_persists_full_build_log_and_prints_short_failure_tail(self) -> None:
+        text = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn('Join-Path $RuntimeDir "logs"', text)
+        self.assertIn('texture-setup-', text)
+        self.assertIn('Tee-Object -FilePath $LogPath -Append', text)
+        self.assertIn('Get-Content -LiteralPath $LogPath -Tail 80', text)
+        self.assertIn('Full log', text)
+
 
 if __name__ == "__main__":
     unittest.main()
