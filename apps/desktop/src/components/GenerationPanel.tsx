@@ -1,23 +1,38 @@
-import type { BackendId, GenerationOptions } from '../domain/types';
+import { textureProfileDescriptions, textureProfileLabels } from '../domain/textureProfiles';
+import type {
+  BackendId,
+  GenerationOptions,
+  ShapeOutputMode,
+  TextureEngineId,
+  TextureProfile,
+  WorkflowMode,
+} from '../domain/types';
 
 interface GenerationPanelProps {
   backend: BackendId;
+  workflowMode: WorkflowMode;
+  outputMode: ShapeOutputMode;
   profile: GenerationOptions['profile'];
+  textureProfile: TextureProfile;
+  textureEngine: TextureEngineId;
+  textureMeshPath: string | null;
   seed: number;
   steps: number;
   removeBackground: boolean;
-  texture: boolean;
   textureAvailable: boolean;
   busy: boolean;
   canGenerate: boolean;
   progress?: number | null;
   progressLabel?: string | null;
   onBackendChange: (backend: BackendId) => void;
+  onWorkflowModeChange: (mode: WorkflowMode) => void;
+  onShapeOutputModeChange: (mode: ShapeOutputMode) => void;
   onProfileChange: (profile: GenerationOptions['profile']) => void;
+  onTextureProfileChange: (profile: TextureProfile) => void;
   onSeedChange: (seed: number) => void;
   onStepsChange: (steps: number) => void;
   onRemoveBackgroundChange: (enabled: boolean) => void;
-  onTextureChange: (enabled: boolean) => void;
+  onChooseMesh: () => void;
   onGenerate: () => void;
 }
 
@@ -27,36 +42,77 @@ const backendLabels: Record<BackendId, string> = {
   vulkan: 'Vulkan (experimental)',
 };
 
+const textureProfiles: TextureProfile[] = ['auto', 'safe', 'balanced', 'quality'];
+
 export function GenerationPanel({
   backend,
+  workflowMode,
+  outputMode,
   profile,
+  textureProfile,
+  textureEngine,
+  textureMeshPath,
   seed,
   steps,
   removeBackground,
-  texture,
   textureAvailable,
   busy,
   canGenerate,
   progress,
   progressLabel,
   onBackendChange,
+  onWorkflowModeChange,
+  onShapeOutputModeChange,
   onProfileChange,
+  onTextureProfileChange,
   onSeedChange,
   onStepsChange,
   onRemoveBackgroundChange,
-  onTextureChange,
+  onChooseMesh,
   onGenerate,
 }: GenerationPanelProps) {
   const backendReady = backend === 'native-rocm';
   const progressValue = Math.min(100, Math.max(0, progress ?? 0));
+  const textureRequested = workflowMode === 'texture' || outputMode === 'model-and-texture';
+  const missingTextureRuntime = textureRequested && !textureAvailable;
+  const missingMesh = workflowMode === 'texture' && !textureMeshPath;
+  const actionLabel = workflowMode === 'texture'
+    ? 'Generate texture'
+    : outputMode === 'model-and-texture'
+      ? 'Generate model + texture'
+      : 'Generate model';
+  const actionDisabled = !canGenerate || !backendReady || busy || missingTextureRuntime || missingMesh;
 
   return (
     <section className="panel generation-panel" aria-labelledby="generation-heading">
       <div className="panel-heading">
         <div>
           <h2 id="generation-heading">Generation</h2>
-          <p>Hunyuan3D 2 Mini · shape + optional paint stage</p>
+          <p>Hunyuan3D 2 Mini · separate shape and texture jobs</p>
         </div>
+      </div>
+
+      <div className="mode-tabs" role="tablist" aria-label="Generation mode">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workflowMode === 'shape'}
+          className={workflowMode === 'shape' ? 'active' : ''}
+          disabled={busy}
+          onClick={() => onWorkflowModeChange('shape')}
+        >
+          Shape
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workflowMode === 'texture'}
+          className={workflowMode === 'texture' ? 'active' : ''}
+          disabled={busy}
+          onClick={() => onWorkflowModeChange('texture')}
+        >
+          Texture
+        </button>
       </div>
 
       <label className="field">
@@ -70,43 +126,112 @@ export function GenerationPanel({
 
       <div className={`backend-note ${backendReady ? 'ready' : 'warning'}`}>
         {backendReady
-          ? 'Native ROCm worker is executable in this MVP. The app will not switch backends behind your back.'
-          : `${backendLabels[backend]} is not executable in this MVP yet. No silent fallback will be applied.`}
+          ? 'Native ROCm worker is executable. No silent backend fallback will be applied.'
+          : `${backendLabels[backend]} is not executable in this workflow yet. No silent fallback will be applied.`}
       </div>
 
-      <label className="field">
-        <span>Quality profile</span>
-        <select
-          value={profile}
-          onChange={(event) => onProfileChange(event.target.value as GenerationOptions['profile'])}
-        >
-          <option value="fast">Fast</option>
-          <option value="balanced">Balanced</option>
-          <option value="quality">Quality</option>
-        </select>
-      </label>
+      {workflowMode === 'shape' ? (
+        <>
+          <label className="field">
+            <span>Shape quality</span>
+            <select
+              value={profile}
+              onChange={(event) => onProfileChange(event.target.value as GenerationOptions['profile'])}
+            >
+              <option value="fast">Fast</option>
+              <option value="balanced">Balanced</option>
+              <option value="quality">Quality</option>
+            </select>
+          </label>
 
-      <div className="field-grid">
-        <label className="field">
-          <span>Steps</span>
-          <input
-            type="number"
-            min={8}
-            max={80}
-            value={steps}
-            onChange={(event) => onStepsChange(Number(event.target.value))}
-          />
-        </label>
-        <label className="field">
-          <span>Seed</span>
-          <input
-            type="number"
-            min={0}
-            value={seed}
-            onChange={(event) => onSeedChange(Number(event.target.value))}
-          />
-        </label>
-      </div>
+          <div className="field-grid">
+            <label className="field">
+              <span>Steps</span>
+              <input
+                type="number"
+                min={8}
+                max={80}
+                value={steps}
+                onChange={(event) => onStepsChange(Number(event.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>Seed</span>
+              <input
+                type="number"
+                min={0}
+                value={seed}
+                onChange={(event) => onSeedChange(Number(event.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="field">
+            <span>Output</span>
+            <div className="segmented-control" aria-label="Shape output">
+              <button
+                type="button"
+                aria-pressed={outputMode === 'model-only'}
+                className={outputMode === 'model-only' ? 'active' : ''}
+                onClick={() => onShapeOutputModeChange('model-only')}
+              >
+                Model only
+              </button>
+              <button
+                type="button"
+                aria-pressed={outputMode === 'model-and-texture'}
+                className={outputMode === 'model-and-texture' ? 'active' : ''}
+                disabled={!textureAvailable}
+                onClick={() => onShapeOutputModeChange('model-and-texture')}
+              >
+                Model + texture
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="field">
+            <span>Texture engine</span>
+            <select value={textureEngine} disabled aria-label="Texture engine">
+              <option value="hunyuan-paint">Hunyuan Paint</option>
+            </select>
+          </label>
+
+          <div className="field">
+            <span>Existing model</span>
+            <div className="mesh-picker">
+              <div title={textureMeshPath ?? undefined}>{textureMeshPath ?? 'No GLB / OBJ selected'}</div>
+              <button type="button" className="secondary-button" disabled={busy} onClick={onChooseMesh}>
+                Choose model
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {textureRequested && (
+        <div className="field">
+          <span>Texture profile</span>
+          <div className="texture-profile-grid">
+            {textureProfiles.map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={textureProfile === value}
+                className={textureProfile === value ? 'active' : ''}
+                onClick={() => onTextureProfileChange(value)}
+              >
+                <strong>{textureProfileLabels[value]}</strong>
+                <small>{textureProfileDescriptions[value]}</small>
+              </button>
+            ))}
+          </div>
+          {!textureAvailable && (
+            <div className="backend-note warning">Texture runtime is not ready. Install the AMD texture extensions first.</div>
+          )}
+        </div>
+      )}
 
       <label className="toggle-row">
         <input
@@ -120,31 +245,13 @@ export function GenerationPanel({
         </span>
       </label>
 
-      <label className="toggle-row">
-        <input
-          type="checkbox"
-          checked={texture}
-          disabled={!textureAvailable}
-          aria-label="Generate texture"
-          onChange={(event) => onTextureChange(event.target.checked)}
-        />
-        <span>
-          <strong>Generate texture</strong>
-          <small>
-            {textureAvailable
-              ? 'Hunyuan Paint runs as a separate stage with CPU offload on 16 GB VRAM.'
-              : 'Texture runtime is not ready. Install the AMD texture extensions first.'}
-          </small>
-        </span>
-      </label>
-
       <button
         type="button"
         className="primary-button"
-        disabled={!canGenerate || !backendReady || busy}
+        disabled={actionDisabled}
         onClick={onGenerate}
       >
-        {busy ? 'Generating…' : texture ? 'Generate shape + texture' : 'Generate shape'}
+        {busy ? 'Generating…' : actionLabel}
       </button>
 
       {busy && (
