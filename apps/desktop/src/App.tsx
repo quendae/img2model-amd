@@ -19,6 +19,7 @@ import {
   getSystemDiagnostics,
   localAssetUrl,
   textureMesh,
+  type WorkerProgressEvent,
 } from './lib/tauri';
 
 const profileSteps: Record<GenerationOptions['profile'], number> = {
@@ -27,11 +28,59 @@ const profileSteps: Record<GenerationOptions['profile'], number> = {
   quality: 50,
 };
 
+type GenerationPhase = 'shape' | 'texture';
+
+interface GenerationProgress {
+  phase: GenerationPhase;
+  value: number;
+  label: string;
+}
+
+const stageLabels: Record<string, string> = {
+  starting_backend: 'Starting AMD backend…',
+  preparing_input: 'Preparing source image…',
+  loading_model: 'Loading Hunyuan model…',
+  running_shape: 'Generating 3D shape…',
+  preparing_mesh: 'Preparing mesh for texturing…',
+  mesh_ready: 'Texture mesh is ready…',
+  running_texture: 'Generating Hunyuan Paint texture…',
+  postprocessing: 'Exporting model…',
+  completed: 'Generation complete.',
+};
+
 function addSuffixBeforeExtension(path: string, suffix: string): string {
   const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
   const dot = path.lastIndexOf('.');
   if (dot <= separator) return `${path}${suffix}`;
   return `${path.slice(0, dot)}${suffix}${path.slice(dot)}`;
+}
+
+function clampProgress(value: number | null | undefined): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function progressLabel(phase: GenerationPhase, event: WorkerProgressEvent): string {
+  if (event.stage === 'mesh_ready' && typeof event.faces_after === 'number') {
+    return `Texture mesh ready · ${event.faces_after.toLocaleString()} triangles`;
+  }
+  if (event.stage && stageLabels[event.stage]) return stageLabels[event.stage];
+  return phase === 'shape' ? 'Generating 3D shape…' : 'Generating texture…';
+}
+
+function combinedProgress(phase: GenerationPhase, event: WorkerProgressEvent, includesTexture: boolean): GenerationProgress {
+  const raw = clampProgress(event.progress);
+  const value = includesTexture
+    ? phase === 'shape'
+      ? raw * 0.4
+      : 0.4 + raw * 0.6
+    : raw;
+
+  return {
+    phase,
+    value,
+    label: progressLabel(phase, event),
+  };
 }
 
 export function App() {
@@ -44,6 +93,7 @@ export function App() {
   const [removeBackground, setRemoveBackground] = useState(true);
   const [texture, setTexture] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [healthLoading, setHealthLoading] = useState(false);
   const [diagnostics, setDiagnostics] = useState<SystemDiagnostics | null>(null);
@@ -126,9 +176,17 @@ export function App() {
     const shapeOutput = texture ? addSuffixBeforeExtension(output, '-shape') : output;
     let preservedShapePath: string | null = null;
 
+    const updateProgress = (phase: GenerationPhase) => (event: WorkerProgressEvent) => {
+      if (event.event === 'error') return;
+      const next = combinedProgress(phase, event, texture);
+      setGenerationProgress(next);
+      setMessage(next.label);
+    };
+
     setBusy(true);
+    setGenerationProgress({ phase: 'shape', value: 0, label: 'Starting Hunyuan shape generation…' });
     setError(null);
-    setMessage('Running Hunyuan shape generation…');
+    setMessage('Starting Hunyuan shape generation…');
     try {
       const result = await generateShape({
         backend,
@@ -139,7 +197,7 @@ export function App() {
         steps,
         seed,
         removeBackground,
-      });
+      }, updateProgress('shape'));
 
       if (!result.ok) {
         setError(result.error ?? 'Generation failed without an error message.');
@@ -151,6 +209,7 @@ export function App() {
       setModelPath(preservedShapePath);
 
       if (!texture) {
+        setGenerationProgress({ phase: 'shape', value: 1, label: 'Shape complete.' });
         setMessage(`Shape completed: ${preservedShapePath}`);
         return;
       }
@@ -161,7 +220,8 @@ export function App() {
         return;
       }
 
-      setMessage('Shape completed. Running Hunyuan Paint texture stage…');
+      setGenerationProgress({ phase: 'texture', value: 0.4, label: 'Starting Hunyuan Paint texture stage…' });
+      setMessage('Shape completed. Starting Hunyuan Paint texture stage…');
       const textureResult = await textureMesh({
         backend,
         mesh: preservedShapePath,
@@ -171,7 +231,7 @@ export function App() {
         subfolder: 'hunyuan3d-paint-v2-0-turbo',
         cpuOffload: true,
         removeBackground,
-      });
+      }, updateProgress('texture'));
 
       if (!textureResult.ok) {
         setError(
@@ -183,6 +243,7 @@ export function App() {
 
       const texturedPath = textureResult.output ?? output;
       setModelPath(texturedPath);
+      setGenerationProgress({ phase: 'texture', value: 1, label: 'Shape + texture complete.' });
       setMessage(`Shape + texture completed: ${texturedPath}`);
     } catch (reason) {
       if (preservedShapePath) {
@@ -196,6 +257,11 @@ export function App() {
       setBusy(false);
     }
   };
+
+  const progressPercent = busy && generationProgress
+    ? Math.round(generationProgress.value * 100)
+    : null;
+  const progressLabelText = busy ? generationProgress?.label ?? null : null;
 
   return (
     <div className="app-shell">
@@ -235,6 +301,8 @@ export function App() {
             textureAvailable={Boolean(textureHealth?.ok)}
             busy={busy}
             canGenerate={Boolean(inputPath)}
+            progress={progressPercent}
+            progressLabel={progressLabelText}
             onBackendChange={setBackend}
             onProfileChange={changeProfile}
             onSeedChange={setSeed}
@@ -245,7 +313,12 @@ export function App() {
           />
         </aside>
 
-        <ModelViewer modelUrl={modelUrl} busy={busy} />
+        <ModelViewer
+          modelUrl={modelUrl}
+          busy={busy}
+          progress={progressPercent}
+          progressLabel={progressLabelText}
+        />
 
         <aside className="right-rail">
           <DiagnosticsPanel
