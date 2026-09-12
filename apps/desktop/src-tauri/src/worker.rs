@@ -30,6 +30,7 @@ pub struct TextureHealth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerProgressEvent {
     pub event: String,
+    pub job_id: Option<String>,
     pub stage: Option<String>,
     pub progress: Option<f64>,
     pub error_kind: Option<String>,
@@ -40,6 +41,12 @@ pub struct WorkerProgressEvent {
     pub max_faces: Option<u64>,
     pub cpu_offload: Option<bool>,
     pub attention_slicing: Option<String>,
+    pub cache_hit: Option<bool>,
+    pub cache_kind: Option<String>,
+    pub model_load_ms: Option<f64>,
+    pub inference_ms: Option<f64>,
+    pub preprocess_ms: Option<f64>,
+    pub export_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +91,13 @@ pub struct GenerateResult {
     pub max_faces: Option<u64>,
     pub model: Option<String>,
     pub subfolder: Option<String>,
+    pub job_id: Option<String>,
+    pub cache_hit: Option<bool>,
+    pub cache_kind: Option<String>,
+    pub model_load_ms: Option<f64>,
+    pub inference_ms: Option<f64>,
+    pub preprocess_ms: Option<f64>,
+    pub export_ms: Option<f64>,
 }
 
 pub fn resolve_worker_path(start: &Path) -> Option<PathBuf> {
@@ -198,7 +212,7 @@ where
         captured_stdout.push('\n');
 
         if let Ok(event) = serde_json::from_str::<WorkerProgressEvent>(&line) {
-            if matches!(event.event.as_str(), "progress" | "completed" | "error") {
+            if matches!(event.event.as_str(), "progress" | "cache" | "completed" | "error") {
                 on_event(event);
             }
         }
@@ -420,13 +434,24 @@ mod tests {
     #[test]
     fn parses_texture_profile_progress_payload() {
         let event: WorkerProgressEvent = serde_json::from_str(
-            r#"{"event":"progress","stage":"mesh_ready","progress":0.18,"requested_profile":"auto","resolved_profile":"safe","faces_before":40000,"faces_after":10000,"max_faces":10000}"#,
+            r#"{"event":"progress","stage":"mesh_ready","progress":0.18,"requested_profile":"auto","resolved_profile":"balanced","faces_before":40000,"faces_after":20000,"max_faces":20000}"#,
         )
         .unwrap();
         assert_eq!(event.requested_profile.as_deref(), Some("auto"));
-        assert_eq!(event.resolved_profile.as_deref(), Some("safe"));
-        assert_eq!(event.faces_after, Some(10_000));
-        assert_eq!(event.max_faces, Some(10_000));
+        assert_eq!(event.resolved_profile.as_deref(), Some("balanced"));
+        assert_eq!(event.faces_after, Some(20_000));
+        assert_eq!(event.max_faces, Some(20_000));
+    }
+
+    #[test]
+    fn parses_cache_and_timing_payload() {
+        let event: WorkerProgressEvent = serde_json::from_str(
+            r#"{"event":"cache","job_id":"job-2","stage":"cache_hit","cache_hit":true,"cache_kind":"texture","model_load_ms":0.1}"#,
+        )
+        .unwrap();
+        assert_eq!(event.job_id.as_deref(), Some("job-2"));
+        assert_eq!(event.cache_hit, Some(true));
+        assert_eq!(event.cache_kind.as_deref(), Some("texture"));
     }
 
     #[test]
