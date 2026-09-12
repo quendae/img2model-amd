@@ -57,6 +57,7 @@ export interface GenerationTimingSummary {
   resolvedTextureProfile?: Exclude<TextureProfile, 'auto'>;
   cacheHit?: boolean;
   cacheKind?: string;
+  meshCacheHit?: boolean;
   modelLoadMs?: number;
   inferenceMs?: number;
   preprocessMs?: number;
