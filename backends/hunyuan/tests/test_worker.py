@@ -138,11 +138,11 @@ class WorkerProtocolTests(unittest.TestCase):
             )
             self.assertEqual(args.profile, profile)
 
-    def test_auto_texture_profile_is_safe_at_16_gib(self) -> None:
+    def test_auto_texture_profile_is_balanced_at_16_gib(self) -> None:
         module = self.load_worker_module()
         resolved = module.resolve_texture_profile("auto", 15.98)
-        self.assertEqual(resolved["name"], "safe")
-        self.assertEqual(resolved["max_faces"], 10_000)
+        self.assertEqual(resolved["name"], "balanced")
+        self.assertEqual(resolved["max_faces"], 20_000)
         self.assertTrue(resolved["cpu_offload"])
         self.assertEqual(resolved["attention_slicing"], "max")
 
@@ -151,6 +151,12 @@ class WorkerProtocolTests(unittest.TestCase):
         resolved = module.resolve_texture_profile("auto", 24.0)
         self.assertEqual(resolved["name"], "balanced")
         self.assertEqual(resolved["max_faces"], 20_000)
+
+    def test_safe_texture_profile_remains_10k(self) -> None:
+        module = self.load_worker_module()
+        resolved = module.resolve_texture_profile("safe", 15.98)
+        self.assertEqual(resolved["name"], "safe")
+        self.assertEqual(resolved["max_faces"], 10_000)
 
     def test_explicit_quality_profile_uses_40k(self) -> None:
         module = self.load_worker_module()
