@@ -1,7 +1,9 @@
 use crate::diagnostics::{configured_python, native_rocm_runtime_dir};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerHealth {
@@ -23,6 +25,18 @@ pub struct TextureHealth {
     pub mesh_processor_available: bool,
     pub texture_import_ok: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerProgressEvent {
+    pub event: String,
+    pub stage: Option<String>,
+    pub progress: Option<f64>,
+    pub faces_before: Option<u64>,
+    pub faces_after: Option<u64>,
+    pub max_faces: Option<u64>,
+    pub cpu_offload: Option<bool>,
+    pub attention_slicing: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +149,55 @@ fn run_worker(arguments: &[String]) -> Result<Output, String> {
         .map_err(|error| format!("Failed to start Python worker with {python}: {error}"))
 }
 
+fn run_worker_streamed<F>(arguments: &[String], mut on_event: F) -> Result<(std::process::ExitStatus, String, String), String>
+where
+    F: FnMut(WorkerProgressEvent),
+{
+    let python = configured_python();
+    let worker = configured_worker_path()?;
+
+    let mut child = Command::new(&python)
+        .arg(worker)
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to start Python worker with {python}: {error}"))?;
+
+    let stdout = child.stdout.take().ok_or_else(|| "Worker stdout was not captured.".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "Worker stderr was not captured.".to_string())?;
+
+    let stderr_reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+
+    let mut captured_stdout = String::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line.map_err(|error| format!("Failed reading worker output: {error}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        captured_stdout.push_str(&line);
+        captured_stdout.push('\n');
+
+        if let Ok(event) = serde_json::from_str::<WorkerProgressEvent>(&line) {
+            if matches!(event.event.as_str(), "progress" | "completed" | "error") {
+                on_event(event);
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|error| format!("Failed waiting for Python worker: {error}"))?;
+    let captured_stderr = stderr_reader.join().unwrap_or_else(|_| "Worker stderr reader panicked.".to_string());
+
+    Ok((status, captured_stdout, captured_stderr))
+}
+
 pub fn worker_health() -> Result<WorkerHealth, String> {
     let output = run_worker(&["health".to_string(), "--json".to_string()])?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -162,6 +225,13 @@ pub fn worker_texture_health() -> Result<TextureHealth, String> {
 }
 
 pub fn generate_shape(request: GenerateRequest) -> Result<GenerateResult, String> {
+    generate_shape_with_progress(request, |_| {})
+}
+
+pub fn generate_shape_with_progress<F>(request: GenerateRequest, on_event: F) -> Result<GenerateResult, String>
+where
+    F: FnMut(WorkerProgressEvent),
+{
     if !backend_is_implemented(&request.backend) {
         return Err(format!(
             "Backend '{}' is not implemented in this MVP. Select native-rocm; no silent fallback was applied.",
@@ -196,14 +266,12 @@ pub fn generate_shape(request: GenerateRequest) -> Result<GenerateResult, String
         arguments.push("--remove-background".to_string());
     }
 
-    let output = run_worker(&arguments)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (status, stdout, stderr) = run_worker_streamed(&arguments, on_event)?;
     let result: GenerateResult = parse_last_json_line(&stdout)?;
 
-    if output.status.success() || !result.ok {
+    if status.success() || !result.ok {
         Ok(result)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Generation worker failed: {}", stderr.trim()))
     }
 }
@@ -250,15 +318,20 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
 }
 
 pub fn texture_mesh(request: TextureRequest) -> Result<GenerateResult, String> {
+    texture_mesh_with_progress(request, |_| {})
+}
+
+pub fn texture_mesh_with_progress<F>(request: TextureRequest, on_event: F) -> Result<GenerateResult, String>
+where
+    F: FnMut(WorkerProgressEvent),
+{
     let arguments = texture_arguments(&request)?;
-    let output = run_worker(&arguments)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (status, stdout, stderr) = run_worker_streamed(&arguments, on_event)?;
     let result: GenerateResult = parse_last_json_line(&stdout)?;
 
-    if output.status.success() || !result.ok {
+    if status.success() || !result.ok {
         Ok(result)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Texture worker failed: {}", stderr.trim()))
     }
 }
@@ -267,7 +340,7 @@ pub fn texture_mesh(request: TextureRequest) -> Result<GenerateResult, String> {
 mod tests {
     use super::{
         backend_is_implemented, parse_last_json_line, resolve_worker_path, runtime_worker_path,
-        texture_arguments, TextureRequest,
+        texture_arguments, TextureRequest, WorkerProgressEvent,
     };
     use serde_json::Value;
     use std::fs;
@@ -312,6 +385,17 @@ mod tests {
         let value: Value = parse_last_json_line(stdout).unwrap();
         assert_eq!(value["event"], "completed");
         assert_eq!(value["output"], "mesh.glb");
+    }
+
+    #[test]
+    fn parses_worker_progress_payload() {
+        let event: WorkerProgressEvent = serde_json::from_str(
+            "{\"event\":\"progress\",\"stage\":\"running_shape\",\"progress\":0.3}",
+        )
+        .unwrap();
+        assert_eq!(event.event, "progress");
+        assert_eq!(event.stage.as_deref(), Some("running_shape"));
+        assert_eq!(event.progress, Some(0.3));
     }
 
     #[test]
