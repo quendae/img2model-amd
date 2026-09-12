@@ -18,10 +18,12 @@ import {
   chooseInputImage,
   chooseInputMesh,
   chooseOutputModel,
+  clearHunyuanWorkerCache,
   getHunyuanHealth,
   getHunyuanTextureHealth,
   getSystemDiagnostics,
   localAssetUrl,
+  restartHunyuanWorker,
 } from './lib/tauri';
 import { useGenerationJob } from './lib/useGenerationJob';
 
@@ -118,6 +120,29 @@ export function App() {
     }
   };
 
+  const restartWorker = async () => {
+    if (job.busy) return;
+    setDiagnosticError(null);
+    try {
+      await restartHunyuanWorker();
+      job.markWorkerRestarted();
+      job.setStatusMessage('Worker restarted. The next job will load a fresh pipeline.');
+    } catch (reason) {
+      setDiagnosticError(`Worker restart failed: ${String(reason)}`);
+    }
+  };
+
+  const clearWorkerCache = async () => {
+    if (job.busy) return;
+    setDiagnosticError(null);
+    try {
+      await clearHunyuanWorkerCache();
+      job.setStatusMessage('Worker cache cleared. The next job will reload its pipeline.');
+    } catch (reason) {
+      setDiagnosticError(`Worker cache clear failed: ${String(reason)}`);
+    }
+  };
+
   const chooseImage = async () => {
     const path = await chooseInputImage();
     if (!path) return;
@@ -200,6 +225,7 @@ export function App() {
   const progressLabelText = job.busy ? job.progress?.label ?? null : null;
   const displayError = job.error ?? diagnosticError;
   const timing = job.timingSummary;
+  const inferenceMs = timing?.inferenceMs ?? timing?.textureStages?.running_texture;
   const canTextureCurrentModel = Boolean(
     workflowMode === 'shape'
       && inputPath
@@ -303,6 +329,21 @@ export function App() {
               </details>
             )}
 
+            {(job.workerNeedsRestart || (health?.ok && !job.busy)) && (
+              <div className="worker-actions">
+                {job.workerNeedsRestart && (
+                  <button type="button" className="secondary-button" disabled={job.busy} onClick={() => void restartWorker()}>
+                    Restart worker
+                  </button>
+                )}
+                {health?.ok && !job.busy && (
+                  <button type="button" className="ghost-button" onClick={() => void clearWorkerCache()}>
+                    Clear cache
+                  </button>
+                )}
+              </div>
+            )}
+
             {(canTextureCurrentModel || job.retryContext) && (
               <div className="recovery-actions">
                 {canTextureCurrentModel && (
@@ -335,9 +376,16 @@ export function App() {
               {timing?.shapeMs !== undefined && <><span>Shape</span><strong>{formatDuration(timing.shapeMs)}</strong></>}
               {timing?.textureMs !== undefined && <><span>Texture</span><strong>{formatDuration(timing.textureMs)}</strong></>}
               {timing && <><span>Total</span><strong>{formatDuration(timing.totalMs)}</strong></>}
-              {timing?.textureStages?.running_texture !== undefined && (
-                <><span>Inference</span><strong>{formatDuration(timing.textureStages.running_texture)}</strong></>
+              {timing?.cacheHit !== undefined && (
+                <>
+                  <span>Cache</span>
+                  <strong>{timing.cacheHit ? 'hit' : 'miss'}{timing.cacheKind ? ` · ${timing.cacheKind}` : ''}</strong>
+                </>
               )}
+              {timing?.modelLoadMs !== undefined && <><span>Load</span><strong>{formatDuration(timing.modelLoadMs)}</strong></>}
+              {timing?.preprocessMs !== undefined && <><span>Prep</span><strong>{formatDuration(timing.preprocessMs)}</strong></>}
+              {inferenceMs !== undefined && <><span>Inference</span><strong>{formatDuration(inferenceMs)}</strong></>}
+              {timing?.exportMs !== undefined && <><span>Export</span><strong>{formatDuration(timing.exportMs)}</strong></>}
               {timing?.trianglesBefore !== undefined && timing.trianglesAfter !== undefined && (
                 <>
                   <span>Mesh</span>
