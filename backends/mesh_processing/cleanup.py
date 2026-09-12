@@ -1,5 +1,6 @@
 import math
 import time
+from collections import defaultdict
 
 import numpy as np
 import trimesh
@@ -29,19 +30,50 @@ def _weld_near_vertices(mesh: trimesh.Trimesh, relative_epsilon: float) -> int:
     return max(0, before - len(mesh.vertices))
 
 
-def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
-    """Return connected face groups without optional graph dependencies."""
+def _topology(
+    faces: np.ndarray,
+    vertex_count: int,
+) -> tuple[list[list[int]], list[list[int]], list[list[int]], dict[tuple[int, int], list[tuple[int, int]]]]:
+    """Build topology from triangles without SciPy/NetworkX."""
 
-    face_count = len(mesh.faces)
+    vertex_faces: list[list[int]] = [[] for _ in range(vertex_count)]
+    vertex_neighbors: list[set[int]] = [set() for _ in range(vertex_count)]
+    edge_occurrences: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+
+    for face_index, raw_face in enumerate(np.asarray(faces, dtype=int)):
+        a, b, c = (int(raw_face[0]), int(raw_face[1]), int(raw_face[2]))
+        for vertex in (a, b, c):
+            vertex_faces[vertex].append(face_index)
+        vertex_neighbors[a].update((b, c))
+        vertex_neighbors[b].update((a, c))
+        vertex_neighbors[c].update((a, b))
+        for first, second in ((a, b), (b, c), (c, a)):
+            key = (first, second) if first < second else (second, first)
+            direction = 1 if (first, second) == key else -1
+            edge_occurrences[key].append((face_index, direction))
+
+    face_neighbors: list[set[int]] = [set() for _ in range(len(faces))]
+    for occurrences in edge_occurrences.values():
+        if len(occurrences) < 2:
+            continue
+        indices = [face_index for face_index, _direction in occurrences]
+        for offset, first in enumerate(indices):
+            for second in indices[offset + 1 :]:
+                face_neighbors[first].add(second)
+                face_neighbors[second].add(first)
+
+    return (
+        vertex_faces,
+        [sorted(values) for values in vertex_neighbors],
+        [sorted(values) for values in face_neighbors],
+        edge_occurrences,
+    )
+
+
+def _face_components_from_neighbors(face_neighbors: list[list[int]]) -> list[np.ndarray]:
+    face_count = len(face_neighbors)
     if face_count == 0:
         return []
-
-    neighbors: list[list[int]] = [[] for _ in range(face_count)]
-    adjacency = np.asarray(mesh.face_adjacency, dtype=int)
-    for first, second in adjacency:
-        neighbors[int(first)].append(int(second))
-        neighbors[int(second)].append(int(first))
-
     seen = np.zeros(face_count, dtype=bool)
     components: list[np.ndarray] = []
     for start in range(face_count):
@@ -53,13 +85,20 @@ def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
         while stack:
             current = stack.pop()
             component.append(current)
-            for neighbor in neighbors[current]:
+            for neighbor in face_neighbors[current]:
                 if seen[neighbor]:
                     continue
                 seen[neighbor] = True
                 stack.append(neighbor)
         components.append(np.asarray(component, dtype=int))
     return components
+
+
+def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
+    _vertex_faces, _vertex_neighbors, face_neighbors, _edges = _topology(
+        np.asarray(mesh.faces), len(mesh.vertices)
+    )
+    return _face_components_from_neighbors(face_neighbors)
 
 
 def _remove_small_components(mesh: trimesh.Trimesh, min_area_ratio: float) -> int:
@@ -109,13 +148,15 @@ def _relax_spike_vertices(
     normal_angle_deg: float,
 ) -> int:
     vertices = np.asarray(mesh.vertices).copy()
-    vertex_faces = np.asarray(mesh.vertex_faces)
+    faces_array = np.asarray(mesh.faces, dtype=int)
+    vertex_faces, vertex_neighbors, _face_neighbors, _edges = _topology(faces_array, len(vertices))
     face_areas = np.asarray(mesh.area_faces)
     total_area = max(float(mesh.area), 1e-12)
     typical_face_area = max(float(np.median(face_areas)), 1e-12) if len(face_areas) else 1e-12
+    face_normals = np.asarray(mesh.face_normals)
     adjusted: dict[int, np.ndarray] = {}
 
-    for vertex_index, neighbors in enumerate(mesh.vertex_neighbors):
+    for vertex_index, neighbors in enumerate(vertex_neighbors):
         if len(neighbors) < 3:
             continue
         neighbor_idx = np.asarray(neighbors, dtype=int)
@@ -123,7 +164,7 @@ def _relax_spike_vertices(
 
         reference_lengths: list[float] = []
         for neighbor in neighbors:
-            for second in mesh.vertex_neighbors[neighbor]:
+            for second in vertex_neighbors[neighbor]:
                 if second == vertex_index:
                     continue
                 reference_lengths.append(float(np.linalg.norm(vertices[second] - vertices[neighbor])))
@@ -133,8 +174,7 @@ def _relax_spike_vertices(
         if float(incident_lengths.max()) / reference < edge_ratio:
             continue
 
-        faces = vertex_faces[vertex_index]
-        faces = faces[faces >= 0]
+        faces = np.asarray(vertex_faces[vertex_index], dtype=int)
         if len(faces) < 2:
             continue
 
@@ -145,12 +185,12 @@ def _relax_spike_vertices(
         if baseline_area_ratio > max_area_ratio:
             continue
 
-        incident_triangles = np.asarray(mesh.vertices)[np.asarray(mesh.faces)[faces]]
+        incident_triangles = vertices[faces_array[faces]]
         max_aspect = max(_triangle_aspect(triangle) for triangle in incident_triangles)
         if max_aspect < max(6.0, edge_ratio * 2.0):
             continue
 
-        normals = np.asarray(mesh.face_normals)[faces]
+        normals = face_normals[faces]
         if _normal_spread_deg(normals) < normal_angle_deg:
             continue
 
@@ -180,12 +220,72 @@ def _laplacian_step(vertices: np.ndarray, neighbors: list[list[int]], factor: fl
 
 
 def _taubin_smooth(mesh: trimesh.Trimesh, iterations: int, lamb: float, nu: float) -> None:
-    neighbors = [list(values) for values in mesh.vertex_neighbors]
+    faces = np.asarray(mesh.faces, dtype=int)
+    _vertex_faces, neighbors, _face_neighbors, _edges = _topology(faces, len(mesh.vertices))
     vertices = np.asarray(mesh.vertices).copy()
     for _iteration in range(iterations):
         vertices = _laplacian_step(vertices, neighbors, lamb)
         vertices = _laplacian_step(vertices, neighbors, nu)
     mesh.vertices = vertices
+
+
+def _repair_face_winding(mesh: trimesh.Trimesh) -> None:
+    """Orient adjacent triangle winding consistently without graph extras."""
+
+    faces = np.asarray(mesh.faces, dtype=int).copy()
+    vertices = np.asarray(mesh.vertices)
+    if len(faces) == 0:
+        return
+
+    _vertex_faces, _vertex_neighbors, face_neighbors, edge_occurrences = _topology(faces, len(vertices))
+    relations: list[list[tuple[int, int]]] = [[] for _ in range(len(faces))]
+    for occurrences in edge_occurrences.values():
+        if len(occurrences) != 2:
+            continue
+        (first_face, first_direction), (second_face, second_direction) = occurrences
+        # Neighbor orientation multiplier needed so the shared directed edge
+        # runs in the opposite direction after applying each face flip.
+        required = -first_direction * second_direction
+        relations[first_face].append((second_face, required))
+        relations[second_face].append((first_face, required))
+
+    orientation = np.zeros(len(faces), dtype=np.int8)
+    components = _face_components_from_neighbors(face_neighbors)
+    for component in components:
+        if len(component) == 0:
+            continue
+        start = int(component[0])
+        orientation[start] = 1
+        stack = [start]
+        while stack:
+            current = stack.pop()
+            for neighbor, relation in relations[current]:
+                expected = int(orientation[current]) * relation
+                if orientation[neighbor] == 0:
+                    orientation[neighbor] = expected
+                    stack.append(neighbor)
+        component_flips = component[orientation[component] < 0]
+        if len(component_flips):
+            faces[component_flips] = faces[component_flips][:, [0, 2, 1]]
+
+        # For a closed component, choose outward-facing winding using signed volume.
+        component_faces = faces[component]
+        edge_counts: dict[tuple[int, int], int] = defaultdict(int)
+        for face in component_faces:
+            a, b, c = (int(face[0]), int(face[1]), int(face[2]))
+            for first, second in ((a, b), (b, c), (c, a)):
+                key = (first, second) if first < second else (second, first)
+                edge_counts[key] += 1
+        if edge_counts and all(count == 2 for count in edge_counts.values()):
+            triangles = vertices[component_faces]
+            signed_volume = float(
+                np.einsum("ij,ij->i", triangles[:, 0], np.cross(triangles[:, 1], triangles[:, 2])).sum()
+                / 6.0
+            )
+            if signed_volume < 0.0:
+                faces[component] = faces[component][:, [0, 2, 1]]
+
+    mesh.faces = faces
 
 
 def cleanup_mesh(mesh: trimesh.Trimesh, config):
@@ -226,7 +326,7 @@ def cleanup_mesh(mesh: trimesh.Trimesh, config):
             settings.taubin_nu,
         )
     if settings.recompute_normals:
-        working.fix_normals(multibody=True)
+        _repair_face_winding(working)
 
     working.remove_unreferenced_vertices()
     report.triangles_after = len(working.faces)
