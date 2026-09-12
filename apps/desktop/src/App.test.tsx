@@ -33,8 +33,14 @@ vi.mock('./components/GenerationPanel', () => ({
 }));
 
 vi.mock('./components/ModelViewer', () => ({
-  ModelViewer: ({ modelUrl }: { modelUrl: string | null }) => (
-    <div data-testid="model-viewer">{modelUrl ?? 'none'}</div>
+  ModelViewer: ({ modelUrl, comparison }: any) => (
+    <div data-testid="model-viewer">
+      <span data-testid="model-url">{modelUrl ?? 'none'}</span>
+      <span data-testid="comparison-before">{comparison?.beforeUrl ?? 'none'}</span>
+      <span data-testid="comparison-after">{comparison?.afterUrl ?? 'none'}</span>
+      <span data-testid="comparison-before-triangles">{comparison?.beforeTriangles ?? 'none'}</span>
+      <span data-testid="comparison-after-triangles">{comparison?.afterTriangles ?? 'none'}</span>
+    </div>
   ),
 }));
 
@@ -193,21 +199,41 @@ describe('App cleanup workflows', () => {
     expect(screen.getByText(/not watertight/i)).toBeTruthy();
   });
 
-  it('switches the viewer between raw Before and cleaned After meshes', async () => {
+  it('passes Mesh-mode source and cleaned output to the ModelViewer comparison', async () => {
     mocks.useGenerationJob.mockReturnValue(jobState({
-      resultPath: 'C:/model-clean.glb',
-      preservedShapePath: 'C:/model-shape.glb',
-      cleanedShapePath: 'C:/model-clean.glb',
+      resultPath: 'C:/import-clean.glb',
+      preservedShapePath: 'C:/import.glb',
+      cleanedShapePath: 'C:/import-clean.glb',
+      timingSummary: {
+        totalMs: 1800,
+        meshCleanupMs: 1800,
+        cleanupReport: {
+          preset: 'game-ready',
+          config_label: 'Game-ready',
+          algorithm_version: 'mesh-cleanup-v1',
+          triangles_before: 312000,
+          triangles_after: 305000,
+          vertices_before: 158000,
+          vertices_after: 151000,
+          components_before: 2,
+          components_after: 1,
+          cleanup_ms: 1800,
+          warnings: [],
+        },
+      },
     }));
 
     render(<App />);
-    await waitFor(() => expect(screen.getByTestId('model-viewer').textContent).toBe('C:/model-clean.glb'));
+    expect(screen.getByTestId('comparison-before').textContent).toBe('none');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Before' }));
-    expect(screen.getByTestId('model-viewer').textContent).toBe('C:/model-shape.glb');
+    fireEvent.click(screen.getByRole('button', { name: 'Switch Mesh' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'After' }));
-    expect(screen.getByTestId('model-viewer').textContent).toBe('C:/model-clean.glb');
+    await waitFor(() => expect(screen.getByTestId('mesh-input').textContent).toBe('C:/import.glb'));
+    expect(screen.getByTestId('comparison-before').textContent).toBe('C:/import.glb');
+    expect(screen.getByTestId('comparison-after').textContent).toBe('C:/import-clean.glb');
+    expect(screen.getByTestId('comparison-before-triangles').textContent).toBe('312000');
+    expect(screen.getByTestId('comparison-after-triangles').textContent).toBe('305000');
   });
 });
 
