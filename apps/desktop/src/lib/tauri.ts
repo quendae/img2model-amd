@@ -46,10 +46,18 @@ export interface GenerateResult {
   max_faces?: number | null;
   model?: string | null;
   subfolder?: string | null;
+  job_id?: string | null;
+  cache_hit?: boolean | null;
+  cache_kind?: string | null;
+  model_load_ms?: number | null;
+  inference_ms?: number | null;
+  preprocess_ms?: number | null;
+  export_ms?: number | null;
 }
 
 export interface WorkerProgressEvent {
-  event: 'progress' | 'completed' | 'error' | string;
+  event: 'progress' | 'cache' | 'completed' | 'error' | string;
+  job_id?: string | null;
   stage?: string | null;
   progress?: number | null;
   error_kind?: string | null;
@@ -60,6 +68,12 @@ export interface WorkerProgressEvent {
   max_faces?: number | null;
   cpu_offload?: boolean | null;
   attention_slicing?: string | null;
+  cache_hit?: boolean | null;
+  cache_kind?: string | null;
+  model_load_ms?: number | null;
+  inference_ms?: number | null;
+  preprocess_ms?: number | null;
+  export_ms?: number | null;
 }
 
 export type ProgressHandler = (event: WorkerProgressEvent) => void;
@@ -173,6 +187,16 @@ export async function textureMesh(
     request,
     onEvent: progressChannel(onProgress),
   });
+}
+
+export async function restartHunyuanWorker(): Promise<void> {
+  if (!isTauri()) throw new Error('Worker restart requires the Tauri desktop runtime.');
+  await invoke('restart_hunyuan_worker');
+}
+
+export async function clearHunyuanWorkerCache(): Promise<void> {
+  if (!isTauri()) throw new Error('Worker cache control requires the Tauri desktop runtime.');
+  await invoke('clear_hunyuan_worker_cache');
 }
 
 export function localAssetUrl(path: string): string {
