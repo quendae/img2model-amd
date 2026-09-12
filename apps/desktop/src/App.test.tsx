@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   getSystemDiagnostics: vi.fn(),
   getHunyuanHealth: vi.fn(),
   getHunyuanTextureHealth: vi.fn(),
+  chooseInputMesh: vi.fn(),
+  chooseOutputModel: vi.fn(),
   useGenerationJob: vi.fn(),
 }));
 
@@ -17,7 +19,17 @@ vi.mock('./components/InputPanel', () => ({
 }));
 
 vi.mock('./components/GenerationPanel', () => ({
-  GenerationPanel: () => <div data-testid="generation-panel" />,
+  GenerationPanel: (props: any) => (
+    <div data-testid="generation-panel">
+      <span data-testid="workflow-mode">{props.workflowMode}</span>
+      <span data-testid="cleanup-preset">{String(props.cleanupPreset)}</span>
+      <span data-testid="mesh-input">{props.meshInputPath ?? 'none'}</span>
+      <span data-testid="can-generate">{String(props.canGenerate)}</span>
+      <button type="button" onClick={() => props.onWorkflowModeChange('mesh')}>Switch Mesh</button>
+      <button type="button" onClick={props.onChooseMesh}>Choose model</button>
+      <button type="button" onClick={props.onGenerate}>Run current workflow</button>
+    </div>
+  ),
 }));
 
 vi.mock('./components/ModelViewer', () => ({
@@ -32,8 +44,8 @@ vi.mock('./components/DiagnosticsPanel', () => ({
 
 vi.mock('./lib/tauri', () => ({
   chooseInputImage: vi.fn(),
-  chooseInputMesh: vi.fn(),
-  chooseOutputModel: vi.fn(),
+  chooseInputMesh: mocks.chooseInputMesh,
+  chooseOutputModel: mocks.chooseOutputModel,
   getSystemDiagnostics: mocks.getSystemDiagnostics,
   getHunyuanHealth: mocks.getHunyuanHealth,
   getHunyuanTextureHealth: mocks.getHunyuanTextureHealth,
@@ -55,11 +67,13 @@ function jobState(overrides: Record<string, unknown> = {}) {
     technicalError: null,
     resultPath: null,
     preservedShapePath: null,
+    cleanedShapePath: null,
     retryContext: null,
     timingSummary: null,
     workerNeedsRestart: false,
     runShapeWorkflow: vi.fn(),
     runTextureWorkflow: vi.fn(),
+    runMeshWorkflow: vi.fn(),
     retryTexture: vi.fn(),
     retryTextureSafe: vi.fn(),
     clearError: vi.fn(),
@@ -73,6 +87,8 @@ function jobState(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   mocks.restartHunyuanWorker.mockReset().mockResolvedValue(undefined);
   mocks.clearHunyuanWorkerCache.mockReset().mockResolvedValue(undefined);
+  mocks.chooseInputMesh.mockReset().mockResolvedValue('C:/import.glb');
+  mocks.chooseOutputModel.mockReset().mockResolvedValue('C:/import-clean.glb');
   mocks.getSystemDiagnostics.mockReset().mockResolvedValue({
     os: 'windows',
     arch: 'x86_64',
@@ -96,6 +112,43 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+describe('App cleanup workflows', () => {
+  it('uses Light as the default Shape cleanup preset', () => {
+    render(<App />);
+    expect(screen.getByTestId('workflow-mode').textContent).toBe('shape');
+    expect(screen.getByTestId('cleanup-preset').textContent).toBe('light');
+  });
+
+  it('runs standalone Mesh with Game-ready without requiring an image or texture runtime', async () => {
+    const runMeshWorkflow = vi.fn().mockResolvedValue('C:/import-clean.glb');
+    mocks.useGenerationJob.mockReturnValue(jobState({ runMeshWorkflow }));
+    mocks.getHunyuanTextureHealth.mockResolvedValue({
+      ok: false,
+      texgen_available: false,
+      custom_rasterizer_available: false,
+      mesh_processor_available: false,
+      texture_import_ok: false,
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch Mesh' }));
+    expect(screen.getByTestId('workflow-mode').textContent).toBe('mesh');
+    expect(screen.getByTestId('cleanup-preset').textContent).toBe('game-ready');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
+    await waitFor(() => expect(screen.getByTestId('mesh-input').textContent).toBe('C:/import.glb'));
+    expect(screen.getByTestId('can-generate').textContent).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run current workflow' }));
+    await waitFor(() => expect(runMeshWorkflow).toHaveBeenCalledWith({
+      input: 'C:/import.glb',
+      output: 'C:/import-clean.glb',
+      preset: 'game-ready',
+      overrides: {},
+    }));
+  });
+});
 
 describe('App persistent worker controls', () => {
   it('offers an explicit worker restart after a crash', async () => {
