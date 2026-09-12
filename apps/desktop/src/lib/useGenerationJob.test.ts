@@ -78,7 +78,7 @@ describe('useGenerationJob', () => {
     );
     expect(tauriMocks.textureMesh).not.toHaveBeenCalled();
     expect(result.current.preservedShapePath).toBe('C:/model-shape.glb');
-    expect((result.current as any).cleanedShapePath).toBe('C:/model.glb');
+    expect(result.current.cleanedShapePath).toBe('C:/model.glb');
     expect(result.current.resultPath).toBe('C:/model.glb');
     expect(result.current.timingSummary).toMatchObject({ cleanupCacheHit: false, meshCleanupMs: 125 });
   });
@@ -134,7 +134,7 @@ describe('useGenerationJob', () => {
       output: 'C:/model.glb',
     });
     expect(result.current.preservedShapePath).toBe('C:/model-shape.glb');
-    expect((result.current as any).cleanedShapePath).toBe('C:/model-clean.glb');
+    expect(result.current.cleanedShapePath).toBe('C:/model-clean.glb');
     expect(result.current.resultPath).toBe('C:/model.glb');
   });
 
@@ -162,7 +162,7 @@ describe('useGenerationJob', () => {
     expect(result.current.error).toMatch(/cleanup failed/i);
   });
 
-  it('uses the cleaned path in retry context after a texture failure', async () => {
+  it('uses the cleaned path for texture retry while preserving the raw rollback shape', async () => {
     tauriMocks.generateShape.mockResolvedValue({ ok: true, event: 'completed', output: 'C:/model-shape.glb' });
     tauriMocks.cleanupMesh.mockResolvedValue({ ok: true, event: 'completed', output: 'C:/model-clean.glb' });
     tauriMocks.textureMesh.mockResolvedValue({
@@ -183,7 +183,8 @@ describe('useGenerationJob', () => {
     });
 
     expect(result.current.retryContext).toMatchObject({ mesh: 'C:/model-clean.glb' });
-    expect(result.current.preservedShapePath).toBe('C:/model-clean.glb');
+    expect(result.current.preservedShapePath).toBe('C:/model-shape.glb');
+    expect(result.current.cleanedShapePath).toBe('C:/model-clean.glb');
   });
 
   it('runs standalone Mesh cleanup from imported input to selected output', async () => {
@@ -196,7 +197,7 @@ describe('useGenerationJob', () => {
 
     const { result } = renderHook(() => useGenerationJob());
     await act(async () => {
-      await (result.current as any).runMeshWorkflow({
+      await result.current.runMeshWorkflow({
         input: 'C:/import.glb',
         output: 'C:/import-clean.glb',
         preset: 'game-ready',
@@ -209,7 +210,7 @@ describe('useGenerationJob', () => {
       expect.any(Function),
     );
     expect(result.current.preservedShapePath).toBe('C:/import.glb');
-    expect((result.current as any).cleanedShapePath).toBe('C:/import-clean.glb');
+    expect(result.current.cleanedShapePath).toBe('C:/import-clean.glb');
     expect(result.current.resultPath).toBe('C:/import-clean.glb');
   });
 
