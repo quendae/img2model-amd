@@ -18,9 +18,9 @@ vi.mock('three', () => {
   }
 
   class PerspectiveCamera {
-    position = { set: vi.fn() };
+    position = { set() {} };
     aspect = 1;
-    updateProjectionMatrix = vi.fn();
+    updateProjectionMatrix() {}
     constructor(_fov: number, _aspect: number, _near: number, _far: number) {}
   }
 
@@ -29,10 +29,10 @@ vi.mock('three', () => {
     outputColorSpace: unknown;
     toneMapping: unknown;
     toneMappingExposure = 1;
-    setPixelRatio = vi.fn();
-    setSize = vi.fn();
-    render = vi.fn();
-    dispose = vi.fn();
+    setPixelRatio() {}
+    setSize() {}
+    render() {}
+    dispose() {}
     constructor(_options: unknown) {}
   }
 
@@ -41,7 +41,7 @@ vi.mock('three', () => {
   }
 
   class DirectionalLight {
-    position = { set: vi.fn() };
+    position = { set() {} };
     constructor(_color: number, _intensity: number) {}
   }
 
@@ -69,9 +69,9 @@ vi.mock('three', () => {
 vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
   OrbitControls: class {
     enableDamping = false;
-    target = { set: vi.fn() };
-    update = vi.fn();
-    dispose = vi.fn();
+    target = { set() {} };
+    update() {}
+    dispose() {}
     constructor(_camera: unknown, _element: unknown) {}
   },
 }));
@@ -99,8 +99,8 @@ beforeEach(() => {
     observe() {}
     disconnect() {}
   });
-  vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
-  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  vi.stubGlobal('requestAnimationFrame', () => 1);
+  vi.stubGlobal('cancelAnimationFrame', () => undefined);
 });
 
 afterEach(() => {
