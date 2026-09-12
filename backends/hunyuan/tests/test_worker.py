@@ -138,6 +138,12 @@ class WorkerProtocolTests(unittest.TestCase):
             )
             self.assertEqual(args.profile, profile)
 
+    def test_serve_parser_exists(self) -> None:
+        module = self.load_worker_module()
+        parser = module.build_parser()
+        args = parser.parse_args(["serve"])
+        self.assertIs(args.func, module.run_serve)
+
     def test_auto_texture_profile_is_balanced_at_16_gib(self) -> None:
         module = self.load_worker_module()
         resolved = module.resolve_texture_profile("auto", 15.98)
@@ -170,6 +176,110 @@ class WorkerProtocolTests(unittest.TestCase):
             RuntimeError("CUDA out of memory. Tried to allocate 2.81 GiB")
         )
         self.assertEqual(kind, "out_of_memory")
+
+    def test_pipeline_cache_reuses_texture_and_evicts_shape(self) -> None:
+        module = self.load_worker_module()
+        events: list[dict[str, object]] = []
+        cache = module.PipelineCache(event_sink=events.append)
+        shape = object()
+        texture = object()
+
+        loaded_shape, shape_hit = cache.get_shape_pipeline(lambda: shape, ("shape",))
+        self.assertIs(loaded_shape, shape)
+        self.assertFalse(shape_hit)
+
+        loaded_shape_again, shape_hit_again = cache.get_shape_pipeline(lambda: object(), ("shape",))
+        self.assertIs(loaded_shape_again, shape)
+        self.assertTrue(shape_hit_again)
+
+        loaded_texture, texture_hit = cache.get_texture_pipeline(lambda: texture, ("texture",))
+        self.assertIs(loaded_texture, texture)
+        self.assertFalse(texture_hit)
+        self.assertIsNone(cache.shape_pipeline)
+        self.assertIs(cache.texture_pipeline, texture)
+
+        stages = [str(event["stage"]) for event in events]
+        self.assertIn("cache_hit", stages)
+        self.assertIn("evicted_shape", stages)
+        self.assertIn("cache_miss", stages)
+
+    def test_pipeline_cache_clear_releases_both_slots(self) -> None:
+        module = self.load_worker_module()
+        events: list[dict[str, object]] = []
+        cache = module.PipelineCache(event_sink=events.append)
+        shape = object()
+        cache.get_shape_pipeline(lambda: shape, ("shape",))
+        cache.clear()
+        self.assertIsNone(cache.shape_pipeline)
+        self.assertIsNone(cache.texture_pipeline)
+        self.assertTrue(any(event["stage"] == "cache_cleared" for event in events))
+
+    def test_serve_ping_returns_same_job_id(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+        keep_running = module.dispatch_serve_command(
+            {"command": "ping", "job_id": "job-1"},
+            cache=module.PipelineCache(),
+            emit_fn=replies.append,
+        )
+        self.assertTrue(keep_running)
+        self.assertEqual(replies[-1]["job_id"], "job-1")
+        self.assertEqual(replies[-1]["event"], "pong")
+        self.assertEqual(replies[-1]["protocol_version"], 1)
+
+    def test_serve_clear_cache_is_terminal_for_command_but_keeps_server_running(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+        cache = module.PipelineCache()
+        cache.get_shape_pipeline(lambda: object(), ("shape",))
+        keep_running = module.dispatch_serve_command(
+            {"command": "clear_cache", "job_id": "job-2"},
+            cache=cache,
+            emit_fn=replies.append,
+        )
+        self.assertTrue(keep_running)
+        self.assertIsNone(cache.shape_pipeline)
+        self.assertEqual(replies[-1]["event"], "completed")
+        self.assertEqual(replies[-1]["stage"], "cache_cleared")
+        self.assertEqual(replies[-1]["job_id"], "job-2")
+
+    def test_serve_shutdown_stops_loop(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+        keep_running = module.dispatch_serve_command(
+            {"command": "shutdown", "job_id": "job-3"},
+            cache=module.PipelineCache(),
+            emit_fn=replies.append,
+        )
+        self.assertFalse(keep_running)
+        self.assertEqual(replies[-1]["stage"], "shutdown")
+        self.assertEqual(replies[-1]["job_id"], "job-3")
+
+    def test_serve_unknown_command_returns_protocol_error(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+        keep_running = module.dispatch_serve_command(
+            {"command": "wat", "job_id": "job-4"},
+            cache=module.PipelineCache(),
+            emit_fn=replies.append,
+        )
+        self.assertTrue(keep_running)
+        self.assertEqual(replies[-1]["event"], "error")
+        self.assertEqual(replies[-1]["error_kind"], "protocol_error")
+        self.assertEqual(replies[-1]["job_id"], "job-4")
+
+    def test_serve_missing_job_id_returns_protocol_error(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+        keep_running = module.dispatch_serve_command(
+            {"command": "ping"},
+            cache=module.PipelineCache(),
+            emit_fn=replies.append,
+        )
+        self.assertTrue(keep_running)
+        self.assertEqual(replies[-1]["event"], "error")
+        self.assertEqual(replies[-1]["error_kind"], "protocol_error")
+        self.assertNotIn("job_id", replies[-1])
 
     def test_texture_allows_expert_overrides(self) -> None:
         module = self.load_worker_module()
