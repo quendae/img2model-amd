@@ -1,7 +1,9 @@
-use crate::diagnostics::configured_python;
+use crate::diagnostics::{configured_python, native_rocm_runtime_dir};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerHealth {
@@ -16,6 +18,28 @@ pub struct WorkerHealth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextureHealth {
+    pub ok: bool,
+    pub texgen_available: bool,
+    pub custom_rasterizer_available: bool,
+    pub mesh_processor_available: bool,
+    pub texture_import_ok: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerProgressEvent {
+    pub event: String,
+    pub stage: Option<String>,
+    pub progress: Option<f64>,
+    pub faces_before: Option<u64>,
+    pub faces_after: Option<u64>,
+    pub max_faces: Option<u64>,
+    pub cpu_offload: Option<bool>,
+    pub attention_slicing: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateRequest {
     pub backend: String,
@@ -25,6 +49,19 @@ pub struct GenerateRequest {
     pub subfolder: Option<String>,
     pub steps: u32,
     pub seed: u64,
+    pub remove_background: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextureRequest {
+    pub backend: String,
+    pub mesh: String,
+    pub image: String,
+    pub output: String,
+    pub model: Option<String>,
+    pub subfolder: Option<String>,
+    pub cpu_offload: bool,
     pub remove_background: bool,
 }
 
@@ -48,13 +85,25 @@ pub fn resolve_worker_path(start: &Path) -> Option<PathBuf> {
     None
 }
 
+fn runtime_worker_path(runtime_dir: Option<&Path>) -> Option<PathBuf> {
+    let worker = runtime_dir?.join("worker.py");
+    worker.is_file().then_some(worker)
+}
+
 pub fn configured_worker_path() -> Result<PathBuf, String> {
     if let Ok(value) = std::env::var("IMG2MODEL_WORKER") {
-        let path = PathBuf::from(value);
-        if path.is_file() {
-            return Ok(path);
+        let value = value.trim();
+        if !value.is_empty() {
+            let path = PathBuf::from(value);
+            if path.is_file() {
+                return Ok(path);
+            }
+            return Err(format!("IMG2MODEL_WORKER does not point to a file: {}", path.display()));
         }
-        return Err(format!("IMG2MODEL_WORKER does not point to a file: {}", path.display()));
+    }
+
+    if let Some(path) = runtime_worker_path(native_rocm_runtime_dir().as_deref()) {
+        return Ok(path);
     }
 
     if let Ok(current_dir) = std::env::current_dir() {
@@ -71,7 +120,7 @@ pub fn configured_worker_path() -> Result<PathBuf, String> {
         }
     }
 
-    Err("Could not locate backends/hunyuan/worker.py. Set IMG2MODEL_WORKER explicitly.".to_string())
+    Err("Could not locate the installed runtime worker or backends/hunyuan/worker.py. Set IMG2MODEL_WORKER explicitly.".to_string())
 }
 
 pub fn parse_last_json_line<T: DeserializeOwned>(stdout: &str) -> Result<T, String> {
@@ -100,6 +149,55 @@ fn run_worker(arguments: &[String]) -> Result<Output, String> {
         .map_err(|error| format!("Failed to start Python worker with {python}: {error}"))
 }
 
+fn run_worker_streamed<F>(arguments: &[String], mut on_event: F) -> Result<(std::process::ExitStatus, String, String), String>
+where
+    F: FnMut(WorkerProgressEvent),
+{
+    let python = configured_python();
+    let worker = configured_worker_path()?;
+
+    let mut child = Command::new(&python)
+        .arg(worker)
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to start Python worker with {python}: {error}"))?;
+
+    let stdout = child.stdout.take().ok_or_else(|| "Worker stdout was not captured.".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "Worker stderr was not captured.".to_string())?;
+
+    let stderr_reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+
+    let mut captured_stdout = String::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line.map_err(|error| format!("Failed reading worker output: {error}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        captured_stdout.push_str(&line);
+        captured_stdout.push('\n');
+
+        if let Ok(event) = serde_json::from_str::<WorkerProgressEvent>(&line) {
+            if matches!(event.event.as_str(), "progress" | "completed" | "error") {
+                on_event(event);
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|error| format!("Failed waiting for Python worker: {error}"))?;
+    let captured_stderr = stderr_reader.join().unwrap_or_else(|_| "Worker stderr reader panicked.".to_string());
+
+    Ok((status, captured_stdout, captured_stderr))
+}
+
 pub fn worker_health() -> Result<WorkerHealth, String> {
     let output = run_worker(&["health".to_string(), "--json".to_string()])?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -113,7 +211,27 @@ pub fn worker_health() -> Result<WorkerHealth, String> {
     }
 }
 
+pub fn worker_texture_health() -> Result<TextureHealth, String> {
+    let output = run_worker(&["texture-health".to_string(), "--json".to_string()])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let health: TextureHealth = parse_last_json_line(&stdout)?;
+
+    if output.status.success() {
+        Ok(health)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Texture health command failed: {}", stderr.trim()))
+    }
+}
+
 pub fn generate_shape(request: GenerateRequest) -> Result<GenerateResult, String> {
+    generate_shape_with_progress(request, |_| {})
+}
+
+pub fn generate_shape_with_progress<F>(request: GenerateRequest, on_event: F) -> Result<GenerateResult, String>
+where
+    F: FnMut(WorkerProgressEvent),
+{
     if !backend_is_implemented(&request.backend) {
         return Err(format!(
             "Backend '{}' is not implemented in this MVP. Select native-rocm; no silent fallback was applied.",
@@ -148,21 +266,82 @@ pub fn generate_shape(request: GenerateRequest) -> Result<GenerateResult, String
         arguments.push("--remove-background".to_string());
     }
 
-    let output = run_worker(&arguments)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (status, stdout, stderr) = run_worker_streamed(&arguments, on_event)?;
     let result: GenerateResult = parse_last_json_line(&stdout)?;
 
-    if output.status.success() || !result.ok {
+    if status.success() || !result.ok {
         Ok(result)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Generation worker failed: {}", stderr.trim()))
+    }
+}
+
+pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String> {
+    if !backend_is_implemented(&request.backend) {
+        return Err(format!(
+            "Backend '{}' is not implemented for texture generation. Select native-rocm; no silent fallback was applied.",
+            request.backend
+        ));
+    }
+
+    let model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| "tencent/Hunyuan3D-2".to_string());
+    let subfolder = request
+        .subfolder
+        .clone()
+        .unwrap_or_else(|| "hunyuan3d-paint-v2-0-turbo".to_string());
+
+    let mut arguments = vec![
+        "texture".to_string(),
+        "--mesh".to_string(),
+        request.mesh.clone(),
+        "--image".to_string(),
+        request.image.clone(),
+        "--output".to_string(),
+        request.output.clone(),
+        "--model".to_string(),
+        model,
+        "--subfolder".to_string(),
+        subfolder,
+    ];
+
+    if request.cpu_offload {
+        arguments.push("--cpu-offload".to_string());
+    }
+    if request.remove_background {
+        arguments.push("--remove-background".to_string());
+    }
+
+    Ok(arguments)
+}
+
+pub fn texture_mesh(request: TextureRequest) -> Result<GenerateResult, String> {
+    texture_mesh_with_progress(request, |_| {})
+}
+
+pub fn texture_mesh_with_progress<F>(request: TextureRequest, on_event: F) -> Result<GenerateResult, String>
+where
+    F: FnMut(WorkerProgressEvent),
+{
+    let arguments = texture_arguments(&request)?;
+    let (status, stdout, stderr) = run_worker_streamed(&arguments, on_event)?;
+    let result: GenerateResult = parse_last_json_line(&stdout)?;
+
+    if status.success() || !result.ok {
+        Ok(result)
+    } else {
+        Err(format!("Texture worker failed: {}", stderr.trim()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{backend_is_implemented, parse_last_json_line, resolve_worker_path};
+    use super::{
+        backend_is_implemented, parse_last_json_line, resolve_worker_path, runtime_worker_path,
+        texture_arguments, TextureRequest, WorkerProgressEvent,
+    };
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
@@ -183,6 +362,18 @@ mod tests {
     }
 
     #[test]
+    fn finds_worker_inside_persisted_runtime() {
+        let root = std::env::temp_dir().join(format!("img2model-persisted-worker-test-{}", std::process::id()));
+        let worker = root.join("worker.py");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&worker, "print('ok')").unwrap();
+
+        assert_eq!(runtime_worker_path(Some(&root)), Some(worker.clone()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn returns_none_when_worker_is_not_present() {
         let start = PathBuf::from("/definitely/not/a/repository");
         assert_eq!(resolve_worker_path(&start), None);
@@ -197,6 +388,17 @@ mod tests {
     }
 
     #[test]
+    fn parses_worker_progress_payload() {
+        let event: WorkerProgressEvent = serde_json::from_str(
+            "{\"event\":\"progress\",\"stage\":\"running_shape\",\"progress\":0.3}",
+        )
+        .unwrap();
+        assert_eq!(event.event, "progress");
+        assert_eq!(event.stage.as_deref(), Some("running_shape"));
+        assert_eq!(event.progress, Some(0.3));
+    }
+
+    #[test]
     fn malformed_final_worker_line_is_an_error() {
         let error = parse_last_json_line::<Value>("progress\nnot-json\n").unwrap_err();
         assert!(error.contains("valid JSON"));
@@ -207,5 +409,27 @@ mod tests {
         assert!(backend_is_implemented("native-rocm"));
         assert!(!backend_is_implemented("wsl-rocm"));
         assert!(!backend_is_implemented("vulkan"));
+    }
+
+    #[test]
+    fn texture_arguments_keep_paths_as_separate_process_arguments() {
+        let request = TextureRequest {
+            backend: "native-rocm".to_string(),
+            mesh: "C:\\input folder\\shape.glb".to_string(),
+            image: "C:\\input folder\\source.png".to_string(),
+            output: "C:\\output folder\\textured.glb".to_string(),
+            model: None,
+            subfolder: None,
+            cpu_offload: true,
+            remove_background: true,
+        };
+
+        let arguments = texture_arguments(&request).unwrap();
+        assert_eq!(arguments[0], "texture");
+        assert!(arguments.windows(2).any(|pair| pair == ["--mesh", "C:\\input folder\\shape.glb"]));
+        assert!(arguments.windows(2).any(|pair| pair == ["--image", "C:\\input folder\\source.png"]));
+        assert!(arguments.windows(2).any(|pair| pair == ["--output", "C:\\output folder\\textured.glb"]));
+        assert!(arguments.contains(&"--cpu-offload".to_string()));
+        assert!(arguments.contains(&"--remove-background".to_string()));
     }
 }

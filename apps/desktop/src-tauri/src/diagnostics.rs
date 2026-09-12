@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,9 +38,46 @@ pub fn python_executable_from_override(value: Option<&str>) -> String {
     }
 }
 
+pub fn native_rocm_runtime_dir() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+
+    let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
+    if local_app_data.trim().is_empty() {
+        return None;
+    }
+
+    Some(
+        PathBuf::from(local_app_data)
+            .join("Img2ModelAMD")
+            .join("runtime")
+            .join("native-rocm"),
+    )
+}
+
+fn python_from_runtime_dir(runtime_dir: Option<&Path>) -> Option<String> {
+    let python = runtime_dir?.join("Scripts").join("python.exe");
+    python
+        .is_file()
+        .then(|| python.to_string_lossy().into_owned())
+}
+
 pub fn configured_python() -> String {
     let override_value = std::env::var("IMG2MODEL_PYTHON").ok();
-    python_executable_from_override(override_value.as_deref())
+    if let Some(value) = override_value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return value.to_string();
+    }
+
+    if let Some(runtime_python) = python_from_runtime_dir(native_rocm_runtime_dir().as_deref()) {
+        return runtime_python;
+    }
+
+    python_executable_from_override(None)
 }
 
 fn python_probe() -> Option<String> {
@@ -98,7 +136,8 @@ pub fn collect_system_diagnostics() -> SystemDiagnostics {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_gpu_names, python_executable_from_override};
+    use super::{parse_gpu_names, python_executable_from_override, python_from_runtime_dir};
+    use std::fs;
 
     #[test]
     fn parses_and_deduplicates_amd_gpu_names() {
@@ -123,6 +162,21 @@ mod tests {
             python_executable_from_override(Some("C:\\amd-python\\python.exe")),
             "C:\\amd-python\\python.exe"
         );
+    }
+
+    #[test]
+    fn discovers_python_inside_runtime_dir() {
+        let root = std::env::temp_dir().join(format!("img2model-runtime-test-{}", std::process::id()));
+        let python = root.join("Scripts").join("python.exe");
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(&python, b"").unwrap();
+
+        assert_eq!(
+            python_from_runtime_dir(Some(&root)),
+            Some(python.to_string_lossy().into_owned())
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

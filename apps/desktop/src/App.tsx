@@ -3,14 +3,23 @@ import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { GenerationPanel } from './components/GenerationPanel';
 import { InputPanel } from './components/InputPanel';
 import { ModelViewer } from './components/ModelViewer';
-import type { BackendId, GenerationOptions, SystemDiagnostics, WorkerHealth } from './domain/types';
+import type {
+  BackendId,
+  GenerationOptions,
+  SystemDiagnostics,
+  TextureHealth,
+  WorkerHealth,
+} from './domain/types';
 import {
   chooseInputImage,
   chooseOutputModel,
   generateShape,
   getHunyuanHealth,
+  getHunyuanTextureHealth,
   getSystemDiagnostics,
   localAssetUrl,
+  textureMesh,
+  type WorkerProgressEvent,
 } from './lib/tauri';
 
 const profileSteps: Record<GenerationOptions['profile'], number> = {
@@ -18,6 +27,61 @@ const profileSteps: Record<GenerationOptions['profile'], number> = {
   balanced: 30,
   quality: 50,
 };
+
+type GenerationPhase = 'shape' | 'texture';
+
+interface GenerationProgress {
+  phase: GenerationPhase;
+  value: number;
+  label: string;
+}
+
+const stageLabels: Record<string, string> = {
+  starting_backend: 'Starting AMD backend…',
+  preparing_input: 'Preparing source image…',
+  loading_model: 'Loading Hunyuan model…',
+  running_shape: 'Generating 3D shape…',
+  preparing_mesh: 'Preparing mesh for texturing…',
+  mesh_ready: 'Texture mesh is ready…',
+  running_texture: 'Generating Hunyuan Paint texture…',
+  postprocessing: 'Exporting model…',
+  completed: 'Generation complete.',
+};
+
+function addSuffixBeforeExtension(path: string, suffix: string): string {
+  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const dot = path.lastIndexOf('.');
+  if (dot <= separator) return `${path}${suffix}`;
+  return `${path.slice(0, dot)}${suffix}${path.slice(dot)}`;
+}
+
+function clampProgress(value: number | null | undefined): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function progressLabel(phase: GenerationPhase, event: WorkerProgressEvent): string {
+  if (event.stage === 'mesh_ready' && typeof event.faces_after === 'number') {
+    return `Texture mesh ready · ${event.faces_after.toLocaleString()} triangles`;
+  }
+  if (event.stage && stageLabels[event.stage]) return stageLabels[event.stage];
+  return phase === 'shape' ? 'Generating 3D shape…' : 'Generating texture…';
+}
+
+function combinedProgress(phase: GenerationPhase, event: WorkerProgressEvent, includesTexture: boolean): GenerationProgress {
+  const raw = clampProgress(event.progress);
+  const value = includesTexture
+    ? phase === 'shape'
+      ? raw * 0.4
+      : 0.4 + raw * 0.6
+    : raw;
+
+  return {
+    phase,
+    value,
+    label: progressLabel(phase, event),
+  };
+}
 
 export function App() {
   const [inputPath, setInputPath] = useState<string | null>(null);
@@ -27,11 +91,14 @@ export function App() {
   const [seed, setSeed] = useState(1234);
   const [steps, setSteps] = useState(profileSteps.balanced);
   const [removeBackground, setRemoveBackground] = useState(true);
+  const [texture, setTexture] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [healthLoading, setHealthLoading] = useState(false);
   const [diagnostics, setDiagnostics] = useState<SystemDiagnostics | null>(null);
   const [health, setHealth] = useState<WorkerHealth | null>(null);
+  const [textureHealth, setTextureHealth] = useState<TextureHealth | null>(null);
   const [message, setMessage] = useState('Choose a source image to begin.');
   const [error, setError] = useState<string | null>(null);
 
@@ -59,9 +126,28 @@ export function App() {
     try {
       const result = await getHunyuanHealth();
       setHealth(result);
-      setMessage(result.ok ? 'Hunyuan runtime is ready.' : 'Hunyuan runtime needs setup or repair.');
+
+      try {
+        const textureResult = await getHunyuanTextureHealth();
+        setTextureHealth(textureResult);
+        if (!textureResult.ok) setTexture(false);
+        setMessage(
+          result.ok
+            ? textureResult.ok
+              ? 'Hunyuan shape and texture runtimes are ready.'
+              : 'Hunyuan shape is ready; texture extensions still need setup.'
+            : 'Hunyuan runtime needs setup or repair.',
+        );
+      } catch (textureReason) {
+        setTextureHealth(null);
+        setTexture(false);
+        setMessage(result.ok ? 'Hunyuan shape is ready; texture runtime is not available.' : 'Hunyuan runtime needs setup or repair.');
+        if (!result.ok) setError(String(textureReason));
+      }
     } catch (reason) {
       setHealth(null);
+      setTextureHealth(null);
+      setTexture(false);
       setError(String(reason));
     } finally {
       setHealthLoading(false);
@@ -87,20 +173,31 @@ export function App() {
     const output = await chooseOutputModel();
     if (!output) return;
 
+    const shapeOutput = texture ? addSuffixBeforeExtension(output, '-shape') : output;
+    let preservedShapePath: string | null = null;
+
+    const updateProgress = (phase: GenerationPhase) => (event: WorkerProgressEvent) => {
+      if (event.event === 'error') return;
+      const next = combinedProgress(phase, event, texture);
+      setGenerationProgress(next);
+      setMessage(next.label);
+    };
+
     setBusy(true);
+    setGenerationProgress({ phase: 'shape', value: 0, label: 'Starting Hunyuan shape generation…' });
     setError(null);
-    setMessage('Running Hunyuan shape generation…');
+    setMessage('Starting Hunyuan shape generation…');
     try {
       const result = await generateShape({
         backend,
         input: inputPath,
-        output,
+        output: shapeOutput,
         model: 'tencent/Hunyuan3D-2mini',
         subfolder: 'hunyuan3d-dit-v2-mini',
         steps,
         seed,
         removeBackground,
-      });
+      }, updateProgress('shape'));
 
       if (!result.ok) {
         setError(result.error ?? 'Generation failed without an error message.');
@@ -108,16 +205,63 @@ export function App() {
         return;
       }
 
-      const generatedPath = result.output ?? output;
-      setModelPath(generatedPath);
-      setMessage(`Completed: ${generatedPath}`);
+      preservedShapePath = result.output ?? shapeOutput;
+      setModelPath(preservedShapePath);
+
+      if (!texture) {
+        setGenerationProgress({ phase: 'shape', value: 1, label: 'Shape complete.' });
+        setMessage(`Shape completed: ${preservedShapePath}`);
+        return;
+      }
+
+      if (!textureHealth?.ok) {
+        setError(`Texture runtime is not healthy. Shape was preserved at: ${preservedShapePath}`);
+        setMessage('Shape completed; texture stage was skipped.');
+        return;
+      }
+
+      setGenerationProgress({ phase: 'texture', value: 0.4, label: 'Starting Hunyuan Paint texture stage…' });
+      setMessage('Shape completed. Starting Hunyuan Paint texture stage…');
+      const textureResult = await textureMesh({
+        backend,
+        mesh: preservedShapePath,
+        image: inputPath,
+        output,
+        model: 'tencent/Hunyuan3D-2',
+        subfolder: 'hunyuan3d-paint-v2-0-turbo',
+        cpuOffload: true,
+        removeBackground,
+      }, updateProgress('texture'));
+
+      if (!textureResult.ok) {
+        setError(
+          `${textureResult.error ?? 'Texture generation failed without an error message.'}\n\nShape preserved at: ${preservedShapePath}`,
+        );
+        setMessage('Shape completed; texture stage failed.');
+        return;
+      }
+
+      const texturedPath = textureResult.output ?? output;
+      setModelPath(texturedPath);
+      setGenerationProgress({ phase: 'texture', value: 1, label: 'Shape + texture complete.' });
+      setMessage(`Shape + texture completed: ${texturedPath}`);
     } catch (reason) {
-      setError(String(reason));
-      setMessage('Generation failed.');
+      if (preservedShapePath) {
+        setError(`${String(reason)}\n\nShape preserved at: ${preservedShapePath}`);
+        setMessage('Texture stage failed; shape output was preserved.');
+      } else {
+        setError(String(reason));
+        setMessage('Generation failed.');
+      }
     } finally {
       setBusy(false);
     }
   };
+
+  const progressPercent = busy && generationProgress
+    ? Math.round(generationProgress.value * 100)
+    : null;
+  const progressLabelText = busy ? generationProgress?.label ?? null : null;
 
   return (
     <div className="app-shell">
@@ -153,18 +297,28 @@ export function App() {
             seed={seed}
             steps={steps}
             removeBackground={removeBackground}
+            texture={texture}
+            textureAvailable={Boolean(textureHealth?.ok)}
             busy={busy}
             canGenerate={Boolean(inputPath)}
+            progress={progressPercent}
+            progressLabel={progressLabelText}
             onBackendChange={setBackend}
             onProfileChange={changeProfile}
             onSeedChange={setSeed}
             onStepsChange={setSteps}
             onRemoveBackgroundChange={setRemoveBackground}
+            onTextureChange={setTexture}
             onGenerate={runGeneration}
           />
         </aside>
 
-        <ModelViewer modelUrl={modelUrl} busy={busy} />
+        <ModelViewer
+          modelUrl={modelUrl}
+          busy={busy}
+          progress={progressPercent}
+          progressLabel={progressLabelText}
+        />
 
         <aside className="right-rail">
           <DiagnosticsPanel
@@ -191,7 +345,7 @@ export function App() {
             <div className="activity-meta">
               <span>Model</span><strong>Hunyuan3D 2 Mini</strong>
               <span>Output</span><strong>GLB / OBJ</strong>
-              <span>Texture</span><strong>Shape only (MVP)</strong>
+              <span>Texture</span><strong>{textureHealth?.ok ? 'Hunyuan Paint ready' : 'Optional · runtime not ready'}</strong>
             </div>
           </section>
         </aside>

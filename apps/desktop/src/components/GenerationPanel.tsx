@@ -6,13 +6,18 @@ interface GenerationPanelProps {
   seed: number;
   steps: number;
   removeBackground: boolean;
+  texture: boolean;
+  textureAvailable: boolean;
   busy: boolean;
   canGenerate: boolean;
+  progress?: number | null;
+  progressLabel?: string | null;
   onBackendChange: (backend: BackendId) => void;
   onProfileChange: (profile: GenerationOptions['profile']) => void;
   onSeedChange: (seed: number) => void;
   onStepsChange: (steps: number) => void;
   onRemoveBackgroundChange: (enabled: boolean) => void;
+  onTextureChange: (enabled: boolean) => void;
   onGenerate: () => void;
 }
 
@@ -28,23 +33,29 @@ export function GenerationPanel({
   seed,
   steps,
   removeBackground,
+  texture,
+  textureAvailable,
   busy,
   canGenerate,
+  progress,
+  progressLabel,
   onBackendChange,
   onProfileChange,
   onSeedChange,
   onStepsChange,
   onRemoveBackgroundChange,
+  onTextureChange,
   onGenerate,
 }: GenerationPanelProps) {
   const backendReady = backend === 'native-rocm';
+  const progressValue = Math.min(100, Math.max(0, progress ?? 0));
 
   return (
     <section className="panel generation-panel" aria-labelledby="generation-heading">
       <div className="panel-heading">
         <div>
           <h2 id="generation-heading">Generation</h2>
-          <p>Hunyuan3D 2 Mini · shape-first pipeline</p>
+          <p>Hunyuan3D 2 Mini · shape + optional paint stage</p>
         </div>
       </div>
 
@@ -109,14 +120,51 @@ export function GenerationPanel({
         </span>
       </label>
 
+      <label className="toggle-row">
+        <input
+          type="checkbox"
+          checked={texture}
+          disabled={!textureAvailable}
+          aria-label="Generate texture"
+          onChange={(event) => onTextureChange(event.target.checked)}
+        />
+        <span>
+          <strong>Generate texture</strong>
+          <small>
+            {textureAvailable
+              ? 'Hunyuan Paint runs as a separate stage with CPU offload on 16 GB VRAM.'
+              : 'Texture runtime is not ready. Install the AMD texture extensions first.'}
+          </small>
+        </span>
+      </label>
+
       <button
         type="button"
         className="primary-button"
         disabled={!canGenerate || !backendReady || busy}
         onClick={onGenerate}
       >
-        {busy ? 'Generating…' : 'Generate shape'}
+        {busy ? 'Generating…' : texture ? 'Generate shape + texture' : 'Generate shape'}
       </button>
+
+      {busy && (
+        <div className="generation-progress" aria-live="polite">
+          <div className="generation-progress-copy">
+            <span>{progressLabel ?? 'Working…'}</span>
+            <strong>{Math.round(progressValue)}%</strong>
+          </div>
+          <div
+            className="generation-progress-track"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progressValue)}
+            aria-label="Generation progress"
+          >
+            <span style={{ width: `${progressValue}%` }} />
+          </div>
+        </div>
+      )}
     </section>
   );
 }

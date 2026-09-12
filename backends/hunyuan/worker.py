@@ -48,7 +48,7 @@ def health_payload() -> dict[str, Any]:
             gpu_available = bool(torch.cuda.is_available())
             if gpu_available:
                 device_name = torch.cuda.get_device_name(0)
-        except Exception as exc:  # health must remain callable on broken installs
+        except Exception as exc:
             errors.append(f"PyTorch probe failed: {type(exc).__name__}: {exc}")
 
     if hunyuan_available:
@@ -56,7 +56,7 @@ def health_payload() -> dict[str, Any]:
             from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline  # type: ignore  # noqa: F401
 
             hunyuan_import_ok = True
-        except Exception as exc:  # keep diagnostics callable on dependency mismatches
+        except Exception as exc:
             errors.append(f"Hunyuan import failed: {type(exc).__name__}: {exc}")
 
     usable = bool(
@@ -81,8 +81,155 @@ def health_payload() -> dict[str, Any]:
     }
 
 
+def texture_health_payload() -> dict[str, Any]:
+    texgen_available = module_available("hy3dgen.texgen")
+    custom_rasterizer_detected = module_available("custom_rasterizer")
+    mesh_processor_detected = module_available("mesh_processor")
+    custom_rasterizer_available = False
+    mesh_processor_available = False
+    texture_import_ok = False
+    errors: list[str] = []
+
+    if texgen_available:
+        try:
+            from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore  # noqa: F401
+
+            texture_import_ok = True
+        except Exception as exc:
+            errors.append(f"Hunyuan texture import failed: {type(exc).__name__}: {exc}")
+    else:
+        errors.append("hy3dgen.texgen is not installed")
+
+    if custom_rasterizer_detected:
+        try:
+            import custom_rasterizer  # type: ignore  # noqa: F401
+            import custom_rasterizer_kernel  # type: ignore  # noqa: F401
+
+            custom_rasterizer_available = True
+        except Exception as exc:
+            errors.append(f"custom_rasterizer import failed: {type(exc).__name__}: {exc}")
+    else:
+        errors.append("custom_rasterizer is not installed")
+
+    if mesh_processor_detected:
+        try:
+            import mesh_processor  # type: ignore  # noqa: F401
+
+            mesh_processor_available = True
+        except Exception as exc:
+            errors.append(f"mesh_processor import failed: {type(exc).__name__}: {exc}")
+    else:
+        errors.append("mesh_processor is not installed")
+
+    usable = bool(
+        texgen_available
+        and custom_rasterizer_available
+        and mesh_processor_available
+        and texture_import_ok
+    )
+    return {
+        "ok": usable,
+        "texgen_available": texgen_available,
+        "custom_rasterizer_available": custom_rasterizer_available,
+        "mesh_processor_available": mesh_processor_available,
+        "texture_import_ok": texture_import_ok,
+        "error": "; ".join(errors) if errors else None,
+    }
+
+
+def load_hunyuan_paint_pipeline(
+    paint_pipeline_class: Any,
+    multiview_module: Any,
+    model: str,
+    subfolder: str,
+) -> Any:
+    """Load Hunyuan Paint while allowing its bundled local Diffusers pipeline."""
+
+    original_diffusion_pipeline = multiview_module.DiffusionPipeline
+
+    class TrustedLocalDiffusionPipeline:
+        @staticmethod
+        def from_pretrained(*args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("trust_remote_code", True)
+            return original_diffusion_pipeline.from_pretrained(*args, **kwargs)
+
+    multiview_module.DiffusionPipeline = TrustedLocalDiffusionPipeline
+    try:
+        return paint_pipeline_class.from_pretrained(model, subfolder=subfolder)
+    finally:
+        multiview_module.DiffusionPipeline = original_diffusion_pipeline
+
+
+def prepare_texture_mesh(
+    mesh: Any,
+    *,
+    max_faces: int,
+    floater_remover_cls: Any,
+    degenerate_face_remover_cls: Any,
+    face_reducer_cls: Any,
+) -> Any:
+    """Match the official Hunyuan texture preprocessing flow.
+
+    Tencent's API worker removes floaters and degenerate faces and then reduces
+    the shape to 40k faces by default before Hunyuan Paint. Feeding the raw
+    multi-million-face shape directly into UV wrapping/rasterization can make the
+    texture stage impractically slow and memory hungry.
+    """
+
+    mesh = floater_remover_cls()(mesh)
+    mesh = degenerate_face_remover_cls()(mesh)
+    mesh = face_reducer_cls()(mesh, max_facenum=max_faces)
+    return mesh
+
+
+def configure_texture_memory_profile(
+    pipeline: Any,
+    *,
+    cpu_offload: bool,
+    attention_slicing: str,
+) -> None:
+    """Apply the validated low-VRAM profile for Hunyuan Paint.
+
+    The RX 6950 XT 16 GB hardware validation requires model CPU offload plus
+    maximum Diffusers attention slicing on the bundled multiview pipeline. Keep
+    these controls explicit so higher-memory GPUs can opt out without changing
+    the model or mesh preprocessing path.
+    """
+
+    if cpu_offload:
+        if not hasattr(pipeline, "enable_model_cpu_offload"):
+            raise RuntimeError("Hunyuan Paint pipeline does not support CPU model offload")
+        pipeline.enable_model_cpu_offload()
+
+    if attention_slicing == "off":
+        return
+    if attention_slicing != "max":
+        raise ValueError(f"Unsupported attention slicing mode: {attention_slicing}")
+
+    try:
+        multiview_pipeline = pipeline.models["multiview_model"].pipeline
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise RuntimeError("Hunyuan Paint multiview pipeline is unavailable for attention slicing") from exc
+
+    if hasattr(multiview_pipeline, "enable_attention_slicing"):
+        multiview_pipeline.enable_attention_slicing("max")
+        return
+
+    unet = getattr(multiview_pipeline, "unet", None)
+    if unet is not None and hasattr(unet, "set_attention_slice"):
+        unet.set_attention_slice("max")
+        return
+
+    raise RuntimeError("Hunyuan Paint multiview pipeline does not expose attention slicing")
+
+
 def run_health(_args: argparse.Namespace) -> int:
     print(json.dumps(health_payload(), ensure_ascii=False), flush=True)
+    return 0
+
+
+def run_texture_health(_args: argparse.Namespace) -> int:
+    print(json.dumps(texture_health_payload(), ensure_ascii=False), flush=True)
     return 0
 
 
@@ -119,16 +266,7 @@ def run_probe(_args: argparse.Namespace) -> int:
         )
         return 0
     except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), flush=True)
         return 1
 
 
@@ -139,7 +277,6 @@ def run_generate(args: argparse.Namespace) -> int:
     if not input_path.is_file():
         emit("error", ok=False, error=f"Input image does not exist: {input_path}")
         return 2
-
     if output_path.suffix.lower() not in {".glb", ".obj"}:
         emit("error", ok=False, error="Output must use .glb or .obj extension")
         return 2
@@ -201,6 +338,132 @@ def run_generate(args: argparse.Namespace) -> int:
         return 1
 
 
+def run_texture(args: argparse.Namespace) -> int:
+    mesh_path = Path(args.mesh).expanduser().resolve()
+    image_path = Path(args.image).expanduser().resolve()
+    output_path = Path(args.output).expanduser().resolve()
+
+    if not mesh_path.is_file():
+        emit("error", ok=False, error=f"Input mesh does not exist: {mesh_path}")
+        return 2
+    if not image_path.is_file():
+        emit("error", ok=False, error=f"Input image does not exist: {image_path}")
+        return 2
+    if output_path.suffix.lower() not in {".glb", ".obj"}:
+        emit("error", ok=False, error="Texture output must use .glb or .obj extension")
+        return 2
+    if args.max_faces <= 0:
+        emit("error", ok=False, error="--max-faces must be greater than zero")
+        return 2
+
+    capability = texture_health_payload()
+    if not capability["ok"]:
+        emit(
+            "error",
+            ok=False,
+            error=(
+                "Hunyuan texture runtime is unavailable: "
+                f"{capability['error']}. Run scripts/setup/windows-hunyuan-texture.ps1 first."
+            ),
+        )
+        return 3
+
+    try:
+        emit("progress", ok=True, stage="starting_backend", progress=0.05)
+
+        import torch  # type: ignore
+        import trimesh  # type: ignore
+        from PIL import Image  # type: ignore
+        from hy3dgen.shapegen import DegenerateFaceRemover, FaceReducer, FloaterRemover  # type: ignore
+        from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore
+        import hy3dgen.texgen.utils.multiview_utils as multiview_utils  # type: ignore
+
+        emit("progress", ok=True, stage="preparing_input", progress=0.10)
+        mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
+        image = Image.open(image_path).convert("RGBA")
+        if args.remove_background:
+            from hy3dgen.rembg import BackgroundRemover  # type: ignore
+
+            image = BackgroundRemover()(image)
+
+        faces_before = int(len(mesh.faces))
+        emit(
+            "progress",
+            ok=True,
+            stage="preparing_mesh",
+            progress=0.14,
+            faces_before=faces_before,
+            max_faces=args.max_faces,
+        )
+        mesh = prepare_texture_mesh(
+            mesh,
+            max_faces=args.max_faces,
+            floater_remover_cls=FloaterRemover,
+            degenerate_face_remover_cls=DegenerateFaceRemover,
+            face_reducer_cls=FaceReducer,
+        )
+        faces_after = int(len(mesh.faces))
+        emit(
+            "progress",
+            ok=True,
+            stage="mesh_ready",
+            progress=0.18,
+            faces_before=faces_before,
+            faces_after=faces_after,
+        )
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        emit("progress", ok=True, stage="loading_model", progress=0.22)
+        pipeline = load_hunyuan_paint_pipeline(
+            Hunyuan3DPaintPipeline,
+            multiview_utils,
+            args.model,
+            args.subfolder,
+        )
+        configure_texture_memory_profile(
+            pipeline,
+            cpu_offload=bool(args.cpu_offload),
+            attention_slicing=args.attention_slicing,
+        )
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        emit(
+            "progress",
+            ok=True,
+            stage="running_texture",
+            progress=0.35,
+            cpu_offload=bool(args.cpu_offload),
+            attention_slicing=args.attention_slicing,
+        )
+        textured_mesh = pipeline(mesh, image=image)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        emit("progress", ok=True, stage="postprocessing", progress=0.92)
+        textured_mesh.export(str(output_path))
+        emit(
+            "completed",
+            ok=True,
+            stage="completed",
+            progress=1.0,
+            output=str(output_path),
+            model=args.model,
+            subfolder=args.subfolder,
+            max_faces=args.max_faces,
+            faces_before=faces_before,
+            faces_after=faces_after,
+            cpu_offload=bool(args.cpu_offload),
+            attention_slicing=args.attention_slicing,
+        )
+        return 0
+    except Exception as exc:
+        emit("error", ok=False, error=f"{type(exc).__name__}: {exc}")
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Img2Model AMD Hunyuan worker")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -208,6 +471,13 @@ def build_parser() -> argparse.ArgumentParser:
     health = subparsers.add_parser("health", help="Probe the Python/ROCm/Hunyuan runtime")
     health.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
     health.set_defaults(func=run_health)
+
+    texture_health = subparsers.add_parser(
+        "texture-health",
+        help="Probe Hunyuan texture pipeline and native rasterizer capability",
+    )
+    texture_health.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
+    texture_health.set_defaults(func=run_texture_health)
 
     probe = subparsers.add_parser("probe", help="Run a real ROCm tensor operation on the selected GPU")
     probe.add_argument("--json", action="store_true", help="Kept for CLI compatibility; output is always JSON")
@@ -223,6 +493,28 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--seed", type=int, default=1234)
     generate.add_argument("--remove-background", action="store_true")
     generate.set_defaults(func=run_generate)
+
+    texture = subparsers.add_parser("texture", help="Texture an existing mesh from the source image")
+    texture.add_argument("--mesh", required=True)
+    texture.add_argument("--image", required=True)
+    texture.add_argument("--output", required=True)
+    texture.add_argument("--model", default="tencent/Hunyuan3D-2")
+    texture.add_argument("--subfolder", default="hunyuan3d-paint-v2-0-turbo")
+    texture.add_argument("--max-faces", type=int, default=40000)
+    texture.add_argument(
+        "--cpu-offload",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Offload Hunyuan Paint modules to CPU between use; enabled by default for 16 GB GPUs",
+    )
+    texture.add_argument(
+        "--attention-slicing",
+        choices=("max", "off"),
+        default="max",
+        help="Diffusers multiview attention slicing mode; max is the validated RX 6950 XT setting",
+    )
+    texture.add_argument("--remove-background", action="store_true")
+    texture.set_defaults(func=run_texture)
 
     return parser
 

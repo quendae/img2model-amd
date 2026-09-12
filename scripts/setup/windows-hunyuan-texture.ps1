@@ -1,0 +1,436 @@
+param(
+    [string]$PythonExe = $env:IMG2MODEL_PYTHON,
+    [string]$RuntimeDir = "",
+    [string]$HunyuanRef = "f8db63096c8282cb27354314d896feba5ba6ff8a",
+    [string]$GpuArch = "gfx1030",
+    [switch]$ForceRebuild
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+$WorkerSource = Join-Path $RepoRoot "backends\hunyuan\worker.py"
+
+if ([string]::IsNullOrWhiteSpace($RuntimeDir)) {
+    if (-not [string]::IsNullOrWhiteSpace($PythonExe)) {
+        $RuntimeDir = Split-Path -Parent (Split-Path -Parent ([System.IO.Path]::GetFullPath($PythonExe)))
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $RuntimeDir = Join-Path $env:LOCALAPPDATA "Img2ModelAMD\runtime\native-rocm"
+    } else {
+        throw "LOCALAPPDATA is not available; pass -RuntimeDir or -PythonExe explicitly."
+    }
+}
+
+$RuntimeDir = [System.IO.Path]::GetFullPath($RuntimeDir)
+if ([string]::IsNullOrWhiteSpace($PythonExe)) {
+    $PythonExe = Join-Path $RuntimeDir "Scripts\python.exe"
+}
+$PythonExe = [System.IO.Path]::GetFullPath($PythonExe)
+$PythonScripts = Split-Path -Parent $PythonExe
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
+$InstalledWorker = Join-Path $RuntimeDir "worker.py"
+$SourceRoot = Join-Path $RuntimeDir "texture-build\hunyuan-src"
+$ArchivePath = Join-Path $RuntimeDir "texture-build\hunyuan.zip"
+$ExtractRoot = Join-Path $RuntimeDir "texture-build\extract"
+$LogDir = Join-Path $RuntimeDir "logs"
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$LogPath = Join-Path $LogDir ("texture-setup-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
+
+function Assert-File([string]$Path, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label does not exist: $Path"
+    }
+}
+
+function Add-LogLine([string]$Line) {
+    Add-Content -LiteralPath $LogPath -Value $Line -Encoding UTF8
+}
+
+function Show-LogTail {
+    if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+        Write-Host ""
+        Write-Host "Last 80 log lines:" -ForegroundColor Yellow
+        Get-Content -LiteralPath $LogPath -Tail 80 | ForEach-Object { Write-Host $_ }
+    }
+    Write-Host ""
+    Write-Host "Full log: $LogPath" -ForegroundColor Yellow
+}
+
+function Invoke-Checked([string]$Label, [scriptblock]$Command) {
+    Write-Host $Label -ForegroundColor Cyan
+    Add-LogLine ""
+    Add-LogLine ("==== {0} ====" -f $Label)
+    Add-LogLine ("Started: {0:o}" -f (Get-Date))
+
+    # Windows PowerShell 5.1 promotes redirected native stderr to ErrorRecord
+    # objects. With ErrorActionPreference=Stop that can terminate this wrapper
+    # before pip prints the actual compiler traceback. Convert each record back
+    # to text and append it explicitly as UTF-8 instead of using Tee-Object,
+    # whose Windows PowerShell file encoding would otherwise corrupt this UTF-8
+    # log with UTF-16/NUL bytes.
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Command 2>&1 | ForEach-Object {
+            Add-Content -LiteralPath $LogPath -Value ([string]$_) -Encoding UTF8
+        }
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+
+    Add-LogLine ("Exit code: {0}" -f $ExitCode)
+
+    if ($ExitCode -ne 0) {
+        Show-LogTail
+        throw "$Label failed with exit code $ExitCode."
+    }
+
+    Write-Host "  OK" -ForegroundColor Green
+}
+
+Assert-File $PythonExe "Img2Model Python runtime"
+Assert-File $WorkerSource "Img2Model worker source"
+
+$HeaderLines = @(
+    "Img2Model AMD Hunyuan texture setup",
+    "Started     : $((Get-Date).ToString('o'))",
+    "Python      : $PythonExe",
+    "Runtime     : $RuntimeDir",
+    "Hunyuan ref : $HunyuanRef",
+    "GPU arch    : $GpuArch",
+    "Full log    : $LogPath"
+)
+Set-Content -LiteralPath $LogPath -Value $HeaderLines -Encoding UTF8
+
+Write-Host "Img2Model AMD Hunyuan texture setup" -ForegroundColor Cyan
+Write-Host "  Python     : $PythonExe"
+Write-Host "  Runtime    : $RuntimeDir"
+Write-Host "  Hunyuan ref: $HunyuanRef"
+Write-Host "  GPU arch   : $GpuArch"
+Write-Host "  Full log   : $LogPath" -ForegroundColor Yellow
+Write-Host ""
+
+$TorchInfo = @(& $PythonExe -c "import json, torch; from torch.utils.cpp_extension import ROCM_HOME, IS_HIP_EXTENSION; print(json.dumps({'torch':torch.__version__,'hip':getattr(torch.version,'hip',None),'rocm_home':ROCM_HOME,'is_hip_extension':bool(IS_HIP_EXTENSION)}))")
+if ($LASTEXITCODE -ne 0 -or $TorchInfo.Count -eq 0) {
+    Show-LogTail
+    throw "Unable to inspect the installed ROCm PyTorch runtime. Run windows-native-rocm.ps1 first."
+}
+$TorchJson = $TorchInfo | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1
+$Torch = $TorchJson | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace([string]$Torch.hip)) {
+    throw "Installed PyTorch is not an ROCm build (torch.version.hip is empty)."
+}
+if (-not $Torch.is_hip_extension) {
+    throw "PyTorch did not enable HIP extension compilation. ROCM_HOME=$($Torch.rocm_home)"
+}
+if ([string]::IsNullOrWhiteSpace([string]$Torch.rocm_home)) {
+    throw "PyTorch could not locate ROCM_HOME from the TheRock runtime."
+}
+
+# torch.utils.cpp_extension initially sees the compact _rocm_sdk_core tree. That
+# is sufficient for runtime use, but external HIP extension compilation also
+# needs the development tree (rocThrust/rocPRIM headers such as thrust/complex.h).
+$TorchRocmHome = [System.IO.Path]::GetFullPath([string]$Torch.rocm_home)
+$RocmSdkPath = Join-Path $PythonScripts "rocm-sdk.exe"
+if (-not (Test-Path -LiteralPath $RocmSdkPath -PathType Leaf)) {
+    $RocmSdkCommand = Get-Command rocm-sdk.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace([string]$RocmSdkCommand)) {
+        $RocmSdkPath = $RocmSdkCommand
+    }
+}
+Assert-File $RocmSdkPath "TheRock rocm-sdk CLI"
+
+Invoke-Checked "Initializing TheRock development tree..." {
+    & $RocmSdkPath init
+}
+
+$PreviousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = "Continue"
+    $RocmRootLines = @(& $RocmSdkPath path --root 2>&1 | ForEach-Object {
+        $Line = [string]$_
+        Add-LogLine $Line
+        $Line
+    })
+    $RocmRootExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
+if ($RocmRootExitCode -ne 0) {
+    Show-LogTail
+    throw "rocm-sdk path --root failed with exit code $RocmRootExitCode."
+}
+
+$RocmDevelRoot = $null
+foreach ($CandidateRootLine in $RocmRootLines) {
+    $CandidateRoot = $CandidateRootLine.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($CandidateRoot) -and (Test-Path -LiteralPath $CandidateRoot -PathType Container)) {
+        $RocmDevelRoot = [System.IO.Path]::GetFullPath($CandidateRoot)
+    }
+}
+if ([string]::IsNullOrWhiteSpace([string]$RocmDevelRoot)) {
+    Show-LogTail
+    throw "rocm-sdk path --root did not return an existing TheRock development tree."
+}
+
+$RocmIncludePath = Join-Path $RocmDevelRoot "include"
+$ThrustHeader = Join-Path $RocmIncludePath "thrust\complex.h"
+Assert-File $ThrustHeader "rocThrust header thrust\complex.h"
+
+$DeviceLibCandidates = @(
+    (Join-Path $RocmDevelRoot "lib\llvm\amdgcn\bitcode"),
+    (Join-Path $TorchRocmHome "lib\llvm\amdgcn\bitcode")
+)
+$DeviceLibPath = $DeviceLibCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace([string]$DeviceLibPath)) {
+    foreach ($SearchRoot in @($RocmDevelRoot, $TorchRocmHome)) {
+        $DeviceLibMarker = Get-ChildItem -LiteralPath $SearchRoot -Filter "ocml.bc" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $DeviceLibMarker) {
+            $DeviceLibPath = $DeviceLibMarker.Directory.FullName
+            break
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace([string]$DeviceLibPath) -or -not (Test-Path -LiteralPath $DeviceLibPath -PathType Container)) {
+    Show-LogTail
+    throw "ROCm device libraries were not found below the TheRock core/devel runtime."
+}
+
+$env:ROCM_HOME = $RocmDevelRoot
+$env:ROCM_PATH = $RocmDevelRoot
+$env:HIP_PATH = $RocmDevelRoot
+$env:HIP_DEVICE_LIB_PATH = $DeviceLibPath
+$env:ROCM_DEVICE_LIB_PATH = $DeviceLibPath
+$env:PYTORCH_ROCM_ARCH = $GpuArch
+if ([string]::IsNullOrWhiteSpace($env:CPATH)) {
+    $env:CPATH = $RocmIncludePath
+} else {
+    $env:CPATH = $RocmIncludePath + [System.IO.Path]::PathSeparator + $env:CPATH
+}
+if ([string]::IsNullOrWhiteSpace($env:CPLUS_INCLUDE_PATH)) {
+    $env:CPLUS_INCLUDE_PATH = $RocmIncludePath
+} else {
+    $env:CPLUS_INCLUDE_PATH = $RocmIncludePath + [System.IO.Path]::PathSeparator + $env:CPLUS_INCLUDE_PATH
+}
+$env:PATH = $PythonScripts + ";" + (Join-Path $RocmDevelRoot "bin") + ";" + $env:PATH
+
+$HipccPath = Get-Command hipcc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+$ClangPath = Get-Command clang++.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+$ClPath = Get-Command cl.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+
+Write-Host "ROCm extension compiler diagnostics:" -ForegroundColor Cyan
+Write-Host "  torch        : $($Torch.torch)"
+Write-Host "  HIP          : $($Torch.hip)"
+Write-Host "  core root    : $TorchRocmHome"
+Write-Host "  devel root   : $RocmDevelRoot"
+Write-Host "  include root : $RocmIncludePath"
+Write-Host "  device libs  : $DeviceLibPath"
+Write-Host "  HIP extension: $($Torch.is_hip_extension)"
+Write-Host "  hipcc        : $HipccPath"
+Write-Host "  clang++      : $ClangPath"
+Write-Host "  cl.exe       : $ClPath"
+Write-Host ""
+
+Add-LogLine ""
+Add-LogLine "ROCm extension compiler diagnostics:"
+Add-LogLine ("torch         : {0}" -f $Torch.torch)
+Add-LogLine ("HIP           : {0}" -f $Torch.hip)
+Add-LogLine ("core root     : {0}" -f $TorchRocmHome)
+Add-LogLine ("devel root    : {0}" -f $RocmDevelRoot)
+Add-LogLine ("include root  : {0}" -f $RocmIncludePath)
+Add-LogLine ("device libs   : {0}" -f $DeviceLibPath)
+Add-LogLine ("HIP extension : {0}" -f $Torch.is_hip_extension)
+Add-LogLine ("hipcc         : {0}" -f $HipccPath)
+Add-LogLine ("clang++       : {0}" -f $ClangPath)
+Add-LogLine ("cl.exe        : {0}" -f $ClPath)
+
+# PyTorch 2.13's Windows ROCm extension path is substantially more reliable with
+# Ninja. In particular, the distutils fallback observed on the RX 6950 XT omitted
+# the C++20 language flag required by current PyTorch headers.
+Invoke-Checked "Installing/upgrading Ninja build backend..." {
+    & $PythonExe -m pip install --upgrade ninja
+}
+$NinjaPath = Get-Command ninja.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+if ([string]::IsNullOrWhiteSpace([string]$NinjaPath)) {
+    Show-LogTail
+    throw "Ninja was installed into the runtime but ninja.exe is still not visible on PATH: $PythonScripts"
+}
+Write-Host "  Ninja build backend: $NinjaPath"
+Add-LogLine ("Ninja build backend: {0}" -f $NinjaPath)
+Write-Host ""
+
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArchivePath) | Out-Null
+
+if ($ForceRebuild -or -not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
+    if (Test-Path -LiteralPath $ExtractRoot) {
+        Remove-Item -Recurse -Force $ExtractRoot
+    }
+    New-Item -ItemType Directory -Force -Path $ExtractRoot | Out-Null
+
+    $ArchiveUrl = "https://github.com/Tencent-Hunyuan/Hunyuan3D-2/archive/$HunyuanRef.zip"
+    Write-Host "Downloading Hunyuan3D-2 source for texture extension build..." -ForegroundColor Cyan
+    Add-LogLine ("Downloading Hunyuan source: {0}" -f $ArchiveUrl)
+    Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ArchivePath -UseBasicParsing
+
+    Write-Host "Extracting texture build sources..." -ForegroundColor Cyan
+    Expand-Archive -LiteralPath $ArchivePath -DestinationPath $ExtractRoot -Force
+    $ExtractedDir = Get-ChildItem -LiteralPath $ExtractRoot -Directory | Select-Object -First 1
+    if ($null -eq $ExtractedDir) {
+        Show-LogTail
+        throw "Hunyuan source archive did not contain an extracted directory."
+    }
+
+    if (Test-Path -LiteralPath $SourceRoot) {
+        Remove-Item -Recurse -Force $SourceRoot
+    }
+    Move-Item -LiteralPath $ExtractedDir.FullName -Destination $SourceRoot
+}
+
+$CustomRasterizer = Join-Path $SourceRoot "hy3dgen\texgen\custom_rasterizer"
+$DifferentiableRenderer = Join-Path $SourceRoot "hy3dgen\texgen\differentiable_renderer"
+$RasterizerKernelDir = Join-Path $CustomRasterizer "lib\custom_rasterizer_kernel"
+$RasterizerHeader = Join-Path $RasterizerKernelDir "rasterizer.h"
+Assert-File (Join-Path $CustomRasterizer "setup.py") "custom_rasterizer setup.py"
+Assert-File (Join-Path $DifferentiableRenderer "setup.py") "differentiable_renderer setup.py"
+Assert-File $RasterizerHeader "custom_rasterizer rasterizer.h"
+
+# On Windows PyTorch compiles .cpp host sources with MSVC and the .cu/.hip source
+# with hipcc. Hipify changes CUDAContext.h to HIPContext.h in the shared header;
+# if host MSVC includes that header, ROCm's Clang-only __attribute__ syntax fails.
+# Keep the device context include behind the device compiler guard and make the
+# CUDA/HIP function annotations no-ops for the host-only translation units.
+Write-Host "Patching Hunyuan rasterizer header for MSVC/HIP split..." -ForegroundColor Cyan
+Add-LogLine "Patching Hunyuan rasterizer header for MSVC/HIP split..."
+$RasterizerHeaderText = Get-Content -LiteralPath $RasterizerHeader -Raw
+$CudaContextInclude = '#include <ATen/cuda/CUDAContext.h> // For CUDA context'
+$HostSafeContextBlock = @'
+#if defined(__CUDACC__) || defined(__HIPCC__)
+#include <ATen/cuda/CUDAContext.h> // For CUDA/HIP device context
+#else
+#ifndef __host__
+#define __host__
+#endif
+#ifndef __device__
+#define __device__
+#endif
+#endif
+'@
+
+if ($RasterizerHeaderText.Contains($CudaContextInclude)) {
+    $RasterizerHeaderText = $RasterizerHeaderText.Replace($CudaContextInclude, $HostSafeContextBlock.TrimEnd())
+    Add-LogLine "Applied host-safe rasterizer.h patch."
+} elseif ($RasterizerHeaderText.Contains('defined(__CUDACC__) || defined(__HIPCC__)')) {
+    Add-LogLine "Host-safe rasterizer.h patch already present."
+} else {
+    Show-LogTail
+    throw "Pinned Hunyuan rasterizer.h no longer matches the expected CUDAContext include; refusing to patch an unknown source layout."
+}
+
+# Windows PowerShell 5.1's Set-Content -Encoding UTF8 writes a BOM. Hipify can
+# preserve/move that BOM into rasterizer_hip.h after its generated prologue,
+# where MSVC sees EF BB BF in the middle of the file and rejects the #if line.
+$Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText($RasterizerHeader, $RasterizerHeaderText, $Utf8NoBom)
+Add-LogLine "Normalized rasterizer.h to UTF-8 without BOM."
+
+# PyTorch hipify leaves generated siblings next to the CUDA sources. Remove them
+# so a rerun after a failed build cannot reuse a pre-patch rasterizer_hip.h.
+$GeneratedHipNames = @(
+    "rasterizer_hip.h",
+    "rasterizer_hip.cpp",
+    "grid_neighbor_hip.cpp",
+    "rasterizer_gpu.hip"
+)
+foreach ($GeneratedHipName in $GeneratedHipNames) {
+    $GeneratedHipPath = Join-Path $RasterizerKernelDir $GeneratedHipName
+    if (Test-Path -LiteralPath $GeneratedHipPath) {
+        Remove-Item -LiteralPath $GeneratedHipPath -Force
+        Add-LogLine ("Removed stale hipify output: {0}" -f $GeneratedHipPath)
+    }
+}
+$CustomBuildDir = Join-Path $CustomRasterizer "build"
+if (Test-Path -LiteralPath $CustomBuildDir) {
+    Remove-Item -LiteralPath $CustomBuildDir -Recurse -Force
+    Add-LogLine ("Removed stale extension build directory: {0}" -f $CustomBuildDir)
+}
+Write-Host "  OK" -ForegroundColor Green
+
+Copy-Item -Force $WorkerSource $InstalledWorker
+
+# The upstream custom_rasterizer setup.py does not specify a language standard.
+# PyTorch 2.13 headers require C++20. Force it for MSVC even if BuildExtension
+# unexpectedly falls back from Ninja again; restore the user's CL afterwards.
+$PreviousCl = [Environment]::GetEnvironmentVariable("CL", "Process")
+try {
+    if ([string]::IsNullOrWhiteSpace($PreviousCl)) {
+        $env:CL = "/std:c++20"
+    } elseif ($PreviousCl -notmatch "(^|\s)/std:c\+\+(20|latest)(\s|$)") {
+        $env:CL = "/std:c++20 $PreviousCl"
+    }
+    Add-LogLine ("CL for custom_rasterizer: {0}" -f $env:CL)
+
+    Push-Location $CustomRasterizer
+    try {
+        Invoke-Checked "Building custom_rasterizer through PyTorch ROCm/HIPify..." {
+            & $PythonExe -m pip install --verbose --no-build-isolation --force-reinstall --no-deps .
+        }
+    } finally {
+        Pop-Location
+    }
+} finally {
+    if ($null -eq $PreviousCl) {
+        Remove-Item Env:CL -ErrorAction SilentlyContinue
+    } else {
+        $env:CL = $PreviousCl
+    }
+}
+
+Push-Location $DifferentiableRenderer
+try {
+    Invoke-Checked "Building differentiable_renderer mesh_processor extension..." {
+        & $PythonExe -m pip install --verbose --no-build-isolation --force-reinstall --no-deps .
+    }
+} finally {
+    Pop-Location
+}
+
+Write-Host ""
+Write-Host "Texture runtime health:" -ForegroundColor Cyan
+$PreviousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = "Continue"
+    $HealthLines = @(& $PythonExe $InstalledWorker texture-health --json 2>&1 | ForEach-Object {
+        $Line = [string]$_
+        Add-Content -LiteralPath $LogPath -Value $Line -Encoding UTF8
+        $Line
+    })
+    $HealthExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
+if ($HealthExitCode -ne 0) {
+    Show-LogTail
+    throw "Texture health command failed with exit code $HealthExitCode."
+}
+$HealthLines | ForEach-Object { Write-Host $_ }
+$HealthJson = $HealthLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1
+if ([string]::IsNullOrWhiteSpace($HealthJson)) {
+    Show-LogTail
+    throw "Texture health returned no JSON output."
+}
+$Health = $HealthJson | ConvertFrom-Json
+if (-not $Health.ok) {
+    Show-LogTail
+    throw "Texture runtime is not healthy after extension build: $($Health.error)"
+}
+
+Write-Host ""
+Write-Host "Hunyuan texture runtime is ready." -ForegroundColor Green
+Write-Host "The existing shape runtime was preserved; only texture extensions were added."
+Write-Host "Recommended first texture run uses --cpu-offload on 16 GB VRAM."
+Write-Host "Full log: $LogPath" -ForegroundColor Yellow
+Add-LogLine ("Completed successfully: {0:o}" -f (Get-Date))
