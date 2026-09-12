@@ -186,16 +186,20 @@ describe('App cleanup workflows', () => {
 
     expect(screen.getByText('Cleanup cache')).toBeTruthy();
     expect(screen.getByText('Mesh cleanup')).toBeTruthy();
+    expect(screen.getByText('Cleanup preset')).toBeTruthy();
+    expect(screen.getByText('Game-ready', { selector: 'strong' })).toBeTruthy();
     expect(screen.getByText('Triangles')).toBeTruthy();
     expect(screen.getByText(/312,000.*305,000/)).toBeTruthy();
     expect(screen.getByText('Vertices')).toBeTruthy();
     expect(screen.getByText(/158,000.*151,000/)).toBeTruthy();
-    expect(screen.getByText('Islands')).toBeTruthy();
-    expect(screen.getByText(/93.*12/)).toBeTruthy();
-    expect(screen.getByText('Welded')).toBeTruthy();
+    expect(screen.getByText('Components removed')).toBeTruthy();
+    expect(screen.getByText('81', { selector: 'strong' })).toBeTruthy();
+    expect(screen.getByText('Vertices welded')).toBeTruthy();
     expect(screen.getByText(/6,400/)).toBeTruthy();
-    expect(screen.getByText('Spikes')).toBeTruthy();
+    expect(screen.getByText('Spikes adjusted')).toBeTruthy();
     expect(screen.getByText(/214/)).toBeTruthy();
+    expect(screen.getByText('Algorithm')).toBeTruthy();
+    expect(screen.getByText('mesh-cleanup-v1')).toBeTruthy();
     expect(screen.getByText(/not watertight/i)).toBeTruthy();
   });
 
