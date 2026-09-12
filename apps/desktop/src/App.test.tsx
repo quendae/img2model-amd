@@ -33,7 +33,9 @@ vi.mock('./components/GenerationPanel', () => ({
 }));
 
 vi.mock('./components/ModelViewer', () => ({
-  ModelViewer: () => <div data-testid="model-viewer" />,
+  ModelViewer: ({ modelUrl }: { modelUrl: string | null }) => (
+    <div data-testid="model-viewer">{modelUrl ?? 'none'}</div>
+  ),
 }));
 
 vi.mock('./components/DiagnosticsPanel', () => ({
@@ -147,6 +149,65 @@ describe('App cleanup workflows', () => {
       preset: 'game-ready',
       overrides: {},
     }));
+  });
+
+  it('shows the full cleanup report in Activity', () => {
+    mocks.useGenerationJob.mockReturnValue(jobState({
+      timingSummary: {
+        totalMs: 1800,
+        meshCleanupMs: 1800,
+        cleanupCacheHit: true,
+        cleanupReport: {
+          preset: 'game-ready',
+          config_label: 'Game-ready',
+          algorithm_version: 'mesh-cleanup-v1',
+          triangles_before: 312000,
+          triangles_after: 305000,
+          vertices_before: 158000,
+          vertices_after: 151000,
+          components_before: 93,
+          components_after: 12,
+          components_removed: 81,
+          vertices_welded: 6400,
+          spikes_adjusted: 214,
+          cleanup_ms: 1800,
+          warnings: ['Mesh is still not watertight after cleanup.'],
+        },
+      },
+    }));
+
+    render(<App />);
+
+    expect(screen.getByText('Cleanup cache')).toBeTruthy();
+    expect(screen.getByText('Mesh cleanup')).toBeTruthy();
+    expect(screen.getByText('Triangles')).toBeTruthy();
+    expect(screen.getByText(/312,000.*305,000/)).toBeTruthy();
+    expect(screen.getByText('Vertices')).toBeTruthy();
+    expect(screen.getByText(/158,000.*151,000/)).toBeTruthy();
+    expect(screen.getByText('Islands')).toBeTruthy();
+    expect(screen.getByText(/93.*12/)).toBeTruthy();
+    expect(screen.getByText('Welded')).toBeTruthy();
+    expect(screen.getByText(/6,400/)).toBeTruthy();
+    expect(screen.getByText('Spikes')).toBeTruthy();
+    expect(screen.getByText(/214/)).toBeTruthy();
+    expect(screen.getByText(/not watertight/i)).toBeTruthy();
+  });
+
+  it('switches the viewer between raw Before and cleaned After meshes', async () => {
+    mocks.useGenerationJob.mockReturnValue(jobState({
+      resultPath: 'C:/model-clean.glb',
+      preservedShapePath: 'C:/model-shape.glb',
+      cleanedShapePath: 'C:/model-clean.glb',
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('model-viewer').textContent).toBe('C:/model-clean.glb'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Before' }));
+    expect(screen.getByTestId('model-viewer').textContent).toBe('C:/model-shape.glb');
+
+    fireEvent.click(screen.getByRole('button', { name: 'After' }));
+    expect(screen.getByTestId('model-viewer').textContent).toBe('C:/model-clean.glb');
   });
 });
 
