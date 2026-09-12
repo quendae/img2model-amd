@@ -71,6 +71,14 @@ def prepared_mesh_cache_key(mesh_path: Path, max_faces: int) -> tuple[Any, ...]:
     return (str(resolved), stat.st_size, stat.st_mtime_ns, int(max_faces))
 
 
+def prepared_image_cache_key(image_path: Path, remove_background: bool) -> tuple[Any, ...]:
+    """Key a prepared image by file identity and background-removal policy."""
+
+    resolved = image_path.expanduser().resolve()
+    stat = resolved.stat()
+    return (str(resolved), stat.st_size, stat.st_mtime_ns, bool(remove_background))
+
+
 class PipelineCache:
     """Bounded cache for one heavyweight Hunyuan pipeline at a time."""
 
@@ -83,6 +91,8 @@ class PipelineCache:
         self.prepared_mesh_key: tuple[Any, ...] | None = None
         self.prepared_mesh_faces_before: int | None = None
         self.prepared_mesh_faces_after: int | None = None
+        self.prepared_image: Any | None = None
+        self.prepared_image_key: tuple[Any, ...] | None = None
         self.event_sink = event_sink
 
     def _event(self, stage: str, cache_kind: str, cache_hit: bool | None = None) -> None:
@@ -134,14 +144,30 @@ class PipelineCache:
         gc.collect()
         self._event("evicted_prepared_mesh" if evicted else "cache_cleared", "prepared_mesh")
 
+    def clear_prepared_image(self, *, evicted: bool = False) -> None:
+        if self.prepared_image is None:
+            self.prepared_image_key = None
+            return
+        image = self.prepared_image
+        self.prepared_image = None
+        self.prepared_image_key = None
+        close = getattr(image, "close", None)
+        if callable(close):
+            close()
+        del image
+        gc.collect()
+        self._event("evicted_prepared_image" if evicted else "cache_cleared", "prepared_image")
+
     def clear(self) -> None:
         had_shape = self.shape_pipeline is not None
         had_texture = self.texture_pipeline is not None
         had_prepared_mesh = self.prepared_mesh is not None
+        had_prepared_image = self.prepared_image is not None
         self.clear_shape()
         self.clear_texture()
         self.clear_prepared_mesh()
-        if not had_shape and not had_texture and not had_prepared_mesh:
+        self.clear_prepared_image()
+        if not had_shape and not had_texture and not had_prepared_mesh and not had_prepared_image:
             self._event("cache_cleared", "all")
 
     def get_shape_pipeline(
@@ -200,6 +226,22 @@ class PipelineCache:
         self.prepared_mesh_faces_before = int(faces_before)
         self.prepared_mesh_faces_after = int(faces_after)
         return mesh.copy(), False, int(faces_before), int(faces_after)
+
+    def get_prepared_image(
+        self,
+        loader: Callable[[], Any],
+        key: tuple[Any, ...],
+    ) -> tuple[Any, bool]:
+        if self.prepared_image is not None and self.prepared_image_key == key:
+            self._event("cache_hit", "prepared_image", True)
+            return self.prepared_image.copy(), True
+        if self.prepared_image is not None:
+            self.clear_prepared_image(evicted=True)
+        self._event("cache_miss", "prepared_image", False)
+        image = loader()
+        self.prepared_image = image
+        self.prepared_image_key = key
+        return image.copy(), False
 
 
 def recover_pipeline_cache_after_error(
@@ -366,6 +408,33 @@ def prepare_texture_mesh(
     mesh = degenerate_face_remover_cls()(mesh)
     mesh = face_reducer_cls()(mesh, max_facenum=max_faces)
     return mesh
+
+
+def load_or_prepare_texture_image(
+    image_path: Path,
+    *,
+    remove_background: bool,
+    cache: PipelineCache | None,
+    load_image: Callable[[Path], Any],
+    background_remover_cls: Any | None,
+) -> tuple[Any, bool]:
+    """Load/background-remove an image once per file identity + preprocessing policy."""
+
+    def prepare() -> Any:
+        image = load_image(image_path)
+        if remove_background:
+            if background_remover_cls is None:
+                raise RuntimeError("Background remover is required when remove_background is enabled")
+            image = background_remover_cls()(image)
+        return image
+
+    if cache is None:
+        return prepare(), False
+
+    return cache.get_prepared_image(
+        prepare,
+        prepared_image_cache_key(image_path, remove_background),
+    )
 
 
 def load_or_prepare_texture_mesh(
@@ -674,8 +743,11 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
     faces_before: int | None = None
     faces_after: int | None = None
     cache_hit = False
+    image_cache_hit = False
     mesh_cache_hit = False
     model_load_ms = 0.0
+    image_preprocess_ms = 0.0
+    mesh_preprocess_ms = 0.0
     preprocess_ms = 0.0
     inference_ms = 0.0
     export_ms = 0.0
@@ -699,13 +771,27 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             profile["attention_slicing"] if args.attention_slicing is None else args.attention_slicing
         )
 
-        preprocess_started = time.perf_counter()
-        emit("progress", ok=True, stage="preparing_input", progress=0.10)
-        image = Image.open(image_path).convert("RGBA")
+        background_remover_cls = None
         if args.remove_background:
             from hy3dgen.rembg import BackgroundRemover  # type: ignore
 
-            image = BackgroundRemover()(image)
+            background_remover_cls = BackgroundRemover
+
+        emit("progress", ok=True, stage="preparing_input", progress=0.10)
+        image_started = time.perf_counter()
+
+        def load_rgba_image(path: Path) -> Any:
+            with Image.open(path) as source:
+                return source.convert("RGBA")
+
+        image, image_cache_hit = load_or_prepare_texture_image(
+            image_path,
+            remove_background=bool(args.remove_background),
+            cache=cache,
+            load_image=load_rgba_image,
+            background_remover_cls=background_remover_cls,
+        )
+        image_preprocess_ms = (time.perf_counter() - image_started) * 1000.0
 
         emit(
             "progress",
@@ -715,7 +801,9 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             requested_profile=requested_profile,
             resolved_profile=resolved_profile,
             max_faces=max_faces,
+            image_cache_hit=image_cache_hit,
         )
+        mesh_started = time.perf_counter()
         mesh, mesh_cache_hit, faces_before, faces_after = load_or_prepare_texture_mesh(
             mesh_path,
             max_faces=max_faces,
@@ -725,7 +813,8 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             degenerate_face_remover_cls=DegenerateFaceRemover,
             face_reducer_cls=FaceReducer,
         )
-        preprocess_ms = (time.perf_counter() - preprocess_started) * 1000.0
+        mesh_preprocess_ms = (time.perf_counter() - mesh_started) * 1000.0
+        preprocess_ms = image_preprocess_ms + mesh_preprocess_ms
         emit(
             "progress",
             ok=True,
@@ -736,6 +825,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             faces_before=faces_before,
             faces_after=faces_after,
             max_faces=max_faces,
+            image_cache_hit=image_cache_hit,
             mesh_cache_hit=mesh_cache_hit,
         )
 
@@ -775,6 +865,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             attention_slicing=attention_slicing,
             cache_hit=cache_hit,
             cache_kind="texture",
+            image_cache_hit=image_cache_hit,
             mesh_cache_hit=mesh_cache_hit,
         )
         inference_started = time.perf_counter()
@@ -803,8 +894,11 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             attention_slicing=attention_slicing,
             cache_hit=cache_hit,
             cache_kind="texture",
+            image_cache_hit=image_cache_hit,
             mesh_cache_hit=mesh_cache_hit,
             model_load_ms=round(model_load_ms, 3),
+            image_preprocess_ms=round(image_preprocess_ms, 3),
+            mesh_preprocess_ms=round(mesh_preprocess_ms, 3),
             preprocess_ms=round(preprocess_ms, 3),
             inference_ms=round(inference_ms, 3),
             export_ms=round(export_ms, 3),
@@ -826,8 +920,11 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             faces_after=faces_after,
             cache_hit=cache_hit,
             cache_kind="texture",
+            image_cache_hit=image_cache_hit,
             mesh_cache_hit=mesh_cache_hit,
             model_load_ms=round(model_load_ms, 3),
+            image_preprocess_ms=round(image_preprocess_ms, 3),
+            mesh_preprocess_ms=round(mesh_preprocess_ms, 3),
             preprocess_ms=round(preprocess_ms, 3),
             inference_ms=round(inference_ms, 3),
             export_ms=round(export_ms, 3),
