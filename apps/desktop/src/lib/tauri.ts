@@ -2,6 +2,9 @@ import { Channel, convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type {
   BackendId,
+  CleanupAdvancedOverrides,
+  CleanupPreset,
+  MeshCleanupReport,
   SystemDiagnostics,
   TextureEngineId,
   TextureHealth,
@@ -32,6 +35,13 @@ export interface TextureMeshRequest {
   removeBackground: boolean;
 }
 
+export interface MeshCleanupRequest {
+  input: string;
+  output: string;
+  preset: CleanupPreset;
+  overrides?: CleanupAdvancedOverrides;
+}
+
 export interface GenerateResult {
   ok: boolean;
   event: string;
@@ -51,6 +61,9 @@ export interface GenerateResult {
   cache_kind?: string | null;
   image_cache_hit?: boolean | null;
   mesh_cache_hit?: boolean | null;
+  cleanup_cache_hit?: boolean | null;
+  cleanup_report?: MeshCleanupReport | null;
+  mesh_cleanup_ms?: number | null;
   model_load_ms?: number | null;
   image_preprocess_ms?: number | null;
   mesh_preprocess_ms?: number | null;
@@ -76,6 +89,9 @@ export interface WorkerProgressEvent {
   cache_kind?: string | null;
   image_cache_hit?: boolean | null;
   mesh_cache_hit?: boolean | null;
+  cleanup_cache_hit?: boolean | null;
+  cleanup_report?: MeshCleanupReport | null;
+  mesh_cleanup_ms?: number | null;
   model_load_ms?: number | null;
   image_preprocess_ms?: number | null;
   mesh_preprocess_ms?: number | null;
@@ -192,6 +208,19 @@ export async function textureMesh(
     throw new Error('Texture generation requires the Tauri desktop runtime.');
   }
   return invoke<GenerateResult>('texture_mesh', {
+    request,
+    onEvent: progressChannel(onProgress),
+  });
+}
+
+export async function cleanupMesh(
+  request: MeshCleanupRequest,
+  onProgress?: ProgressHandler,
+): Promise<GenerateResult> {
+  if (!isTauri()) {
+    throw new Error('Mesh cleanup requires the Tauri desktop runtime.');
+  }
+  return invoke<GenerateResult>('cleanup_mesh', {
     request,
     onEvent: progressChannel(onProgress),
   });

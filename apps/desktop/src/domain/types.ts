@@ -1,10 +1,45 @@
 export type BackendId = 'native-rocm' | 'wsl-rocm' | 'vulkan';
 
-export type WorkflowMode = 'shape' | 'texture';
+export type WorkflowMode = 'shape' | 'texture' | 'mesh';
 export type ShapeOutputMode = 'model-only' | 'model-and-texture';
 export type TextureProfile = 'auto' | 'safe' | 'balanced' | 'quality';
 export type TextureEngineId = 'hunyuan-paint';
-export type GenerationPhase = 'shape' | 'texture';
+export type GenerationPhase = 'shape' | 'mesh' | 'texture';
+export type CleanupPreset = 'off' | 'light' | 'game-ready' | 'aggressive';
+
+export interface CleanupAdvancedOverrides {
+  remove_degenerate?: boolean;
+  weld_vertices?: boolean;
+  weld_relative_epsilon?: number;
+  remove_small_islands?: boolean;
+  min_component_area_ratio?: number;
+  spike_cleanup?: boolean;
+  spike_edge_ratio?: number;
+  spike_max_area_ratio?: number;
+  spike_normal_angle_deg?: number;
+  smooth_surface?: boolean;
+  smoothing_iterations?: number;
+  taubin_lambda?: number;
+  taubin_nu?: number;
+  recompute_normals?: boolean;
+}
+
+export interface MeshCleanupReport {
+  preset: CleanupPreset;
+  config_label: string;
+  algorithm_version: string;
+  triangles_before: number;
+  triangles_after: number;
+  vertices_before: number;
+  vertices_after: number;
+  components_before: number;
+  components_after: number;
+  components_removed?: number;
+  vertices_welded?: number;
+  spikes_adjusted?: number;
+  cleanup_ms: number;
+  warnings: string[];
+}
 
 export type JobState =
   | 'queued'
@@ -49,6 +84,7 @@ export interface GenerationProgress {
 
 export interface GenerationTimingSummary {
   shapeMs?: number;
+  meshCleanupMs?: number;
   textureMs?: number;
   totalMs: number;
   textureStages?: Record<string, number>;
@@ -59,6 +95,8 @@ export interface GenerationTimingSummary {
   cacheKind?: string;
   imageCacheHit?: boolean;
   meshCacheHit?: boolean;
+  cleanupCacheHit?: boolean;
+  cleanupReport?: MeshCleanupReport;
   modelLoadMs?: number;
   imagePreprocessMs?: number;
   meshPreprocessMs?: number;
