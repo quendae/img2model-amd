@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { Channel, convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { SystemDiagnostics, TextureHealth, WorkerHealth } from '../domain/types';
 
@@ -32,6 +32,19 @@ export interface GenerateShapeResult {
   model?: string | null;
   subfolder?: string | null;
 }
+
+export interface WorkerProgressEvent {
+  event: 'progress' | 'completed' | 'error' | string;
+  stage?: string | null;
+  progress?: number | null;
+  faces_before?: number | null;
+  faces_after?: number | null;
+  max_faces?: number | null;
+  cpu_offload?: boolean | null;
+  attention_slicing?: string | null;
+}
+
+export type ProgressHandler = (event: WorkerProgressEvent) => void;
 
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -102,18 +115,36 @@ export async function chooseOutputModel(): Promise<string | null> {
   return selected ?? null;
 }
 
-export async function generateShape(request: GenerateShapeRequest): Promise<GenerateShapeResult> {
+function progressChannel(onProgress?: ProgressHandler): Channel<WorkerProgressEvent> {
+  const channel = new Channel<WorkerProgressEvent>();
+  channel.onmessage = (event) => onProgress?.(event);
+  return channel;
+}
+
+export async function generateShape(
+  request: GenerateShapeRequest,
+  onProgress?: ProgressHandler,
+): Promise<GenerateShapeResult> {
   if (!isTauri()) {
     throw new Error('Generation requires the Tauri desktop runtime.');
   }
-  return invoke<GenerateShapeResult>('generate_shape', { request });
+  return invoke<GenerateShapeResult>('generate_shape', {
+    request,
+    onEvent: progressChannel(onProgress),
+  });
 }
 
-export async function textureMesh(request: TextureMeshRequest): Promise<GenerateShapeResult> {
+export async function textureMesh(
+  request: TextureMeshRequest,
+  onProgress?: ProgressHandler,
+): Promise<GenerateShapeResult> {
   if (!isTauri()) {
     throw new Error('Texture generation requires the Tauri desktop runtime.');
   }
-  return invoke<GenerateShapeResult>('texture_mesh', { request });
+  return invoke<GenerateShapeResult>('texture_mesh', {
+    request,
+    onEvent: progressChannel(onProgress),
+  });
 }
 
 export function localAssetUrl(path: string): string {
