@@ -10,6 +10,8 @@ interface GenerationPanelProps {
   textureAvailable: boolean;
   busy: boolean;
   canGenerate: boolean;
+  progress?: number | null;
+  progressLabel?: string | null;
   onBackendChange: (backend: BackendId) => void;
   onProfileChange: (profile: GenerationOptions['profile']) => void;
   onSeedChange: (seed: number) => void;
@@ -35,6 +37,8 @@ export function GenerationPanel({
   textureAvailable,
   busy,
   canGenerate,
+  progress,
+  progressLabel,
   onBackendChange,
   onProfileChange,
   onSeedChange,
@@ -44,6 +48,7 @@ export function GenerationPanel({
   onGenerate,
 }: GenerationPanelProps) {
   const backendReady = backend === 'native-rocm';
+  const progressValue = Math.min(100, Math.max(0, progress ?? 0));
 
   return (
     <section className="panel generation-panel" aria-labelledby="generation-heading">
@@ -141,6 +146,25 @@ export function GenerationPanel({
       >
         {busy ? 'Generating…' : texture ? 'Generate shape + texture' : 'Generate shape'}
       </button>
+
+      {busy && (
+        <div className="generation-progress" aria-live="polite">
+          <div className="generation-progress-copy">
+            <span>{progressLabel ?? 'Working…'}</span>
+            <strong>{Math.round(progressValue)}%</strong>
+          </div>
+          <div
+            className="generation-progress-track"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progressValue)}
+            aria-label="Generation progress"
+          >
+            <span style={{ width: `${progressValue}%` }} />
+          </div>
+        </div>
+      )}
     </section>
   );
 }
