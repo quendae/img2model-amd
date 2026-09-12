@@ -382,6 +382,12 @@ export function App() {
                   <strong>{timing.cacheHit ? 'hit' : 'miss'}{timing.cacheKind ? ` · ${timing.cacheKind}` : ''}</strong>
                 </>
               )}
+              {timing?.meshCacheHit !== undefined && (
+                <>
+                  <span>Prep cache</span>
+                  <strong>{timing.meshCacheHit ? 'hit' : 'miss'}</strong>
+                </>
+              )}
               {timing?.modelLoadMs !== undefined && <><span>Load</span><strong>{formatDuration(timing.modelLoadMs)}</strong></>}
               {timing?.preprocessMs !== undefined && <><span>Prep</span><strong>{formatDuration(timing.preprocessMs)}</strong></>}
               {inferenceMs !== undefined && <><span>Inference</span><strong>{formatDuration(inferenceMs)}</strong></>}
