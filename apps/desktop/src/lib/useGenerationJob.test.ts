@@ -173,6 +173,7 @@ describe('useGenerationJob', () => {
       faces_after: 20000,
       cache_hit: true,
       cache_kind: 'texture',
+      mesh_cache_hit: true,
       model_load_ms: 2.5,
       preprocess_ms: 12100,
       inference_ms: 30900,
@@ -195,6 +196,7 @@ describe('useGenerationJob', () => {
     expect(result.current.timingSummary).toMatchObject({
       cacheHit: true,
       cacheKind: 'texture',
+      meshCacheHit: true,
       modelLoadMs: 2.5,
       preprocessMs: 12100,
       inferenceMs: 30900,
