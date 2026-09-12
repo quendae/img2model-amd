@@ -13,6 +13,10 @@ const commonProps = {
   textureProfile: 'auto' as const,
   textureEngine: 'hunyuan-paint' as const,
   textureMeshPath: null,
+  meshInputPath: null,
+  cleanupPreset: 'light' as const,
+  cleanupConfigLabel: 'Light',
+  cleanupOverrides: {},
   seed: 1234,
   steps: 30,
   removeBackground: true,
@@ -24,6 +28,8 @@ const commonProps = {
   onShapeOutputModeChange: vi.fn(),
   onProfileChange: vi.fn(),
   onTextureProfileChange: vi.fn(),
+  onCleanupPresetChange: vi.fn(),
+  onCleanupOverridesChange: vi.fn(),
   onSeedChange: vi.fn(),
   onStepsChange: vi.fn(),
   onRemoveBackgroundChange: vi.fn(),
@@ -32,20 +38,27 @@ const commonProps = {
 };
 
 describe('GenerationPanel', () => {
-  it('shows Shape and Texture mode tabs', () => {
-    render(<GenerationPanel {...commonProps} />);
+  it('shows Shape, Texture and Mesh mode tabs', () => {
+    render(<GenerationPanel {...(commonProps as any)} />);
     expect(screen.getByRole('tab', { name: 'Shape' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Texture' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Mesh' })).toBeTruthy();
   });
 
   it('shows Model only and Model + texture choices in Shape mode', () => {
-    render(<GenerationPanel {...commonProps} />);
+    render(<GenerationPanel {...(commonProps as any)} />);
     expect(screen.getByRole('button', { name: 'Model only' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Model + texture' })).toBeTruthy();
   });
 
+  it('shows Light mesh cleanup selected in Shape mode', () => {
+    render(<GenerationPanel {...(commonProps as any)} />);
+    expect(screen.getByText('Mesh cleanup')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Light' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('shows all four texture profiles when Model + texture is selected', () => {
-    render(<GenerationPanel {...commonProps} outputMode="model-and-texture" />);
+    render(<GenerationPanel {...(commonProps as any)} outputMode="model-and-texture" />);
     for (const profile of ['Auto', 'Safe', 'Balanced', 'Quality']) {
       expect(screen.getByRole('button', { name: new RegExp(profile, 'i') })).toBeTruthy();
     }
@@ -53,43 +66,87 @@ describe('GenerationPanel', () => {
   });
 
   it('shows mesh selection and Hunyuan Paint engine in Texture mode', () => {
-    render(<GenerationPanel {...commonProps} workflowMode="texture" textureMeshPath="C:/shape.glb" />);
+    render(<GenerationPanel {...(commonProps as any)} workflowMode="texture" textureMeshPath="C:/shape.glb" />);
     expect(screen.getByLabelText('Texture engine')).toHaveProperty('value', 'hunyuan-paint');
     expect(screen.getByText('C:/shape.glb')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Choose model' })).toBeTruthy();
   });
 
+  it('shows imported model and Game-ready cleanup in Mesh mode without shape or background controls', () => {
+    render(
+      <GenerationPanel
+        {...(commonProps as any)}
+        workflowMode="mesh"
+        meshInputPath="C:/import.glb"
+        cleanupPreset="game-ready"
+        cleanupConfigLabel="Game-ready"
+      />,
+    );
+    expect(screen.getByText('C:/import.glb')).toBeTruthy();
+    expect(screen.getByText('Mesh cleanup')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Game-ready' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('Shape quality')).toBeNull();
+    expect(screen.queryByText('Remove background')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Process mesh' })).toBeTruthy();
+  });
+
+  it('shows a visible warning for Aggressive cleanup', () => {
+    render(
+      <GenerationPanel
+        {...(commonProps as any)}
+        cleanupPreset="aggressive"
+        cleanupConfigLabel="Aggressive"
+      />,
+    );
+    expect(screen.getByText(/may alter silhouette/i)).toBeTruthy();
+  });
+
+  it('shows the custom preset label supplied by resolved settings', () => {
+    render(
+      <GenerationPanel
+        {...(commonProps as any)}
+        cleanupPreset="game-ready"
+        cleanupConfigLabel="Custom (from Game-ready)"
+      />,
+    );
+    expect(screen.getByText('Custom (from Game-ready)')).toBeTruthy();
+  });
+
   it('disables Generate texture until image, mesh, runtime and backend are ready', () => {
     const { rerender } = render(
-      <GenerationPanel {...commonProps} workflowMode="texture" textureAvailable={false} textureMeshPath={null} />,
+      <GenerationPanel {...(commonProps as any)} workflowMode="texture" textureAvailable={false} textureMeshPath={null} />,
     );
     expect(screen.getByRole('button', { name: 'Generate texture' })).toHaveProperty('disabled', true);
 
     rerender(
-      <GenerationPanel {...commonProps} workflowMode="texture" textureAvailable textureMeshPath="C:/shape.glb" />,
+      <GenerationPanel {...(commonProps as any)} workflowMode="texture" textureAvailable textureMeshPath="C:/shape.glb" />,
     );
     expect(screen.getByRole('button', { name: 'Generate texture' })).toHaveProperty('disabled', false);
   });
 
   it('keeps non-native backends visibly unsupported without fallback', () => {
-    render(<GenerationPanel {...commonProps} backend="wsl-rocm" />);
+    render(<GenerationPanel {...(commonProps as any)} backend="wsl-rocm" />);
     expect(screen.getByText(/not executable in this workflow/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Generate model' })).toHaveProperty('disabled', true);
   });
 
-  it('emits the selected workflow and profile choices', () => {
+  it('emits workflow, output and cleanup preset choices', () => {
     const onWorkflowModeChange = vi.fn();
     const onShapeOutputModeChange = vi.fn();
+    const onCleanupPresetChange = vi.fn();
     render(
       <GenerationPanel
-        {...commonProps}
+        {...(commonProps as any)}
         onWorkflowModeChange={onWorkflowModeChange}
         onShapeOutputModeChange={onShapeOutputModeChange}
+        onCleanupPresetChange={onCleanupPresetChange}
       />,
     );
     fireEvent.click(screen.getByRole('tab', { name: 'Texture' }));
     fireEvent.click(screen.getByRole('button', { name: 'Model + texture' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Game-ready' }));
     expect(onWorkflowModeChange).toHaveBeenCalledWith('texture');
     expect(onShapeOutputModeChange).toHaveBeenCalledWith('model-and-texture');
+    expect(onCleanupPresetChange).toHaveBeenCalledWith('game-ready');
   });
 });
