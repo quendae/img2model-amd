@@ -1,7 +1,7 @@
 # Game-ready mesh cleanup design
 
 **Date:** 2026-09-12  
-**Status:** Approved design, awaiting implementation plan  
+**Status:** Design approved in chat; written spec awaiting user review  
 **Repository:** `quendae/img2model-amd`
 
 ## 1. Goal
@@ -30,7 +30,7 @@ The system must preserve the original mesh, produce a separate cleaned copy, and
 - Separate output file for cleaned geometry; the source is never overwritten.
 - Before / After comparison in the 3D viewer for Mesh mode.
 - Cleanup telemetry and reports.
-- Cache identity that includes cleanup configuration and algorithm version.
+- Cache identity that includes cleanup configuration and algorithm version where cleanup-derived data is cached.
 - Regression coverage using the current steak asset with protruding artifacts.
 
 ### Explicitly out of scope for this milestone
@@ -87,10 +87,11 @@ Its conceptual interface is:
 process_mesh(
   input_mesh,
   preset,
-  advanced_settings,
-  algorithm_version
+  advanced_settings
 ) -> cleaned_mesh + CleanupReport
 ```
+
+The module owns an internal `ALGORITHM_VERSION` constant. The caller does not supply or override it. The version is emitted in reports and participates in cache identity so algorithm changes cannot silently reuse stale cleanup-derived data.
 
 The Hunyuan worker remains an orchestrator. It may invoke the cleanup module through a new persistent-worker command, but the cleanup implementation itself should not be embedded directly in `worker.py`.
 
@@ -107,10 +108,9 @@ The command accepts:
 - input mesh path,
 - output mesh path,
 - cleanup preset,
-- optional advanced settings,
-- algorithm version.
+- optional advanced settings.
 
-It emits progress events and a terminal result containing the cleanup report.
+It emits progress events and a terminal result containing the cleanup report, including the worker-owned algorithm version.
 
 This keeps mesh processing available through the same persistent session model as Shape and Texture without turning cleanup into another heavyweight GPU pipeline.
 
@@ -320,7 +320,7 @@ Activity should show a compact subset, including:
 - triangles before / after,
 - components removed,
 - spikes adjusted when available,
-- preset,
+- preset / custom configuration label,
 - warnings.
 
 Advanced/debug telemetry may expose the full report.
@@ -359,23 +359,34 @@ Partial or failed cleanup must not replace a previously valid output.
 
 ## 12. Cache behavior
 
-Prepared-mesh cache identity must include the effective cleanup result inputs.
+Two cache concepts must remain distinct.
 
-At minimum the key must account for:
+### 12.1 Cleanup-derived cache identity
+
+If the implementation caches an in-memory cleaned mesh or another cleanup-derived intermediate, its key must include:
 
 - resolved input path,
 - file size,
 - file modification time / identity,
-- texture triangle target,
 - cleanup preset,
-- advanced cleanup settings,
-- cleanup algorithm version.
+- full effective advanced cleanup settings,
+- internal cleanup algorithm version.
 
-Changing `Light -> Game-ready`, changing a cleanup threshold, or incrementing the cleanup algorithm version must invalidate the prepared mesh cache.
+Changing `Light -> Game-ready`, changing any cleanup threshold, or incrementing `ALGORITHM_VERSION` invalidates cleanup-derived cache data.
+
+### 12.2 Texture prepared-mesh cache identity
+
+The existing texture prepared-mesh cache is downstream of cleanup. Its effective identity must account for:
+
+- identity of the cleaned mesh it receives,
+- texture triangle target (`10k / 20k / 40k` etc.),
+- any texture-specific mesh-preparation settings.
+
+When cleanup is performed to a new `*-clean.glb`, normal file identity (`path + size + mtime`) may provide the cleaned-mesh identity. If cleanup is reused purely in memory, the cleanup preset/settings/version must be incorporated explicitly.
 
 Image cache and Hunyuan Paint pipeline cache remain independent and should stay valid when only cleanup settings change.
 
-A worker-level Clear cache command clears cleanup-derived mesh cache along with the existing prepared caches.
+A worker-level Clear cache command clears any cleanup-derived in-memory mesh cache along with the existing prepared caches.
 
 ## 13. Error handling
 
@@ -464,7 +475,7 @@ An Advanced section may expose:
 
 Defaults come from the selected preset.
 
-Changing an advanced value creates an effective custom configuration even if the UI still shows the source preset label.
+Changing any advanced value changes the effective mode to a clearly visible custom configuration, e.g. `Custom (from Game-ready)`. The UI must not continue to present the result as an unmodified stock preset.
 
 The full effective settings must be included in cache identity and cleanup report.
 
@@ -478,7 +489,9 @@ Cover:
 
 - preset resolution,
 - cleanup settings normalization,
-- cache key identity,
+- algorithm-version participation in cache identity,
+- cleanup cache key identity,
+- prepared-texture-mesh cache invalidation,
 - no source overwrite,
 - cleanup report serialization,
 - worker command parsing,
@@ -507,6 +520,7 @@ Cover:
 - Shape default `Light`,
 - Mesh default `Game-ready`,
 - preset controls,
+- custom-state indication after Advanced changes,
 - Activity cleanup timing/report,
 - Before / After switching,
 - recovery behavior after texture failure.
@@ -521,7 +535,7 @@ Required scenarios:
 4. Imported OBJ + Game-ready in Mesh mode.
 5. Retry texture only after Paint failure uses the cleaned mesh.
 6. `Off / Light / Game-ready / Aggressive` all export valid output.
-7. Changing cleanup preset invalidates prepared mesh cache but preserves image/model cache where valid.
+7. Changing cleanup preset invalidates cleanup-derived/prepared-mesh data but preserves image/model cache where valid.
 
 ## 17. Hardware / visual validation
 
@@ -569,6 +583,7 @@ A Blender-like full modeling environment remains out of scope.
 - Keep cleanup independent from Hunyuan model internals.
 - Prefer conservative defaults.
 - Keep presets as parameter sets over one common pipeline.
+- Keep the algorithm version internal and deterministic.
 - Avoid new heavy dependencies until real regression assets prove they are required.
 - Preserve the existing persistent worker, Paint cache, image cache and prepared-mesh performance behavior.
 - Report measurable changes rather than hiding automatic processing from the user.
