@@ -6,21 +6,24 @@ import { ModelViewer } from './components/ModelViewer';
 import type {
   BackendId,
   GenerationOptions,
+  ShapeOutputMode,
   SystemDiagnostics,
+  TextureEngineId,
   TextureHealth,
+  TextureProfile,
   WorkerHealth,
+  WorkflowMode,
 } from './domain/types';
 import {
   chooseInputImage,
+  chooseInputMesh,
   chooseOutputModel,
-  generateShape,
   getHunyuanHealth,
   getHunyuanTextureHealth,
   getSystemDiagnostics,
   localAssetUrl,
-  textureMesh,
-  type WorkerProgressEvent,
 } from './lib/tauri';
+import { useGenerationJob } from './lib/useGenerationJob';
 
 const profileSteps: Record<GenerationOptions['profile'], number> = {
   fast: 20,
@@ -28,89 +31,48 @@ const profileSteps: Record<GenerationOptions['profile'], number> = {
   quality: 50,
 };
 
-type GenerationPhase = 'shape' | 'texture';
-
-interface GenerationProgress {
-  phase: GenerationPhase;
-  value: number;
-  label: string;
-}
-
-const stageLabels: Record<string, string> = {
-  starting_backend: 'Starting AMD backend…',
-  preparing_input: 'Preparing source image…',
-  loading_model: 'Loading Hunyuan model…',
-  running_shape: 'Generating 3D shape…',
-  preparing_mesh: 'Preparing mesh for texturing…',
-  mesh_ready: 'Texture mesh is ready…',
-  running_texture: 'Generating Hunyuan Paint texture…',
-  postprocessing: 'Exporting model…',
-  completed: 'Generation complete.',
-};
-
-function addSuffixBeforeExtension(path: string, suffix: string): string {
-  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  const dot = path.lastIndexOf('.');
-  if (dot <= separator) return `${path}${suffix}`;
-  return `${path.slice(0, dot)}${suffix}${path.slice(dot)}`;
-}
-
-function clampProgress(value: number | null | undefined): number {
-  if (typeof value !== 'number' || Number.isNaN(value)) return 0;
-  return Math.min(1, Math.max(0, value));
-}
-
-function progressLabel(phase: GenerationPhase, event: WorkerProgressEvent): string {
-  if (event.stage === 'mesh_ready' && typeof event.faces_after === 'number') {
-    return `Texture mesh ready · ${event.faces_after.toLocaleString()} triangles`;
-  }
-  if (event.stage && stageLabels[event.stage]) return stageLabels[event.stage];
-  return phase === 'shape' ? 'Generating 3D shape…' : 'Generating texture…';
-}
-
-function combinedProgress(phase: GenerationPhase, event: WorkerProgressEvent, includesTexture: boolean): GenerationProgress {
-  const raw = clampProgress(event.progress);
-  const value = includesTexture
-    ? phase === 'shape'
-      ? raw * 0.4
-      : 0.4 + raw * 0.6
-    : raw;
-
-  return {
-    phase,
-    value,
-    label: progressLabel(phase, event),
-  };
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${seconds}s`;
 }
 
 export function App() {
   const [inputPath, setInputPath] = useState<string | null>(null);
   const [modelPath, setModelPath] = useState<string | null>(null);
+  const [textureMeshPath, setTextureMeshPath] = useState<string | null>(null);
   const [backend, setBackend] = useState<BackendId>('native-rocm');
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>('shape');
+  const [shapeOutputMode, setShapeOutputMode] = useState<ShapeOutputMode>('model-only');
   const [profile, setProfile] = useState<GenerationOptions['profile']>('balanced');
+  const [textureProfile, setTextureProfile] = useState<TextureProfile>('auto');
+  const [textureEngine] = useState<TextureEngineId>('hunyuan-paint');
   const [seed, setSeed] = useState(1234);
   const [steps, setSteps] = useState(profileSteps.balanced);
   const [removeBackground, setRemoveBackground] = useState(true);
-  const [texture, setTexture] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [healthLoading, setHealthLoading] = useState(false);
   const [diagnostics, setDiagnostics] = useState<SystemDiagnostics | null>(null);
   const [health, setHealth] = useState<WorkerHealth | null>(null);
   const [textureHealth, setTextureHealth] = useState<TextureHealth | null>(null);
-  const [message, setMessage] = useState('Choose a source image to begin.');
-  const [error, setError] = useState<string | null>(null);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+  const job = useGenerationJob();
 
   const previewUrl = useMemo(() => (inputPath ? localAssetUrl(inputPath) : null), [inputPath]);
   const modelUrl = useMemo(() => (modelPath ? localAssetUrl(modelPath) : null), [modelPath]);
 
+  useEffect(() => {
+    if (job.resultPath) setModelPath(job.resultPath);
+  }, [job.resultPath]);
+
   const refreshDiagnostics = useCallback(async () => {
     setDiagnosticsLoading(true);
+    setDiagnosticError(null);
     try {
       setDiagnostics(await getSystemDiagnostics());
     } catch (reason) {
-      setError(`Diagnostics failed: ${String(reason)}`);
+      setDiagnosticError(`Diagnostics failed: ${String(reason)}`);
     } finally {
       setDiagnosticsLoading(false);
     }
@@ -122,7 +84,7 @@ export function App() {
 
   const checkHealth = async () => {
     setHealthLoading(true);
-    setError(null);
+    setDiagnosticError(null);
     try {
       const result = await getHunyuanHealth();
       setHealth(result);
@@ -130,8 +92,7 @@ export function App() {
       try {
         const textureResult = await getHunyuanTextureHealth();
         setTextureHealth(textureResult);
-        if (!textureResult.ok) setTexture(false);
-        setMessage(
+        job.setStatusMessage(
           result.ok
             ? textureResult.ok
               ? 'Hunyuan shape and texture runtimes are ready.'
@@ -140,15 +101,18 @@ export function App() {
         );
       } catch (textureReason) {
         setTextureHealth(null);
-        setTexture(false);
-        setMessage(result.ok ? 'Hunyuan shape is ready; texture runtime is not available.' : 'Hunyuan runtime needs setup or repair.');
-        if (!result.ok) setError(String(textureReason));
+        job.setStatusMessage(
+          result.ok
+            ? 'Hunyuan shape is ready; texture runtime is not available.'
+            : 'Hunyuan runtime needs setup or repair.',
+        );
+        if (!result.ok) setDiagnosticError(String(textureReason));
       }
     } catch (reason) {
       setHealth(null);
       setTextureHealth(null);
-      setTexture(false);
-      setError(String(reason));
+      setDiagnosticError(String(reason));
+      job.setStatusMessage('Hunyuan runtime needs setup or repair.');
     } finally {
       setHealthLoading(false);
     }
@@ -159,8 +123,17 @@ export function App() {
     if (!path) return;
     setInputPath(path);
     setModelPath(null);
-    setError(null);
-    setMessage('Source image loaded. Choose settings and generate a shape.');
+    setTextureMeshPath(null);
+    setDiagnosticError(null);
+    job.resetForNewInput('Source image loaded. Choose settings and start generation.');
+  };
+
+  const chooseMesh = async () => {
+    const path = await chooseInputMesh();
+    if (!path) return;
+    setTextureMeshPath(path);
+    setModelPath(path);
+    job.setStatusMessage('Existing model selected. Choose a texture profile and generate texture.');
   };
 
   const changeProfile = (nextProfile: GenerationOptions['profile']) => {
@@ -173,95 +146,67 @@ export function App() {
     const output = await chooseOutputModel();
     if (!output) return;
 
-    const shapeOutput = texture ? addSuffixBeforeExtension(output, '-shape') : output;
-    let preservedShapePath: string | null = null;
-
-    const updateProgress = (phase: GenerationPhase) => (event: WorkerProgressEvent) => {
-      if (event.event === 'error') return;
-      const next = combinedProgress(phase, event, texture);
-      setGenerationProgress(next);
-      setMessage(next.label);
-    };
-
-    setBusy(true);
-    setGenerationProgress({ phase: 'shape', value: 0, label: 'Starting Hunyuan shape generation…' });
-    setError(null);
-    setMessage('Starting Hunyuan shape generation…');
-    try {
-      const result = await generateShape({
+    if (workflowMode === 'shape') {
+      await job.runShapeWorkflow({
         backend,
-        input: inputPath,
-        output: shapeOutput,
-        model: 'tencent/Hunyuan3D-2mini',
-        subfolder: 'hunyuan3d-dit-v2-mini',
+        image: inputPath,
+        output,
+        outputMode: shapeOutputMode,
+        shapeProfile: profile,
         steps,
         seed,
         removeBackground,
-      }, updateProgress('shape'));
-
-      if (!result.ok) {
-        setError(result.error ?? 'Generation failed without an error message.');
-        setMessage('Generation failed.');
-        return;
-      }
-
-      preservedShapePath = result.output ?? shapeOutput;
-      setModelPath(preservedShapePath);
-
-      if (!texture) {
-        setGenerationProgress({ phase: 'shape', value: 1, label: 'Shape complete.' });
-        setMessage(`Shape completed: ${preservedShapePath}`);
-        return;
-      }
-
-      if (!textureHealth?.ok) {
-        setError(`Texture runtime is not healthy. Shape was preserved at: ${preservedShapePath}`);
-        setMessage('Shape completed; texture stage was skipped.');
-        return;
-      }
-
-      setGenerationProgress({ phase: 'texture', value: 0.4, label: 'Starting Hunyuan Paint texture stage…' });
-      setMessage('Shape completed. Starting Hunyuan Paint texture stage…');
-      const textureResult = await textureMesh({
-        backend,
-        mesh: preservedShapePath,
-        image: inputPath,
-        output,
-        model: 'tencent/Hunyuan3D-2',
-        subfolder: 'hunyuan3d-paint-v2-0-turbo',
-        cpuOffload: true,
-        removeBackground,
-      }, updateProgress('texture'));
-
-      if (!textureResult.ok) {
-        setError(
-          `${textureResult.error ?? 'Texture generation failed without an error message.'}\n\nShape preserved at: ${preservedShapePath}`,
-        );
-        setMessage('Shape completed; texture stage failed.');
-        return;
-      }
-
-      const texturedPath = textureResult.output ?? output;
-      setModelPath(texturedPath);
-      setGenerationProgress({ phase: 'texture', value: 1, label: 'Shape + texture complete.' });
-      setMessage(`Shape + texture completed: ${texturedPath}`);
-    } catch (reason) {
-      if (preservedShapePath) {
-        setError(`${String(reason)}\n\nShape preserved at: ${preservedShapePath}`);
-        setMessage('Texture stage failed; shape output was preserved.');
-      } else {
-        setError(String(reason));
-        setMessage('Generation failed.');
-      }
-    } finally {
-      setBusy(false);
+        textureEngine,
+        textureProfile,
+      });
+      return;
     }
+
+    if (!textureMeshPath) return;
+    await job.runTextureWorkflow({
+      backend,
+      engine: textureEngine,
+      profile: textureProfile,
+      mesh: textureMeshPath,
+      image: inputPath,
+      output,
+      removeBackground,
+    });
   };
 
-  const progressPercent = busy && generationProgress
-    ? Math.round(generationProgress.value * 100)
+  const openTextureForCurrentModel = () => {
+    const mesh = job.preservedShapePath ?? job.resultPath ?? modelPath;
+    if (!mesh) return;
+    setTextureMeshPath(mesh);
+    setWorkflowMode('texture');
+    job.setStatusMessage('Shape is ready for a texture-only run.');
+  };
+
+  const openRetryInTextureMode = () => {
+    const context = job.retryContext;
+    if (!context) return;
+    setInputPath(context.image);
+    setTextureMeshPath(context.mesh);
+    setBackend(context.backend);
+    setTextureProfile(context.profile);
+    setWorkflowMode('texture');
+    setModelPath(context.mesh);
+    job.setStatusMessage('Failed texture job loaded in Texture mode. Adjust settings or retry.');
+  };
+
+  const progressPercent = job.busy && job.progress
+    ? Math.round(job.progress.value * 100)
     : null;
-  const progressLabelText = busy ? generationProgress?.label ?? null : null;
+  const progressLabelText = job.busy ? job.progress?.label ?? null : null;
+  const displayError = job.error ?? diagnosticError;
+  const timing = job.timingSummary;
+  const canTextureCurrentModel = Boolean(
+    workflowMode === 'shape'
+      && inputPath
+      && job.preservedShapePath
+      && job.resultPath === job.preservedShapePath
+      && !job.busy,
+  );
 
   return (
     <div className="app-shell">
@@ -288,34 +233,42 @@ export function App() {
             onClear={() => {
               setInputPath(null);
               setModelPath(null);
-              setMessage('Choose a source image to begin.');
+              setTextureMeshPath(null);
+              job.resetForNewInput();
             }}
           />
           <GenerationPanel
             backend={backend}
+            workflowMode={workflowMode}
+            outputMode={shapeOutputMode}
             profile={profile}
+            textureProfile={textureProfile}
+            textureEngine={textureEngine}
+            textureMeshPath={textureMeshPath}
             seed={seed}
             steps={steps}
             removeBackground={removeBackground}
-            texture={texture}
             textureAvailable={Boolean(textureHealth?.ok)}
-            busy={busy}
+            busy={job.busy}
             canGenerate={Boolean(inputPath)}
             progress={progressPercent}
             progressLabel={progressLabelText}
             onBackendChange={setBackend}
+            onWorkflowModeChange={setWorkflowMode}
+            onShapeOutputModeChange={setShapeOutputMode}
             onProfileChange={changeProfile}
+            onTextureProfileChange={setTextureProfile}
             onSeedChange={setSeed}
             onStepsChange={setSteps}
             onRemoveBackgroundChange={setRemoveBackground}
-            onTextureChange={setTexture}
+            onChooseMesh={chooseMesh}
             onGenerate={runGeneration}
           />
         </aside>
 
         <ModelViewer
           modelUrl={modelUrl}
-          busy={busy}
+          busy={job.busy}
           progress={progressPercent}
           progressLabel={progressLabelText}
         />
@@ -338,14 +291,62 @@ export function App() {
               </div>
             </div>
             <div className="activity-line">
-              <span className={`activity-indicator ${busy ? 'working' : ''}`} aria-hidden="true" />
-              <span>{message}</span>
+              <span className={`activity-indicator ${job.busy ? 'working' : ''}`} aria-hidden="true" />
+              <span>{job.message}</span>
             </div>
-            {error && <pre className="error-box">{error}</pre>}
+
+            {displayError && <div className="error-summary">{displayError}</div>}
+            {job.technicalError && (
+              <details className="technical-details">
+                <summary>Technical details</summary>
+                <pre className="error-box">{job.technicalError}</pre>
+              </details>
+            )}
+
+            {(canTextureCurrentModel || job.retryContext) && (
+              <div className="recovery-actions">
+                {canTextureCurrentModel && (
+                  <button type="button" className="secondary-button" onClick={openTextureForCurrentModel}>
+                    Texture this model
+                  </button>
+                )}
+                {job.retryContext && (
+                  <>
+                    <button type="button" className="secondary-button" disabled={job.busy} onClick={() => void job.retryTexture()}>
+                      Retry texture only
+                    </button>
+                    {job.retryContext.profile !== 'safe' && (
+                      <button type="button" className="secondary-button" disabled={job.busy} onClick={() => void job.retryTextureSafe()}>
+                        Retry with Safe
+                      </button>
+                    )}
+                    <button type="button" className="ghost-button" disabled={job.busy} onClick={openRetryInTextureMode}>
+                      Open Texture mode
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
             <div className="activity-meta">
               <span>Model</span><strong>Hunyuan3D 2 Mini</strong>
               <span>Output</span><strong>GLB / OBJ</strong>
               <span>Texture</span><strong>{textureHealth?.ok ? 'Hunyuan Paint ready' : 'Optional · runtime not ready'}</strong>
+              {timing?.shapeMs !== undefined && <><span>Shape</span><strong>{formatDuration(timing.shapeMs)}</strong></>}
+              {timing?.textureMs !== undefined && <><span>Texture</span><strong>{formatDuration(timing.textureMs)}</strong></>}
+              {timing && <><span>Total</span><strong>{formatDuration(timing.totalMs)}</strong></>}
+              {timing?.textureStages?.running_texture !== undefined && (
+                <><span>Inference</span><strong>{formatDuration(timing.textureStages.running_texture)}</strong></>
+              )}
+              {timing?.trianglesBefore !== undefined && timing.trianglesAfter !== undefined && (
+                <>
+                  <span>Mesh</span>
+                  <strong>{timing.trianglesBefore.toLocaleString()} → {timing.trianglesAfter.toLocaleString()} triangles</strong>
+                </>
+              )}
+              {timing?.resolvedTextureProfile && (
+                <><span>Profile</span><strong>{timing.resolvedTextureProfile}</strong></>
+              )}
             </div>
           </section>
         </aside>
