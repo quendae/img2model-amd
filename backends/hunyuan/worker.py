@@ -66,9 +66,6 @@ class PipelineCache(_BasePipelineCache):
         super().clear()
 
 
-_base.PipelineCache = PipelineCache
-
-
 def run_mesh_cleanup(args: argparse.Namespace, cache: PipelineCache | None = None) -> int:
     input_path = Path(args.input).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
@@ -205,9 +202,34 @@ def dispatch_serve_command(
         _base._EVENT_SINK = previous_sink
 
 
-_base.run_mesh_cleanup = run_mesh_cleanup
-_base._mesh_cleanup_namespace = _mesh_cleanup_namespace
-_base.dispatch_serve_command = dispatch_serve_command
+def run_serve(_args: argparse.Namespace) -> int:
+    cache = PipelineCache(event_sink=_emit_payload)
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+            if not isinstance(message, dict):
+                raise ValueError("Serve command must be a JSON object")
+        except Exception as exc:
+            print(
+                json.dumps(
+                    {
+                        "event": "error",
+                        "ok": False,
+                        "error_kind": "protocol_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            continue
+        if not dispatch_serve_command(message, cache=cache):
+            return 0
+    cache.clear()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -215,6 +237,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers_action = next(
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
+    # Base parser points serve at worker_base.run_serve; redirect it to this
+    # entry point so mesh_cleanup is understood in persistent mode.
+    subparsers_action.choices["serve"].set_defaults(func=run_serve)
+
     mesh_cleanup = subparsers_action.add_parser(
         "mesh-cleanup",
         help="Clean an existing GLB/OBJ mesh",
@@ -228,9 +254,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mesh_cleanup.set_defaults(overrides={}, func=run_mesh_cleanup)
     return parser
-
-
-_base.build_parser = build_parser
 
 
 def main() -> int:
