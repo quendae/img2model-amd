@@ -1,5 +1,11 @@
 export type BackendId = 'native-rocm' | 'wsl-rocm' | 'vulkan';
 
+export type WorkflowMode = 'shape' | 'texture';
+export type ShapeOutputMode = 'model-only' | 'model-and-texture';
+export type TextureProfile = 'auto' | 'safe' | 'balanced' | 'quality';
+export type TextureEngineId = 'hunyuan-paint';
+export type GenerationPhase = 'shape' | 'texture';
+
 export type JobState =
   | 'queued'
   | 'preparing_input'
@@ -33,6 +39,32 @@ export interface GenerationOptions {
   texture: boolean;
   seed: number;
   steps: number;
+}
+
+export interface GenerationProgress {
+  phase: GenerationPhase;
+  value: number;
+  label: string;
+}
+
+export interface GenerationTimingSummary {
+  shapeMs?: number;
+  textureMs?: number;
+  totalMs: number;
+  textureStages?: Record<string, number>;
+  trianglesBefore?: number;
+  trianglesAfter?: number;
+  resolvedTextureProfile?: Exclude<TextureProfile, 'auto'>;
+}
+
+export interface TextureRetryContext {
+  image: string;
+  mesh: string;
+  output: string;
+  backend: BackendId;
+  engine: TextureEngineId;
+  profile: TextureProfile;
+  removeBackground: boolean;
 }
 
 export interface GenerationJob {
