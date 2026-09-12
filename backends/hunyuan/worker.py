@@ -368,6 +368,41 @@ def prepare_texture_mesh(
     return mesh
 
 
+def load_or_prepare_texture_mesh(
+    mesh_path: Path,
+    *,
+    max_faces: int,
+    cache: PipelineCache | None,
+    load_mesh: Callable[[Path], Any],
+    floater_remover_cls: Any,
+    degenerate_face_remover_cls: Any,
+    face_reducer_cls: Any,
+) -> tuple[Any, bool, int, int]:
+    """Load/reduce a mesh once per file identity + target budget in persistent mode."""
+
+    def prepare() -> tuple[Any, int, int]:
+        mesh = load_mesh(mesh_path)
+        faces_before = int(len(mesh.faces))
+        mesh = prepare_texture_mesh(
+            mesh,
+            max_faces=max_faces,
+            floater_remover_cls=floater_remover_cls,
+            degenerate_face_remover_cls=degenerate_face_remover_cls,
+            face_reducer_cls=face_reducer_cls,
+        )
+        faces_after = int(len(mesh.faces))
+        return mesh, faces_before, faces_after
+
+    if cache is None:
+        mesh, faces_before, faces_after = prepare()
+        return mesh, False, faces_before, faces_after
+
+    return cache.get_prepared_mesh(
+        prepare,
+        prepared_mesh_cache_key(mesh_path, max_faces),
+    )
+
+
 def configure_texture_memory_profile(
     pipeline: Any,
     *,
@@ -639,6 +674,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
     faces_before: int | None = None
     faces_after: int | None = None
     cache_hit = False
+    mesh_cache_hit = False
     model_load_ms = 0.0
     preprocess_ms = 0.0
     inference_ms = 0.0
@@ -665,14 +701,12 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
 
         preprocess_started = time.perf_counter()
         emit("progress", ok=True, stage="preparing_input", progress=0.10)
-        mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
         image = Image.open(image_path).convert("RGBA")
         if args.remove_background:
             from hy3dgen.rembg import BackgroundRemover  # type: ignore
 
             image = BackgroundRemover()(image)
 
-        faces_before = int(len(mesh.faces))
         emit(
             "progress",
             ok=True,
@@ -680,17 +714,17 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             progress=0.14,
             requested_profile=requested_profile,
             resolved_profile=resolved_profile,
-            faces_before=faces_before,
             max_faces=max_faces,
         )
-        mesh = prepare_texture_mesh(
-            mesh,
+        mesh, mesh_cache_hit, faces_before, faces_after = load_or_prepare_texture_mesh(
+            mesh_path,
             max_faces=max_faces,
+            cache=cache,
+            load_mesh=lambda path: trimesh.load(str(path), force="mesh", process=False),
             floater_remover_cls=FloaterRemover,
             degenerate_face_remover_cls=DegenerateFaceRemover,
             face_reducer_cls=FaceReducer,
         )
-        faces_after = int(len(mesh.faces))
         preprocess_ms = (time.perf_counter() - preprocess_started) * 1000.0
         emit(
             "progress",
@@ -702,6 +736,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             faces_before=faces_before,
             faces_after=faces_after,
             max_faces=max_faces,
+            mesh_cache_hit=mesh_cache_hit,
         )
 
         torch.cuda.empty_cache()
@@ -740,6 +775,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             attention_slicing=attention_slicing,
             cache_hit=cache_hit,
             cache_kind="texture",
+            mesh_cache_hit=mesh_cache_hit,
         )
         inference_started = time.perf_counter()
         textured_mesh = pipeline(mesh, image=image)
@@ -767,6 +803,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             attention_slicing=attention_slicing,
             cache_hit=cache_hit,
             cache_kind="texture",
+            mesh_cache_hit=mesh_cache_hit,
             model_load_ms=round(model_load_ms, 3),
             preprocess_ms=round(preprocess_ms, 3),
             inference_ms=round(inference_ms, 3),
@@ -789,6 +826,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
             faces_after=faces_after,
             cache_hit=cache_hit,
             cache_kind="texture",
+            mesh_cache_hit=mesh_cache_hit,
             model_load_ms=round(model_load_ms, 3),
             preprocess_ms=round(preprocess_ms, 3),
             inference_ms=round(inference_ms, 3),
