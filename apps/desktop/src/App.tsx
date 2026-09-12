@@ -307,11 +307,14 @@ export function App() {
       && (job.cleanedShapePath ?? job.resultPath ?? job.preservedShapePath)
       && !job.busy,
   );
-  const canCompareCleanup = Boolean(
-    job.preservedShapePath
-      && job.cleanedShapePath
-      && job.preservedShapePath !== job.cleanedShapePath,
-  );
+  const meshComparison = workflowMode === 'mesh' && meshInputPath && job.cleanedShapePath
+    ? {
+        beforeUrl: localAssetUrl(meshInputPath),
+        afterUrl: localAssetUrl(job.cleanedShapePath),
+        beforeTriangles: timing?.cleanupReport?.triangles_before,
+        afterTriangles: timing?.cleanupReport?.triangles_after,
+      }
+    : null;
 
   return (
     <div className="app-shell">
@@ -380,6 +383,7 @@ export function App() {
 
         <ModelViewer
           modelUrl={modelUrl}
+          comparison={meshComparison}
           busy={job.busy}
           progress={progressPercent}
           progressLabel={progressLabelText}
@@ -427,27 +431,6 @@ export function App() {
                     Clear cache
                   </button>
                 )}
-              </div>
-            )}
-
-            {canCompareCleanup && (
-              <div className="recovery-actions" aria-label="Mesh cleanup comparison">
-                <button
-                  type="button"
-                  className="ghost-button"
-                  disabled={job.busy}
-                  onClick={() => setModelPath(job.preservedShapePath)}
-                >
-                  Before
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={job.busy}
-                  onClick={() => setModelPath(job.cleanedShapePath)}
-                >
-                  After
-                </button>
               </div>
             )}
 
