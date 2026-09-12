@@ -43,6 +43,7 @@ pub struct WorkerProgressEvent {
     pub attention_slicing: Option<String>,
     pub cache_hit: Option<bool>,
     pub cache_kind: Option<String>,
+    pub mesh_cache_hit: Option<bool>,
     pub model_load_ms: Option<f64>,
     pub inference_ms: Option<f64>,
     pub preprocess_ms: Option<f64>,
@@ -94,6 +95,7 @@ pub struct GenerateResult {
     pub job_id: Option<String>,
     pub cache_hit: Option<bool>,
     pub cache_kind: Option<String>,
+    pub mesh_cache_hit: Option<bool>,
     pub model_load_ms: Option<f64>,
     pub inference_ms: Option<f64>,
     pub preprocess_ms: Option<f64>,
@@ -434,13 +436,14 @@ mod tests {
     #[test]
     fn parses_texture_profile_progress_payload() {
         let event: WorkerProgressEvent = serde_json::from_str(
-            r#"{"event":"progress","stage":"mesh_ready","progress":0.18,"requested_profile":"auto","resolved_profile":"balanced","faces_before":40000,"faces_after":20000,"max_faces":20000}"#,
+            r#"{"event":"progress","stage":"mesh_ready","progress":0.18,"requested_profile":"auto","resolved_profile":"balanced","faces_before":40000,"faces_after":20000,"max_faces":20000,"mesh_cache_hit":true}"#,
         )
         .unwrap();
         assert_eq!(event.requested_profile.as_deref(), Some("auto"));
         assert_eq!(event.resolved_profile.as_deref(), Some("balanced"));
         assert_eq!(event.faces_after, Some(20_000));
         assert_eq!(event.max_faces, Some(20_000));
+        assert_eq!(event.mesh_cache_hit, Some(true));
     }
 
     #[test]
