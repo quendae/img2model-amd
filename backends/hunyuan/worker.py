@@ -150,6 +150,24 @@ class PipelineCache:
         return self.texture_pipeline, False
 
 
+def recover_pipeline_cache_after_error(
+    cache: PipelineCache | None,
+    cache_kind: str,
+    error_kind: str,
+) -> None:
+    """Discard only a pipeline that may be unsafe after an OOM."""
+
+    if cache is None or error_kind != "out_of_memory":
+        return
+    if cache_kind == "shape":
+        cache.clear_shape()
+        return
+    if cache_kind == "texture":
+        cache.clear_texture()
+        return
+    raise ValueError(f"Unsupported cache kind: {cache_kind}")
+
+
 def health_payload() -> dict[str, Any]:
     torch_available = module_available("torch")
     hunyuan_available = module_available("hy3dgen")
@@ -514,8 +532,7 @@ def run_generate(args: argparse.Namespace, cache: PipelineCache | None = None) -
         return 0
     except Exception as exc:
         error_kind = classify_generation_error(exc)
-        if error_kind == "out_of_memory" and cache is not None:
-            cache.clear_shape()
+        recover_pipeline_cache_after_error(cache, "shape", error_kind)
         emit(
             "error",
             ok=False,
@@ -706,8 +723,7 @@ def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) ->
         return 0
     except Exception as exc:
         error_kind = classify_texture_error(exc)
-        if error_kind == "out_of_memory" and cache is not None:
-            cache.clear_texture()
+        recover_pipeline_cache_after_error(cache, "texture", error_kind)
         emit(
             "error",
             ok=False,
