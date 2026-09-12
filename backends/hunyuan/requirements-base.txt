@@ -1,2 +1,4 @@
-# Lightweight worker-side dependency. PyTorch and Hunyuan3D are installed in the AMD runtime separately.
+# Lightweight worker-side dependencies. PyTorch and Hunyuan3D are installed separately.
 Pillow>=10.0
+numpy>=1.26
+trimesh>=4.0
