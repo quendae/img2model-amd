@@ -63,6 +63,14 @@ def release_torch_memory() -> None:
         pass
 
 
+def prepared_mesh_cache_key(mesh_path: Path, max_faces: int) -> tuple[Any, ...]:
+    """Key a prepared mesh by file identity and working triangle budget."""
+
+    resolved = mesh_path.expanduser().resolve()
+    stat = resolved.stat()
+    return (str(resolved), stat.st_size, stat.st_mtime_ns, int(max_faces))
+
+
 class PipelineCache:
     """Bounded cache for one heavyweight Hunyuan pipeline at a time."""
 
@@ -71,6 +79,10 @@ class PipelineCache:
         self.shape_key: tuple[Any, ...] | None = None
         self.texture_pipeline: Any | None = None
         self.texture_key: tuple[Any, ...] | None = None
+        self.prepared_mesh: Any | None = None
+        self.prepared_mesh_key: tuple[Any, ...] | None = None
+        self.prepared_mesh_faces_before: int | None = None
+        self.prepared_mesh_faces_after: int | None = None
         self.event_sink = event_sink
 
     def _event(self, stage: str, cache_kind: str, cache_hit: bool | None = None) -> None:
@@ -107,12 +119,29 @@ class PipelineCache:
         release_torch_memory()
         self._event("evicted_texture" if evicted else "cache_cleared", "texture")
 
+    def clear_prepared_mesh(self, *, evicted: bool = False) -> None:
+        if self.prepared_mesh is None:
+            self.prepared_mesh_key = None
+            self.prepared_mesh_faces_before = None
+            self.prepared_mesh_faces_after = None
+            return
+        mesh = self.prepared_mesh
+        self.prepared_mesh = None
+        self.prepared_mesh_key = None
+        self.prepared_mesh_faces_before = None
+        self.prepared_mesh_faces_after = None
+        del mesh
+        gc.collect()
+        self._event("evicted_prepared_mesh" if evicted else "cache_cleared", "prepared_mesh")
+
     def clear(self) -> None:
         had_shape = self.shape_pipeline is not None
         had_texture = self.texture_pipeline is not None
+        had_prepared_mesh = self.prepared_mesh is not None
         self.clear_shape()
         self.clear_texture()
-        if not had_shape and not had_texture:
+        self.clear_prepared_mesh()
+        if not had_shape and not had_texture and not had_prepared_mesh:
             self._event("cache_cleared", "all")
 
     def get_shape_pipeline(
@@ -148,6 +177,29 @@ class PipelineCache:
         self.texture_pipeline = loader()
         self.texture_key = key
         return self.texture_pipeline, False
+
+    def get_prepared_mesh(
+        self,
+        loader: Callable[[], tuple[Any, int, int]],
+        key: tuple[Any, ...],
+    ) -> tuple[Any, bool, int, int]:
+        if self.prepared_mesh is not None and self.prepared_mesh_key == key:
+            self._event("cache_hit", "prepared_mesh", True)
+            return (
+                self.prepared_mesh.copy(),
+                True,
+                int(self.prepared_mesh_faces_before or 0),
+                int(self.prepared_mesh_faces_after or 0),
+            )
+        if self.prepared_mesh is not None:
+            self.clear_prepared_mesh(evicted=True)
+        self._event("cache_miss", "prepared_mesh", False)
+        mesh, faces_before, faces_after = loader()
+        self.prepared_mesh = mesh
+        self.prepared_mesh_key = key
+        self.prepared_mesh_faces_before = int(faces_before)
+        self.prepared_mesh_faces_after = int(faces_after)
+        return mesh.copy(), False, int(faces_before), int(faces_after)
 
 
 def recover_pipeline_cache_after_error(
