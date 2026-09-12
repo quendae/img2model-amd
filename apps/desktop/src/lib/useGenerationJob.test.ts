@@ -62,9 +62,9 @@ describe('useGenerationJob', () => {
         ok: true,
         event: 'completed',
         output: 'C:/model.glb',
-        resolved_profile: 'safe',
+        resolved_profile: 'balanced',
         faces_before: 40000,
-        faces_after: 10000,
+        faces_after: 20000,
       };
     });
 
@@ -95,9 +95,9 @@ describe('useGenerationJob', () => {
       stage: 'texture',
       error_kind: 'out_of_memory',
       error: 'CUDA out of memory',
-      resolved_profile: 'safe',
+      resolved_profile: 'balanced',
       faces_before: 40000,
-      faces_after: 10000,
+      faces_after: 20000,
     });
 
     const { result } = renderHook(() => useGenerationJob());
@@ -113,6 +113,120 @@ describe('useGenerationJob', () => {
       image: 'C:/source.png',
       profile: 'auto',
     });
+  });
+
+  it('marks restart required and preserves the mesh after a texture worker crash', async () => {
+    tauriMocks.textureMesh.mockResolvedValue({
+      ok: false,
+      event: 'error',
+      stage: 'worker',
+      error_kind: 'worker_crashed',
+      error: 'Persistent worker closed stdout',
+    });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await result.current.runTextureWorkflow({
+        backend: 'native-rocm',
+        engine: 'hunyuan-paint',
+        profile: 'balanced',
+        mesh: 'C:/shape.glb',
+        image: 'C:/source.png',
+        output: 'C:/textured.glb',
+        removeBackground: true,
+      });
+    });
+
+    expect(result.current.workerNeedsRestart).toBe(true);
+    expect(result.current.resultPath).toBe('C:/shape.glb');
+    expect(result.current.preservedShapePath).toBe('C:/shape.glb');
+    expect(result.current.retryContext).toMatchObject({ mesh: 'C:/shape.glb' });
+    expect(result.current.error).toMatch(/worker.*crash/i);
+  });
+
+  it('marks restart required after a shape worker crash', async () => {
+    tauriMocks.generateShape.mockResolvedValue({
+      ok: false,
+      event: 'error',
+      stage: 'worker',
+      error_kind: 'worker_crashed',
+      error: 'Persistent worker closed stdout',
+    });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await result.current.runShapeWorkflow(baseRequest);
+    });
+
+    expect(result.current.workerNeedsRestart).toBe(true);
+    expect(result.current.error).toMatch(/worker.*crash/i);
+  });
+
+  it('reports cache hit and worker timings from a texture result', async () => {
+    tauriMocks.textureMesh.mockResolvedValue({
+      ok: true,
+      event: 'completed',
+      output: 'C:/textured.glb',
+      requested_profile: 'balanced',
+      resolved_profile: 'balanced',
+      faces_before: 604308,
+      faces_after: 20000,
+      cache_hit: true,
+      cache_kind: 'texture',
+      model_load_ms: 2.5,
+      preprocess_ms: 12100,
+      inference_ms: 30900,
+      export_ms: 8300,
+    });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await result.current.runTextureWorkflow({
+        backend: 'native-rocm',
+        engine: 'hunyuan-paint',
+        profile: 'balanced',
+        mesh: 'C:/shape.glb',
+        image: 'C:/source.png',
+        output: 'C:/textured.glb',
+        removeBackground: true,
+      });
+    });
+
+    expect(result.current.timingSummary).toMatchObject({
+      cacheHit: true,
+      cacheKind: 'texture',
+      modelLoadMs: 2.5,
+      preprocessMs: 12100,
+      inferenceMs: 30900,
+      exportMs: 8300,
+      trianglesBefore: 604308,
+      trianglesAfter: 20000,
+      resolvedTextureProfile: 'balanced',
+    });
+  });
+
+  it('does not reset progress when a cache event arrives', async () => {
+    tauriMocks.textureMesh.mockImplementation(async (_request, onProgress) => {
+      onProgress({ event: 'progress', stage: 'running_texture', progress: 0.5 });
+      onProgress({ event: 'cache', stage: 'cache_hit', cache_hit: true, cache_kind: 'texture' });
+      return { ok: true, event: 'completed', output: 'C:/textured.glb', cache_hit: true };
+    });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await result.current.runTextureWorkflow({
+        backend: 'native-rocm',
+        engine: 'hunyuan-paint',
+        profile: 'balanced',
+        mesh: 'C:/shape.glb',
+        image: 'C:/source.png',
+        output: 'C:/textured.glb',
+        removeBackground: true,
+      });
+    });
+
+    expect(result.current.progress?.value).toBe(1);
+    expect(result.current.progress?.label).toBe('Texture complete.');
   });
 
   it('retryTextureSafe reuses mesh and image without calling generateShape', async () => {
@@ -154,6 +268,33 @@ describe('useGenerationJob', () => {
       mesh: 'C:/shape.glb',
       image: 'C:/source.png',
     });
+  });
+
+  it('clears restart-required state only after an explicit restart acknowledgement', async () => {
+    tauriMocks.textureMesh.mockResolvedValue({
+      ok: false,
+      event: 'error',
+      stage: 'worker',
+      error_kind: 'worker_crashed',
+      error: 'Persistent worker closed stdout',
+    });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await result.current.runTextureWorkflow({
+        backend: 'native-rocm',
+        engine: 'hunyuan-paint',
+        profile: 'balanced',
+        mesh: 'C:/shape.glb',
+        image: 'C:/source.png',
+        output: 'C:/textured.glb',
+        removeBackground: true,
+      });
+    });
+    expect(result.current.workerNeedsRestart).toBe(true);
+
+    act(() => result.current.markWorkerRestarted());
+    expect(result.current.workerNeedsRestart).toBe(false);
   });
 
   it('maps shape and texture overall progress as 25/75', () => {
