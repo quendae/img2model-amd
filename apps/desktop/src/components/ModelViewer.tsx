@@ -5,16 +5,35 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { modelFormatFromUrl } from './modelPreview';
 
+export interface ModelComparison {
+  beforeUrl: string;
+  afterUrl: string;
+  beforeTriangles?: number;
+  afterTriangles?: number;
+}
+
 interface ModelViewerProps {
   modelUrl: string | null;
+  comparison?: ModelComparison | null;
   busy: boolean;
   progress?: number | null;
   progressLabel?: string | null;
 }
 
-export function ModelViewer({ modelUrl, busy, progress, progressLabel }: ModelViewerProps) {
+export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabel }: ModelViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [comparisonSide, setComparisonSide] = useState<'before' | 'after'>('after');
+
+  useEffect(() => {
+    setComparisonSide('after');
+  }, [comparison?.beforeUrl, comparison?.afterUrl]);
+
+  const activeModelUrl = comparison
+    ? comparisonSide === 'before'
+      ? comparison.beforeUrl
+      : comparison.afterUrl
+    : modelUrl;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -82,18 +101,18 @@ export function ModelViewer({ modelUrl, busy, progress, progressLabel }: ModelVi
       controls.update();
     };
 
-    if (modelUrl) {
+    if (activeModelUrl) {
       setLoadError(null);
       try {
-        const format = modelFormatFromUrl(modelUrl);
+        const format = modelFormatFromUrl(activeModelUrl);
         const onError = (error: unknown) => {
           if (!disposed) setLoadError(`Could not load generated ${format.toUpperCase()}: ${String(error)}`);
         };
 
         if (format === 'obj') {
-          new OBJLoader().load(modelUrl, attachModel, undefined, onError);
+          new OBJLoader().load(activeModelUrl, attachModel, undefined, onError);
         } else {
-          new GLTFLoader().load(modelUrl, (gltf) => attachModel(gltf.scene), undefined, onError);
+          new GLTFLoader().load(activeModelUrl, (gltf) => attachModel(gltf.scene), undefined, onError);
         }
       } catch (error) {
         setLoadError(String(error));
@@ -124,12 +143,30 @@ export function ModelViewer({ modelUrl, busy, progress, progressLabel }: ModelVi
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [modelUrl]);
+  }, [activeModelUrl]);
 
   return (
     <section className="viewer-shell" aria-label="3D model preview">
       <div ref={hostRef} className="viewer-canvas" />
-      {!modelUrl && !busy && (
+      {comparison && (
+        <div className="viewer-comparison" aria-label="Mesh comparison">
+          <button
+            type="button"
+            aria-pressed={comparisonSide === 'before'}
+            onClick={() => setComparisonSide('before')}
+          >
+            Before{comparison.beforeTriangles !== undefined ? ` · ${comparison.beforeTriangles.toLocaleString()}` : ''}
+          </button>
+          <button
+            type="button"
+            aria-pressed={comparisonSide === 'after'}
+            onClick={() => setComparisonSide('after')}
+          >
+            After{comparison.afterTriangles !== undefined ? ` · ${comparison.afterTriangles.toLocaleString()}` : ''}
+          </button>
+        </div>
+      )}
+      {!activeModelUrl && !busy && (
         <div className="viewer-empty">
           <div className="wire-cube" aria-hidden="true" />
           <strong>3D preview</strong>
