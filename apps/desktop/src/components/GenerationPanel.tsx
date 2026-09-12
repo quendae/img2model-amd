@@ -18,10 +18,10 @@ interface GenerationPanelProps {
   textureProfile: TextureProfile;
   textureEngine: TextureEngineId;
   textureMeshPath: string | null;
-  meshInputPath: string | null;
-  cleanupPreset: CleanupPreset;
-  cleanupConfigLabel: string;
-  cleanupOverrides: CleanupAdvancedOverrides;
+  meshInputPath?: string | null;
+  cleanupPreset?: CleanupPreset;
+  cleanupConfigLabel?: string;
+  cleanupOverrides?: CleanupAdvancedOverrides;
   seed: number;
   steps: number;
   removeBackground: boolean;
@@ -35,8 +35,8 @@ interface GenerationPanelProps {
   onShapeOutputModeChange: (mode: ShapeOutputMode) => void;
   onProfileChange: (profile: GenerationOptions['profile']) => void;
   onTextureProfileChange: (profile: TextureProfile) => void;
-  onCleanupPresetChange: (preset: CleanupPreset) => void;
-  onCleanupOverridesChange: (overrides: CleanupAdvancedOverrides) => void;
+  onCleanupPresetChange?: (preset: CleanupPreset) => void;
+  onCleanupOverridesChange?: (overrides: CleanupAdvancedOverrides) => void;
   onSeedChange: (seed: number) => void;
   onStepsChange: (steps: number) => void;
   onRemoveBackgroundChange: (enabled: boolean) => void;
@@ -108,10 +108,10 @@ export function GenerationPanel({
   textureProfile,
   textureEngine,
   textureMeshPath,
-  meshInputPath,
-  cleanupPreset,
-  cleanupConfigLabel,
-  cleanupOverrides,
+  meshInputPath = null,
+  cleanupPreset = 'light',
+  cleanupConfigLabel = 'Light',
+  cleanupOverrides = {},
   seed,
   steps,
   removeBackground,
@@ -125,8 +125,8 @@ export function GenerationPanel({
   onShapeOutputModeChange,
   onProfileChange,
   onTextureProfileChange,
-  onCleanupPresetChange,
-  onCleanupOverridesChange,
+  onCleanupPresetChange = () => {},
+  onCleanupOverridesChange = () => {},
   onSeedChange,
   onStepsChange,
   onRemoveBackgroundChange,
