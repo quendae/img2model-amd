@@ -61,6 +61,24 @@ async fn texture_mesh(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn cleanup_mesh(
+    app: tauri::AppHandle,
+    request: worker::MeshCleanupRequest,
+    on_event: Channel<worker::WorkerProgressEvent>,
+) -> Result<worker::GenerateResult, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = app_handle.state::<worker_session::WorkerSessionManager>();
+        manager.run_mesh_cleanup(request, |event| {
+            let _ = on_event.send(event);
+        })
+    })
+    .await
+    .map_err(|error| format!("Mesh cleanup task failed: {error}"))?
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 fn restart_hunyuan_worker(app: tauri::AppHandle) -> Result<(), String> {
     app.state::<worker_session::WorkerSessionManager>().restart()
 }
@@ -83,6 +101,7 @@ pub fn run() {
             hunyuan_texture_health,
             generate_shape,
             texture_mesh,
+            cleanup_mesh,
             restart_hunyuan_worker,
             clear_hunyuan_worker_cache
         ])

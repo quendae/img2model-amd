@@ -1,7 +1,7 @@
 use crate::diagnostics::configured_python;
 use crate::worker::{
     backend_is_implemented, configured_worker_path, texture_arguments, GenerateRequest, GenerateResult,
-    TextureRequest, WorkerProgressEvent,
+    MeshCleanupRequest, TextureRequest, WorkerProgressEvent,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -11,7 +11,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-const PROTOCOL_VERSION: u64 = 1;
+const PROTOCOL_VERSION: u64 = 2;
 const STDERR_TAIL_LINES: usize = 200;
 
 #[derive(Debug)]
@@ -47,6 +47,14 @@ fn shape_command(job_id: &str, request: &GenerateRequest) -> Value {
 fn texture_command(job_id: &str, request: &TextureRequest) -> Value {
     json!({
         "command": "texture",
+        "job_id": job_id,
+        "request": request,
+    })
+}
+
+fn mesh_cleanup_command(job_id: &str, request: &MeshCleanupRequest) -> Value {
+    json!({
+        "command": "mesh_cleanup",
         "job_id": job_id,
         "request": request,
     })
@@ -95,6 +103,9 @@ fn failure_result(kind: &str, message: String) -> GenerateResult {
         cache_kind: None,
         image_cache_hit: None,
         mesh_cache_hit: None,
+        cleanup_cache_hit: None,
+        cleanup_report: None,
+        mesh_cleanup_ms: None,
         model_load_ms: None,
         image_preprocess_ms: None,
         mesh_preprocess_ms: None,
@@ -294,6 +305,19 @@ impl WorkerSession {
         self.run_generation(command, job_id, on_event)
     }
 
+    fn run_mesh_cleanup<F>(
+        &mut self,
+        request: MeshCleanupRequest,
+        on_event: F,
+    ) -> Result<GenerateResult, SessionError>
+    where
+        F: FnMut(WorkerProgressEvent),
+    {
+        let job_id = self.next_job_id();
+        let command = mesh_cleanup_command(&job_id, &request);
+        self.run_generation(command, job_id, on_event)
+    }
+
     fn control(&mut self, name: &str) -> Result<(), SessionError> {
         let job_id = self.next_job_id();
         let command = control_command(&job_id, name);
@@ -406,6 +430,28 @@ impl WorkerSessionManager {
         }
     }
 
+    pub fn run_mesh_cleanup<F>(
+        &self,
+        request: MeshCleanupRequest,
+        on_event: F,
+    ) -> Result<GenerateResult, String>
+    where
+        F: FnMut(WorkerProgressEvent),
+    {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
+        let result = self.get_or_spawn(&mut guard)?.run_mesh_cleanup(request, on_event);
+        match result {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                Self::invalidate(&mut guard);
+                Ok(failure_result(error.kind, error.message))
+            }
+        }
+    }
+
     pub fn clear_cache(&self) -> Result<(), String> {
         let mut guard = self
             .inner
@@ -435,8 +481,8 @@ impl WorkerSessionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{shape_command, texture_command, validate_event_job_id};
-    use crate::worker::{GenerateRequest, TextureRequest};
+    use super::{mesh_cleanup_command, shape_command, texture_command, validate_event_job_id};
+    use crate::worker::{GenerateRequest, MeshCleanupRequest, TextureRequest};
     use serde_json::json;
 
     fn fixture_shape_request() -> GenerateRequest {
@@ -466,6 +512,15 @@ mod tests {
         }
     }
 
+    fn fixture_mesh_cleanup_request() -> MeshCleanupRequest {
+        MeshCleanupRequest {
+            input: "source.glb".to_string(),
+            output: "source-clean.glb".to_string(),
+            preset: "game-ready".to_string(),
+            overrides: None,
+        }
+    }
+
     #[test]
     fn shape_command_has_job_id_and_request() {
         let value = shape_command("job-7", &fixture_shape_request());
@@ -482,6 +537,14 @@ mod tests {
         assert_eq!(value["job_id"], "job-8");
         assert_eq!(value["request"]["profile"], "balanced");
         assert_eq!(value["request"]["engine"], "hunyuan-paint");
+    }
+
+    #[test]
+    fn mesh_cleanup_command_has_request_and_job_id() {
+        let value = mesh_cleanup_command("job-10", &fixture_mesh_cleanup_request());
+        assert_eq!(value["command"], "mesh_cleanup");
+        assert_eq!(value["job_id"], "job-10");
+        assert_eq!(value["request"]["preset"], "game-ready");
     }
 
     #[test]

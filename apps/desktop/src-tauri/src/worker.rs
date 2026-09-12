@@ -28,6 +28,24 @@ pub struct TextureHealth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshCleanupReport {
+    pub preset: String,
+    pub config_label: String,
+    pub algorithm_version: String,
+    pub triangles_before: u64,
+    pub triangles_after: u64,
+    pub vertices_before: u64,
+    pub vertices_after: u64,
+    pub components_before: u64,
+    pub components_after: u64,
+    pub components_removed: Option<u64>,
+    pub vertices_welded: Option<u64>,
+    pub spikes_adjusted: Option<u64>,
+    pub cleanup_ms: f64,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerProgressEvent {
     pub event: String,
     pub job_id: Option<String>,
@@ -45,6 +63,9 @@ pub struct WorkerProgressEvent {
     pub cache_kind: Option<String>,
     pub image_cache_hit: Option<bool>,
     pub mesh_cache_hit: Option<bool>,
+    pub cleanup_cache_hit: Option<bool>,
+    pub cleanup_report: Option<MeshCleanupReport>,
+    pub mesh_cleanup_ms: Option<f64>,
     pub model_load_ms: Option<f64>,
     pub image_preprocess_ms: Option<f64>,
     pub mesh_preprocess_ms: Option<f64>,
@@ -81,6 +102,15 @@ pub struct TextureRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshCleanupRequest {
+    pub input: String,
+    pub output: String,
+    pub preset: String,
+    pub overrides: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateResult {
     pub ok: bool,
     pub event: String,
@@ -100,6 +130,9 @@ pub struct GenerateResult {
     pub cache_kind: Option<String>,
     pub image_cache_hit: Option<bool>,
     pub mesh_cache_hit: Option<bool>,
+    pub cleanup_cache_hit: Option<bool>,
+    pub cleanup_report: Option<MeshCleanupReport>,
+    pub mesh_cleanup_ms: Option<f64>,
     pub model_load_ms: Option<f64>,
     pub image_preprocess_ms: Option<f64>,
     pub mesh_preprocess_ms: Option<f64>,
