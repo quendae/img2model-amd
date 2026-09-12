@@ -49,8 +49,11 @@ export interface GenerateResult {
   job_id?: string | null;
   cache_hit?: boolean | null;
   cache_kind?: string | null;
+  image_cache_hit?: boolean | null;
   mesh_cache_hit?: boolean | null;
   model_load_ms?: number | null;
+  image_preprocess_ms?: number | null;
+  mesh_preprocess_ms?: number | null;
   inference_ms?: number | null;
   preprocess_ms?: number | null;
   export_ms?: number | null;
@@ -71,8 +74,11 @@ export interface WorkerProgressEvent {
   attention_slicing?: string | null;
   cache_hit?: boolean | null;
   cache_kind?: string | null;
+  image_cache_hit?: boolean | null;
   mesh_cache_hit?: boolean | null;
   model_load_ms?: number | null;
+  image_preprocess_ms?: number | null;
+  mesh_preprocess_ms?: number | null;
   inference_ms?: number | null;
   preprocess_ms?: number | null;
   export_ms?: number | null;
