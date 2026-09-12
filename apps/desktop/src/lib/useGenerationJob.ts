@@ -100,13 +100,19 @@ function finishStages(tracker: StageTracker, at: number): Record<string, number>
   return { ...tracker.durations };
 }
 
-function resultMetadata(result: GenerateResult): Pick<GenerationTimingSummary, 'trianglesBefore' | 'trianglesAfter' | 'resolvedTextureProfile'> {
+function resultMetadata(result: GenerateResult): Partial<GenerationTimingSummary> {
   const resolved = result.resolved_profile;
   return {
     trianglesBefore: result.faces_before ?? undefined,
     trianglesAfter: result.faces_after ?? undefined,
     resolvedTextureProfile:
       resolved === 'safe' || resolved === 'balanced' || resolved === 'quality' ? resolved : undefined,
+    cacheHit: result.cache_hit ?? undefined,
+    cacheKind: result.cache_kind ?? undefined,
+    modelLoadMs: result.model_load_ms ?? undefined,
+    inferenceMs: result.inference_ms ?? undefined,
+    preprocessMs: result.preprocess_ms ?? undefined,
+    exportMs: result.export_ms ?? undefined,
   };
 }
 
@@ -120,6 +126,7 @@ export function useGenerationJob() {
   const [preservedShapePath, setPreservedShapePath] = useState<string | null>(null);
   const [retryContext, setRetryContext] = useState<TextureRetryContext | null>(null);
   const [timingSummary, setTimingSummary] = useState<GenerationTimingSummary | null>(null);
+  const [workerNeedsRestart, setWorkerNeedsRestart] = useState(false);
 
   const clearError = useCallback(() => {
     setError(null);
@@ -128,6 +135,10 @@ export function useGenerationJob() {
 
   const setStatusMessage = useCallback((nextMessage: string) => {
     setMessage(nextMessage);
+  }, []);
+
+  const markWorkerRestarted = useCallback(() => {
+    setWorkerNeedsRestart(false);
   }, []);
 
   const resetForNewInput = useCallback((nextMessage = 'Choose a source image to begin.') => {
@@ -147,7 +158,7 @@ export function useGenerationJob() {
     includesTexture: boolean,
     tracker?: StageTracker,
   ) => {
-    if (event.event === 'error') return;
+    if (event.event === 'error' || event.event === 'cache') return;
     if (tracker) noteStage(tracker, event.stage, nowMs());
     const next: GenerationProgress = {
       phase,
@@ -210,7 +221,11 @@ export function useGenerationJob() {
       if (!result.ok) {
         setTechnicalError(result.error ?? null);
         setRetryContext(request);
-        if (result.error_kind === 'out_of_memory') {
+        if (result.error_kind === 'worker_crashed') {
+          setWorkerNeedsRestart(true);
+          setError('Persistent Hunyuan worker crashed during texture generation. The generated shape was preserved successfully.');
+          setMessage('Texture worker crashed; shape output was preserved.');
+        } else if (result.error_kind === 'out_of_memory') {
           setError('Texture generation ran out of GPU memory. The generated shape was preserved successfully.');
           setMessage('Texture stage ran out of GPU memory; shape output was preserved.');
         } else {
@@ -292,9 +307,19 @@ export function useGenerationJob() {
       const shapeMs = shapeFinishedAt - shapeStartedAt;
       if (!result.ok) {
         setTechnicalError(result.error ?? null);
-        setError(result.error ?? 'Shape generation failed without an error message.');
-        setMessage('Shape generation failed.');
-        setTimingSummary({ shapeMs, totalMs: shapeFinishedAt - totalStartedAt });
+        if (result.error_kind === 'worker_crashed') {
+          setWorkerNeedsRestart(true);
+          setError('Persistent Hunyuan worker crashed during shape generation.');
+          setMessage('Shape worker crashed. Restart the worker before retrying.');
+        } else {
+          setError(result.error ?? 'Shape generation failed without an error message.');
+          setMessage('Shape generation failed.');
+        }
+        setTimingSummary({
+          shapeMs,
+          totalMs: shapeFinishedAt - totalStartedAt,
+          ...resultMetadata(result),
+        });
         return null;
       }
 
@@ -305,7 +330,11 @@ export function useGenerationJob() {
       if (!includesTexture) {
         setProgress({ phase: 'shape', value: 1, label: 'Shape complete.' });
         setMessage(`Shape completed: ${shapePath}`);
-        setTimingSummary({ shapeMs, totalMs: shapeFinishedAt - totalStartedAt });
+        setTimingSummary({
+          shapeMs,
+          totalMs: shapeFinishedAt - totalStartedAt,
+          ...resultMetadata(result),
+        });
         return shapePath;
       }
 
@@ -359,6 +388,7 @@ export function useGenerationJob() {
     preservedShapePath,
     retryContext,
     timingSummary,
+    workerNeedsRestart,
     runShapeWorkflow,
     runTextureWorkflow,
     retryTexture,
@@ -366,5 +396,6 @@ export function useGenerationJob() {
     clearError,
     setStatusMessage,
     resetForNewInput,
+    markWorkerRestarted,
   };
 }
