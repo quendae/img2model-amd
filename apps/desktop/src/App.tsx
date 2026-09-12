@@ -307,6 +307,11 @@ export function App() {
       && (job.cleanedShapePath ?? job.resultPath ?? job.preservedShapePath)
       && !job.busy,
   );
+  const canCompareCleanup = Boolean(
+    job.preservedShapePath
+      && job.cleanedShapePath
+      && job.preservedShapePath !== job.cleanedShapePath,
+  );
 
   return (
     <div className="app-shell">
@@ -425,6 +430,27 @@ export function App() {
               </div>
             )}
 
+            {canCompareCleanup && (
+              <div className="recovery-actions" aria-label="Mesh cleanup comparison">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={job.busy}
+                  onClick={() => setModelPath(job.preservedShapePath)}
+                >
+                  Before
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={job.busy}
+                  onClick={() => setModelPath(job.cleanedShapePath)}
+                >
+                  After
+                </button>
+              </div>
+            )}
+
             {(canTextureCurrentModel || job.retryContext) && (
               <div className="recovery-actions">
                 {canTextureCurrentModel && (
@@ -497,13 +523,27 @@ export function App() {
               {timing?.cleanupReport && (
                 <>
                   <span>Cleanup</span>
-                  <strong>{timing.cleanupReport.config_label} · {timing.cleanupReport.components_removed ?? 0} components removed</strong>
+                  <strong>{timing.cleanupReport.config_label}</strong>
+                  <span>Triangles</span>
+                  <strong>{timing.cleanupReport.triangles_before.toLocaleString()} → {timing.cleanupReport.triangles_after.toLocaleString()}</strong>
+                  <span>Vertices</span>
+                  <strong>{timing.cleanupReport.vertices_before.toLocaleString()} → {timing.cleanupReport.vertices_after.toLocaleString()}</strong>
+                  <span>Islands</span>
+                  <strong>{timing.cleanupReport.components_before.toLocaleString()} → {timing.cleanupReport.components_after.toLocaleString()}</strong>
+                  <span>Welded</span>
+                  <strong>{(timing.cleanupReport.vertices_welded ?? 0).toLocaleString()}</strong>
+                  <span>Spikes</span>
+                  <strong>{(timing.cleanupReport.spikes_adjusted ?? 0).toLocaleString()}</strong>
                 </>
               )}
               {timing?.resolvedTextureProfile && (
                 <><span>Profile</span><strong>{timing.resolvedTextureProfile}</strong></>
               )}
             </div>
+
+            {timing?.cleanupReport?.warnings?.map((warning) => (
+              <div key={warning} className="backend-note warning">{warning}</div>
+            ))}
           </section>
         </aside>
       </main>
