@@ -24,8 +24,9 @@
 - Image cache and Hunyuan Paint model cache remain valid when only cleanup settings change.
 - Light must remain conservative: no general smoothing and no spike cleanup by default.
 - Aggressive must surface a visible warning that silhouette/fine detail may change.
-- Do not add PyMeshLab in this milestone.
+- Do not add PyMeshLab, SciPy, or another geometry framework in this milestone; implement Taubin smoothing with NumPy/mesh adjacency.
 - No LOD, collision, ground alignment, flatten-bottom, pivot, UV editor, local remesh, or manual face/vertex editor in this milestone.
+- Preserve UV seams during vertex welding (`merge_tex=False`, `merge_norm=False`); v1 is geometry-first and does not rebake textures.
 - The existing warm Texture benchmark (~29 s for cached Balanced on RX 6950 XT) must not regress because of hidden cleanup work inside texture preprocessing.
 - Use test-first development for every behavior change.
 
@@ -38,9 +39,9 @@
 - `backends/mesh_processing/__init__.py` — stable public exports.
 - `backends/mesh_processing/models.py` — preset/settings/report dataclasses and serialization.
 - `backends/mesh_processing/presets.py` — stock preset values, normalization, custom-label logic, `ALGORITHM_VERSION`.
-- `backends/mesh_processing/cleanup.py` — deterministic geometry operations and `process_mesh`.
+- `backends/mesh_processing/cleanup.py` — deterministic geometry operations and `cleanup_mesh`.
 - `backends/mesh_processing/io.py` — GLB/OBJ load + atomic export + source-preservation checks.
-- `backends/mesh_processing/cache.py` — cleanup cache key and small in-memory cleaned-mesh cache.
+- `backends/mesh_processing/cache.py` — cleanup cache key and one-entry in-memory cleaned-mesh cache.
 - `backends/mesh_processing/tests/test_presets.py`
 - `backends/mesh_processing/tests/test_cleanup.py`
 - `backends/mesh_processing/tests/test_io.py`
@@ -70,27 +71,28 @@
 - `apps/desktop/src/components/GenerationPanel.tsx` — Mesh tab, preset controls, Advanced controls.
 - `apps/desktop/src/components/GenerationPanel.test.tsx` — defaults, Mesh mode, custom label, Aggressive warning.
 - `apps/desktop/src/components/ModelViewer.tsx` — Before/After comparison controls.
-- `apps/desktop/src/components/ModelViewer.test.tsx` — comparison state/labels without exercising WebGL internals.
+- `apps/desktop/src/components/ModelViewer.test.tsx` — comparison state/labels without testing WebGL rendering itself.
 - `apps/desktop/src/App.tsx` — mode-specific input/output selection, comparison paths, Activity report.
 - `apps/desktop/src/App.test.tsx` — cleanup Activity/report and standalone Mesh behavior.
 
 ---
 
-### Task 1: Define the mesh-cleanup domain, stock presets, normalization, and report
+### Task 1: Define mesh-cleanup domain types, presets, normalization, and reporting
 
 **Files:**
 - Create: `backends/mesh_processing/__init__.py`
 - Create: `backends/mesh_processing/models.py`
 - Create: `backends/mesh_processing/presets.py`
+- Create: `backends/mesh_processing/tests/__init__.py`
 - Create: `backends/mesh_processing/tests/test_presets.py`
 
 **Interfaces:**
 - Produces: `CleanupPreset`, `CleanupSettings`, `ResolvedCleanupConfig`, `CleanupReport`, `ALGORITHM_VERSION`, `resolve_cleanup_config(preset, overrides)`.
-- Consumed by: Tasks 2, 3, 4, and frontend/Rust contract naming in later tasks.
+- Consumed by: Tasks 2-8.
 
-- [ ] **Step 1: Write failing preset-resolution tests**
+- [ ] **Step 1: Write the failing preset tests**
 
-Create `backends/mesh_processing/tests/test_presets.py` with tests covering stock defaults, custom labeling, invalid values, and internal algorithm version participation:
+Create `test_presets.py`:
 
 ```python
 import unittest
@@ -121,7 +123,6 @@ class CleanupPresetTests(unittest.TestCase):
         self.assertEqual(config.settings.smoothing_iterations, 0)
 
     def test_algorithm_version_is_internal_nonempty_string(self):
-        self.assertIsInstance(ALGORITHM_VERSION, str)
         self.assertTrue(ALGORITHM_VERSION.startswith("mesh-cleanup-v"))
 
     def test_invalid_preset_raises(self):
@@ -129,19 +130,15 @@ class CleanupPresetTests(unittest.TestCase):
             resolve_cleanup_config("destroy-everything", {})
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
-
-Run:
+- [ ] **Step 2: Run focused tests and verify RED**
 
 ```bash
 python -m unittest backends.mesh_processing.tests.test_presets -v
 ```
 
-Expected: FAIL because `backends.mesh_processing.presets` does not exist.
+Expected: import failure because the package is not implemented.
 
-- [ ] **Step 3: Implement domain dataclasses and exact stock settings**
-
-Use these public structures in `models.py`:
+- [ ] **Step 3: Implement dataclasses in `models.py`**
 
 ```python
 from dataclasses import asdict, dataclass, field
@@ -197,9 +194,12 @@ class CleanupReport:
         return asdict(self)
 ```
 
-Use these stock values in `presets.py` as the first conservative baseline:
+- [ ] **Step 4: Implement exact initial preset values in `presets.py`**
 
 ```python
+from dataclasses import asdict
+from .models import CleanupSettings, ResolvedCleanupConfig
+
 ALGORITHM_VERSION = "mesh-cleanup-v1"
 
 PRESET_SETTINGS = {
@@ -208,11 +208,13 @@ PRESET_SETTINGS = {
     "game-ready": CleanupSettings(True, True, 1e-6, True, 5e-4, True, 4.0, 5e-4, 55.0, True, 2, 0.25, -0.26, True),
     "aggressive": CleanupSettings(True, True, 5e-6, True, 2e-3, True, 2.75, 1.5e-3, 40.0, True, 4, 0.35, -0.36, True),
 }
-```
 
-`resolve_cleanup_config()` must:
-
-```python
+_LABELS = {
+    "off": "Off",
+    "light": "Light",
+    "game-ready": "Game-ready",
+    "aggressive": "Aggressive",
+}
 _ALLOWED_OVERRIDE_KEYS = set(CleanupSettings.__dataclass_fields__)
 
 
@@ -227,32 +229,30 @@ def resolve_cleanup_config(preset: str, overrides: dict[str, object] | None) -> 
         raise ValueError(f"Unsupported cleanup setting(s): {', '.join(sorted(unknown))}")
     values.update(overrides)
     settings = CleanupSettings(**values)
-    if settings.smoothing_iterations < 0 or settings.smoothing_iterations > 20:
+    if not 0 <= settings.smoothing_iterations <= 20:
         raise ValueError("smoothing_iterations must be between 0 and 20")
-    if settings.weld_relative_epsilon < 0 or settings.weld_relative_epsilon > 1e-2:
+    if not 0.0 <= settings.weld_relative_epsilon <= 1e-2:
         raise ValueError("weld_relative_epsilon must be between 0 and 0.01")
-    label = {
-        "off": "Off",
-        "light": "Light",
-        "game-ready": "Game-ready",
-        "aggressive": "Aggressive",
-    }[preset]
-    if overrides and any(values[key] != getattr(base, key) for key in overrides):
+    if not 0.0 <= settings.min_component_area_ratio <= 0.25:
+        raise ValueError("min_component_area_ratio must be between 0 and 0.25")
+    label = _LABELS[preset]
+    changed = any(values[key] != getattr(base, key) for key in overrides)
+    if changed:
         label = f"Custom (from {label})"
     return ResolvedCleanupConfig(preset, label, ALGORITHM_VERSION, settings)
 ```
 
-- [ ] **Step 4: Run preset tests and verify GREEN**
+Export stable names from `backends/mesh_processing/__init__.py`.
 
-Run:
+- [ ] **Step 5: Run preset tests and verify GREEN**
 
 ```bash
 python -m unittest backends.mesh_processing.tests.test_presets -v
 ```
 
-Expected: all tests PASS.
+Expected: all tests pass.
 
-- [ ] **Step 5: Commit Task 1**
+- [ ] **Step 6: Commit Task 1**
 
 ```bash
 git add backends/mesh_processing
@@ -261,7 +261,7 @@ git commit -m "feat: define mesh cleanup presets and report"
 
 ---
 
-### Task 2: Implement deterministic geometry cleanup and atomic GLB/OBJ output
+### Task 2: Implement deterministic cleanup, conservative spike relaxation, and atomic GLB/OBJ export
 
 **Files:**
 - Create: `backends/mesh_processing/cleanup.py`
@@ -270,12 +270,10 @@ git commit -m "feat: define mesh cleanup presets and report"
 - Create: `backends/mesh_processing/tests/test_io.py`
 
 **Interfaces:**
-- Consumes: `ResolvedCleanupConfig`, `CleanupReport` from Task 1.
-- Produces: `cleanup_mesh(mesh, config) -> tuple[trimesh.Trimesh, CleanupReport]`, `process_mesh(input_path, output_path, config) -> CleanupReport`.
+- Consumes: `ResolvedCleanupConfig`, `CleanupReport`.
+- Produces: `cleanup_mesh(mesh, config) -> tuple[trimesh.Trimesh, CleanupReport]`, `load_mesh(path)`, `export_mesh_atomic(mesh, output_path)`, `process_mesh(input_path, output_path, config) -> CleanupReport`.
 
-- [ ] **Step 1: Write failing synthetic-geometry tests**
-
-Use `trimesh.creation.box()` plus explicit synthetic faces. The tests must cover both artifact removal and preservation:
+- [ ] **Step 1: Write failing geometry tests**
 
 ```python
 import unittest
@@ -287,7 +285,7 @@ from backends.mesh_processing.presets import resolve_cleanup_config
 
 
 class CleanupGeometryTests(unittest.TestCase):
-    def test_light_removes_tiny_disconnected_island_without_smoothing_main_body(self):
+    def test_light_removes_tiny_disconnected_island(self):
         main = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
         island = trimesh.creation.box(extents=[0.005, 0.005, 0.005])
         island.apply_translation([2.0, 0.0, 0.0])
@@ -295,15 +293,16 @@ class CleanupGeometryTests(unittest.TestCase):
         cleaned, report = cleanup_mesh(source, resolve_cleanup_config("light", {}))
         self.assertLess(report.components_after, report.components_before)
         self.assertGreaterEqual(report.components_removed, 1)
-        self.assertLess(cleaned.faces.shape[0], source.faces.shape[0])
+        self.assertLess(len(cleaned.faces), len(source.faces))
 
-    def test_game_ready_reduces_single_artificial_spike(self):
-        mesh = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
-        tip = int(np.argmax(mesh.vertices[:, 2]))
-        mesh.vertices[tip] *= 5.0
-        cleaned, report = cleanup_mesh(mesh, resolve_cleanup_config("game-ready", {}))
+    def test_game_ready_reduces_artificial_spike_height(self):
+        source = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+        tip = int(np.argmax(source.vertices[:, 2]))
+        source.vertices[tip] *= 5.0
+        source_max_z = float(source.vertices[:, 2].max())
+        cleaned, report = cleanup_mesh(source, resolve_cleanup_config("game-ready", {}))
         self.assertGreaterEqual(report.spikes_adjusted, 1)
-        self.assertLess(cleaned.vertices[tip, 2], mesh.vertices[tip, 2])
+        self.assertLess(float(cleaned.vertices[:, 2].max()), source_max_z)
 
     def test_thin_legitimate_feature_survives_game_ready(self):
         body = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
@@ -312,9 +311,9 @@ class CleanupGeometryTests(unittest.TestCase):
         source = trimesh.util.concatenate([body, stem])
         cleaned, report = cleanup_mesh(source, resolve_cleanup_config("game-ready", {}))
         self.assertEqual(report.components_removed, 0)
-        self.assertGreater(cleaned.bounds[1][2], 1.4)
+        self.assertGreater(float(cleaned.bounds[1][2]), 1.4)
 
-    def test_off_preserves_vertex_and_face_counts(self):
+    def test_off_preserves_counts(self):
         source = trimesh.creation.box()
         cleaned, report = cleanup_mesh(source, resolve_cleanup_config("off", {}))
         self.assertEqual(len(cleaned.vertices), len(source.vertices))
@@ -323,8 +322,6 @@ class CleanupGeometryTests(unittest.TestCase):
 ```
 
 - [ ] **Step 2: Write failing I/O preservation tests**
-
-`test_io.py` must prove the source is not overwritten and a failed export does not replace a valid output:
 
 ```python
 from pathlib import Path
@@ -356,93 +353,73 @@ class CleanupIoTests(unittest.TestCase):
                 process_mesh(source, source, resolve_cleanup_config("light", {}))
 ```
 
-- [ ] **Step 3: Run cleanup/I/O tests and verify RED**
-
-Run:
+- [ ] **Step 3: Run Task 2 tests and verify RED**
 
 ```bash
 python -m unittest backends.mesh_processing.tests.test_cleanup backends.mesh_processing.tests.test_io -v
 ```
 
-Expected: FAIL because cleanup/I/O functions do not exist.
+Expected: missing cleanup/I/O implementations.
 
-- [ ] **Step 4: Implement the common cleanup pipeline**
+- [ ] **Step 4: Implement common geometry helpers in `cleanup.py`**
 
-`cleanup_mesh()` must copy its input and apply the same ordered pipeline for all presets:
-
-```python
-def cleanup_mesh(mesh, config):
-    working = mesh.copy()
-    started = time.perf_counter()
-    report = _initial_report(working, config)
-    settings = config.settings
-
-    if settings.remove_degenerate:
-        _remove_degenerate_faces(working)
-    if settings.weld_vertices:
-        report.vertices_welded += _weld_near_vertices(working, settings.weld_relative_epsilon)
-    if settings.remove_small_islands:
-        report.components_removed += _remove_small_components(working, settings.min_component_area_ratio)
-    if settings.spike_cleanup:
-        report.spikes_adjusted += _relax_spike_vertices(
-            working,
-            edge_ratio=settings.spike_edge_ratio,
-            max_area_ratio=settings.spike_max_area_ratio,
-            normal_angle_deg=settings.spike_normal_angle_deg,
-        )
-    if settings.smooth_surface and settings.smoothing_iterations > 0:
-        trimesh.smoothing.filter_taubin(
-            working,
-            lamb=settings.taubin_lambda,
-            nu=settings.taubin_nu,
-            iterations=settings.smoothing_iterations,
-        )
-    if settings.recompute_normals:
-        working.fix_normals(multibody=True)
-
-    working.remove_unreferenced_vertices()
-    _finish_report(report, working, started)
-    _append_safety_warnings(report)
-    return working, report
-```
-
-Implement helpers with scale-relative thresholds:
+Use scale-relative tolerances:
 
 ```python
-def _mesh_scale(mesh) -> float:
-    extent = np.asarray(mesh.extents, dtype=float)
-    return max(float(np.linalg.norm(extent)), 1e-9)
+import math
+import time
+import numpy as np
+import trimesh
 
 
-def _remove_degenerate_faces(mesh) -> None:
+def _mesh_scale(mesh: trimesh.Trimesh) -> float:
+    return max(float(np.linalg.norm(np.asarray(mesh.extents, dtype=float))), 1e-9)
+
+
+def _remove_degenerate_faces(mesh: trimesh.Trimesh) -> None:
     area_eps = max(float(mesh.area) * 1e-12, _mesh_scale(mesh) ** 2 * 1e-14)
-    mask = np.asarray(mesh.area_faces) > area_eps
-    mesh.update_faces(mask)
+    keep = np.asarray(mesh.area_faces) > area_eps
+    mesh.update_faces(keep)
     mesh.remove_unreferenced_vertices()
-```
 
-For small components, use face adjacency and always preserve the largest component:
 
-```python
-def _remove_small_components(mesh, min_area_ratio: float) -> int:
-    if len(mesh.faces) == 0:
+def _weld_near_vertices(mesh: trimesh.Trimesh, relative_epsilon: float) -> int:
+    if relative_epsilon <= 0.0 or len(mesh.vertices) == 0:
         return 0
-    components = trimesh.graph.connected_components(
-        mesh.face_adjacency,
-        nodes=np.arange(len(mesh.faces)),
-        min_len=1,
-    )
+    absolute_epsilon = max(_mesh_scale(mesh) * relative_epsilon, 1e-12)
+    digits = max(0, min(12, int(math.ceil(-math.log10(absolute_epsilon)))))
+    before = len(mesh.vertices)
+    mesh.merge_vertices(digits_vertex=digits, merge_tex=False, merge_norm=False)
+    mesh.remove_unreferenced_vertices()
+    return max(0, before - len(mesh.vertices))
+
+
+def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
+    if len(mesh.faces) == 0:
+        return []
+    return [
+        np.asarray(component, dtype=int)
+        for component in trimesh.graph.connected_components(
+            mesh.face_adjacency,
+            nodes=np.arange(len(mesh.faces)),
+            min_len=1,
+        )
+    ]
+
+
+def _remove_small_components(mesh: trimesh.Trimesh, min_area_ratio: float) -> int:
+    components = _face_components(mesh)
     if len(components) <= 1:
         return 0
     face_areas = np.asarray(mesh.area_faces)
-    areas = [float(face_areas[np.asarray(c, dtype=int)].sum()) for c in components]
+    areas = [float(face_areas[c].sum()) for c in components]
     total = max(sum(areas), 1e-12)
     largest = int(np.argmax(areas))
     keep = np.zeros(len(mesh.faces), dtype=bool)
     removed = 0
     for index, component in enumerate(components):
         if index == largest or areas[index] / total >= min_area_ratio:
-            keep[np.asarray(component, dtype=int)] = True
+            keep[component] = True
         else:
             removed += 1
     mesh.update_faces(keep)
@@ -450,27 +427,189 @@ def _remove_small_components(mesh, min_area_ratio: float) -> int:
     return removed
 ```
 
-Spike handling must *relax* candidate tip vertices rather than delete faces. A vertex becomes a candidate only when all of these are true:
+- [ ] **Step 5: Implement multi-signal spike relaxation**
 
-1. its longest incident edge is at least `edge_ratio` times the median edge length in the neighboring one-ring,
-2. the incident face area contribution is below `max_area_ratio * total_mesh_area`,
-3. at least one incident face-normal pair differs by `normal_angle_deg` or more,
-4. it has at least three neighbors.
-
-Move a candidate only halfway toward the median of its neighbors:
+Use helpers with exact conditions. Do not delete spike faces.
 
 ```python
-new_position = 0.5 * old_position + 0.5 * np.median(neighbor_positions, axis=0)
+def _triangle_aspect(vertices: np.ndarray) -> float:
+    edges = np.array([
+        np.linalg.norm(vertices[0] - vertices[1]),
+        np.linalg.norm(vertices[1] - vertices[2]),
+        np.linalg.norm(vertices[2] - vertices[0]),
+    ])
+    shortest = max(float(edges.min()), 1e-12)
+    return float(edges.max()) / shortest
+
+
+def _normal_spread_deg(normals: np.ndarray) -> float:
+    if len(normals) < 2:
+        return 0.0
+    unit = normals / np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+    dots = np.clip(unit @ unit.T, -1.0, 1.0)
+    return float(np.degrees(np.arccos(dots.min())))
+
+
+def _relax_spike_vertices(mesh, edge_ratio, max_area_ratio, normal_angle_deg) -> int:
+    vertices = np.asarray(mesh.vertices).copy()
+    vertex_faces = np.asarray(mesh.vertex_faces)
+    total_area = max(float(mesh.area), 1e-12)
+    adjusted: dict[int, np.ndarray] = {}
+
+    for vertex_index, neighbors in enumerate(mesh.vertex_neighbors):
+        if len(neighbors) < 3:
+            continue
+        neighbor_idx = np.asarray(neighbors, dtype=int)
+        incident_lengths = np.linalg.norm(vertices[neighbor_idx] - vertices[vertex_index], axis=1)
+
+        reference_lengths: list[float] = []
+        for neighbor in neighbors:
+            for second in mesh.vertex_neighbors[neighbor]:
+                if second == vertex_index:
+                    continue
+                reference_lengths.append(float(np.linalg.norm(vertices[second] - vertices[neighbor])))
+        if not reference_lengths:
+            continue
+        reference = max(float(np.median(reference_lengths)), 1e-12)
+        if float(incident_lengths.max()) / reference < edge_ratio:
+            continue
+
+        faces = vertex_faces[vertex_index]
+        faces = faces[faces >= 0]
+        if len(faces) < 2:
+            continue
+        incident_area = float(np.asarray(mesh.area_faces)[faces].sum())
+        if incident_area / total_area > max_area_ratio:
+            continue
+
+        incident_triangles = np.asarray(mesh.vertices)[np.asarray(mesh.faces)[faces]]
+        max_aspect = max(_triangle_aspect(triangle) for triangle in incident_triangles)
+        if max_aspect < max(6.0, edge_ratio * 2.0):
+            continue
+
+        normals = np.asarray(mesh.face_normals)[faces]
+        if _normal_spread_deg(normals) < normal_angle_deg:
+            continue
+
+        median_neighbor = np.median(vertices[neighbor_idx], axis=0)
+        adjusted[vertex_index] = 0.5 * vertices[vertex_index] + 0.5 * median_neighbor
+
+    for vertex_index, position in adjusted.items():
+        vertices[vertex_index] = position
+    if adjusted:
+        mesh.vertices = vertices
+    return len(adjusted)
 ```
 
-Do not run spike cleanup in Light.
-
-- [ ] **Step 5: Implement atomic load/export**
-
-`process_mesh()` must:
+- [ ] **Step 6: Implement NumPy Taubin smoothing without SciPy**
 
 ```python
-def process_mesh(input_path: Path, output_path: Path, config: ResolvedCleanupConfig) -> CleanupReport:
+def _laplacian_step(vertices: np.ndarray, neighbors: list[list[int]], factor: float) -> np.ndarray:
+    source = vertices.copy()
+    result = source.copy()
+    for index, adjacent in enumerate(neighbors):
+        if len(adjacent) < 3:
+            continue
+        mean = source[np.asarray(adjacent, dtype=int)].mean(axis=0)
+        result[index] = source[index] + factor * (mean - source[index])
+    return result
+
+
+def _taubin_smooth(mesh, iterations: int, lamb: float, nu: float) -> None:
+    neighbors = [list(values) for values in mesh.vertex_neighbors]
+    vertices = np.asarray(mesh.vertices).copy()
+    for _iteration in range(iterations):
+        vertices = _laplacian_step(vertices, neighbors, lamb)
+        vertices = _laplacian_step(vertices, neighbors, nu)
+    mesh.vertices = vertices
+```
+
+- [ ] **Step 7: Implement `cleanup_mesh` and stable warnings**
+
+```python
+def cleanup_mesh(mesh, config):
+    working = mesh.copy()
+    started = time.perf_counter()
+    before_components = len(_face_components(working))
+    report = CleanupReport(
+        preset=config.preset,
+        config_label=config.label,
+        algorithm_version=config.algorithm_version,
+        triangles_before=len(working.faces),
+        triangles_after=len(working.faces),
+        vertices_before=len(working.vertices),
+        vertices_after=len(working.vertices),
+        components_before=before_components,
+        components_after=before_components,
+    )
+    settings = config.settings
+
+    if settings.remove_degenerate:
+        _remove_degenerate_faces(working)
+    if settings.weld_vertices:
+        report.vertices_welded = _weld_near_vertices(working, settings.weld_relative_epsilon)
+    if settings.remove_small_islands:
+        report.components_removed = _remove_small_components(working, settings.min_component_area_ratio)
+    if settings.spike_cleanup:
+        report.spikes_adjusted = _relax_spike_vertices(
+            working,
+            settings.spike_edge_ratio,
+            settings.spike_max_area_ratio,
+            settings.spike_normal_angle_deg,
+        )
+    if settings.smooth_surface and settings.smoothing_iterations > 0:
+        _taubin_smooth(working, settings.smoothing_iterations, settings.taubin_lambda, settings.taubin_nu)
+    if settings.recompute_normals:
+        working.fix_normals(multibody=True)
+
+    working.remove_unreferenced_vertices()
+    report.triangles_after = len(working.faces)
+    report.vertices_after = len(working.vertices)
+    report.components_after = len(_face_components(working))
+    report.cleanup_ms = round((time.perf_counter() - started) * 1000.0, 3)
+
+    removed_ratio = 0.0 if report.triangles_before == 0 else 1.0 - report.triangles_after / report.triangles_before
+    if report.components_before > 0 and report.components_removed > max(3, report.components_before // 4):
+        report.warnings.append("Large number of small components removed.")
+    if config.preset == "light" and removed_ratio > 0.20:
+        report.warnings.append("Light cleanup removed more geometry than expected.")
+    if config.preset == "game-ready" and removed_ratio > 0.40:
+        report.warnings.append("Game-ready cleanup removed a large amount of geometry.")
+    if config.preset == "aggressive":
+        report.warnings.append("Aggressive cleanup may alter silhouette and fine detail.")
+    if not working.is_watertight:
+        report.warnings.append("Mesh is still not watertight after cleanup.")
+    return working, report
+```
+
+- [ ] **Step 8: Implement atomic I/O**
+
+```python
+import os
+from pathlib import Path
+import trimesh
+
+
+def load_mesh(path: Path):
+    loaded = trimesh.load(str(path), force="mesh", process=False)
+    if not isinstance(loaded, trimesh.Trimesh):
+        raise ValueError("Mesh input could not be converted to one Trimesh")
+    return loaded
+
+
+def export_mesh_atomic(mesh, output_path: Path) -> None:
+    target = output_path.expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.stem}.partial{target.suffix}")
+    try:
+        mesh.export(str(temp), file_type=target.suffix.lower().lstrip("."))
+        os.replace(temp, target)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def process_mesh(input_path: Path, output_path: Path, config) -> CleanupReport:
     source = input_path.expanduser().resolve()
     target = output_path.expanduser().resolve()
     if source == target:
@@ -479,43 +618,20 @@ def process_mesh(input_path: Path, output_path: Path, config: ResolvedCleanupCon
         raise ValueError("Mesh cleanup supports only .glb and .obj")
     if not source.is_file():
         raise FileNotFoundError(source)
-
-    loaded = trimesh.load(str(source), force="mesh", process=False)
-    cleaned, report = cleanup_mesh(loaded, config)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.stem}.partial{target.suffix}")
-    try:
-        cleaned.export(str(temp), file_type=target.suffix.lower().lstrip("."))
-        os.replace(temp, target)
-    finally:
-        if temp.exists():
-            temp.unlink()
+    cleaned, report = cleanup_mesh(load_mesh(source), config)
+    export_mesh_atomic(cleaned, target)
     return report
 ```
 
-Add warnings when:
-
-```text
-components_removed > max(3, 25% of components_before)
-triangles_after < 80% of triangles_before for Light
-triangles_after < 60% of triangles_before for Game-ready
-mesh remains non-watertight AND had non-manifold edges before/after
-preset == aggressive
-```
-
-Use warning identifiers/messages stable enough for frontend tests, for example `"Aggressive cleanup may alter silhouette and fine detail."`.
-
-- [ ] **Step 6: Run geometry/I/O tests and verify GREEN**
-
-Run:
+- [ ] **Step 9: Run Task 2 tests and verify GREEN**
 
 ```bash
 python -m unittest backends.mesh_processing.tests.test_cleanup backends.mesh_processing.tests.test_io -v
 ```
 
-Expected: all tests PASS.
+Expected: all tests pass.
 
-- [ ] **Step 7: Commit Task 2**
+- [ ] **Step 10: Commit Task 2**
 
 ```bash
 git add backends/mesh_processing
@@ -524,7 +640,7 @@ git commit -m "feat: add automatic mesh cleanup engine"
 
 ---
 
-### Task 3: Add cleanup cache, worker command, runtime packaging, and Python CI coverage
+### Task 3: Add cleanup cache, worker command, runtime packaging, and Python CI
 
 **Files:**
 - Create: `backends/mesh_processing/cache.py`
@@ -537,57 +653,47 @@ git commit -m "feat: add automatic mesh cleanup engine"
 - Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
-- Produces: `cleanup_cache_key(path, config)`, worker JSONL command `mesh_cleanup`, worker terminal fields `cleanup_report` and `mesh_cleanup_ms`.
-- Worker request shape:
-
-```json
-{
-  "input": "C:/models/model.glb",
-  "output": "C:/models/model-clean.glb",
-  "preset": "game-ready",
-  "overrides": {}
-}
-```
+- Produces: `cleanup_cache_key(path, config)`, `CleanupMeshCache`, JSONL command `mesh_cleanup`, worker result fields `cleanup_report`, `mesh_cleanup_ms`, `cleanup_cache_hit`.
 
 - [ ] **Step 1: Write failing cleanup-cache tests**
-
-`test_cache.py` must prove file identity, preset, overrides, and `ALGORITHM_VERSION` participate in the key:
 
 ```python
 class CleanupCacheTests(unittest.TestCase):
     def test_preset_changes_key(self):
-        light = cleanup_cache_key(path, resolve_cleanup_config("light", {}))
-        game = cleanup_cache_key(path, resolve_cleanup_config("game-ready", {}))
+        light = cleanup_cache_key(self.path, resolve_cleanup_config("light", {}))
+        game = cleanup_cache_key(self.path, resolve_cleanup_config("game-ready", {}))
         self.assertNotEqual(light, game)
 
     def test_override_changes_key(self):
-        stock = cleanup_cache_key(path, resolve_cleanup_config("game-ready", {}))
-        custom = cleanup_cache_key(path, resolve_cleanup_config("game-ready", {"smoothing_iterations": 0}))
+        stock = cleanup_cache_key(self.path, resolve_cleanup_config("game-ready", {}))
+        custom = cleanup_cache_key(self.path, resolve_cleanup_config("game-ready", {"smoothing_iterations": 0}))
         self.assertNotEqual(stock, custom)
 
     def test_file_mtime_changes_key(self):
-        first = cleanup_cache_key(path, resolve_cleanup_config("light", {}))
-        path.touch()
-        second = cleanup_cache_key(path, resolve_cleanup_config("light", {}))
+        first = cleanup_cache_key(self.path, resolve_cleanup_config("light", {}))
+        stat = self.path.stat()
+        os.utime(self.path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        second = cleanup_cache_key(self.path, resolve_cleanup_config("light", {}))
         self.assertNotEqual(first, second)
 ```
 
 - [ ] **Step 2: Run cache tests and verify RED**
 
-Run:
-
 ```bash
 python -m unittest backends.mesh_processing.tests.test_cache -v
 ```
 
-Expected: FAIL because `cache.py` does not exist.
+Expected: missing cache module.
 
-- [ ] **Step 3: Implement bounded cleanup cache**
-
-Use one cleaned mesh/report entry only; this mirrors the existing prepared-mesh cache and avoids unbounded RAM use:
+- [ ] **Step 3: Implement the bounded cleanup cache**
 
 ```python
-def cleanup_cache_key(path: Path, config: ResolvedCleanupConfig) -> tuple[object, ...]:
+import copy
+from dataclasses import asdict
+from pathlib import Path
+
+
+def cleanup_cache_key(path: Path, config) -> tuple[object, ...]:
     resolved = path.expanduser().resolve()
     stat = resolved.stat()
     return (
@@ -611,17 +717,19 @@ class CleanupMeshCache:
             return self.mesh.copy(), copy.deepcopy(self.report), True
         mesh, report = loader()
         self.key = key
-        self.mesh = mesh
+        self.mesh = mesh.copy()
         self.report = copy.deepcopy(report)
         return mesh.copy(), copy.deepcopy(report), False
 
     def clear(self):
-        self.key = self.mesh = self.report = None
+        self.key = None
+        self.mesh = None
+        self.report = None
 ```
 
 - [ ] **Step 4: Write failing worker JSONL tests**
 
-Extend `backends/hunyuan/tests/test_worker.py` with a `mesh_cleanup` dispatch test that stubs `run_mesh_cleanup` and verifies request conversion, plus a protocol version test expecting version `2`:
+Add a `mesh_cleanup` dispatch test and change the handshake expectation to protocol version `2`:
 
 ```python
 def test_mesh_cleanup_command_dispatches_request(self):
@@ -640,25 +748,37 @@ def test_mesh_cleanup_command_dispatches_request(self):
         worker.dispatch_serve_command(message, cache=worker.PipelineCache(), emit_fn=events.append)
     args = run.call_args.args[0]
     self.assertEqual(args.input, "source.glb")
+    self.assertEqual(args.output, "source-clean.glb")
     self.assertEqual(args.preset, "game-ready")
     self.assertEqual(args.overrides["smoothing_iterations"], 1)
 ```
 
 - [ ] **Step 5: Run worker tests and verify RED**
 
-Run:
-
 ```bash
 python -m unittest backends.hunyuan.tests.test_worker -v
 ```
 
-Expected: FAIL because the command/namespace/version are not implemented.
+Expected: missing command/namespace and version mismatch.
 
-- [ ] **Step 6: Integrate cleanup into `worker.py` without moving geometry logic there**
+- [ ] **Step 6: Integrate the cleanup cache into `PipelineCache`**
 
-Change both Python and Rust protocol constants to `2` in this task and Task 4 respectively.
+In `PipelineCache.__init__`:
 
-Add imports only at cleanup execution time:
+```python
+from backends.mesh_processing.cache import CleanupMeshCache
+self.cleanup_mesh_cache = CleanupMeshCache()
+```
+
+In `PipelineCache.clear()` call:
+
+```python
+self.cleanup_mesh_cache.clear()
+```
+
+Keep `prepared_mesh` unchanged and separate.
+
+- [ ] **Step 7: Implement `run_mesh_cleanup` in the worker**
 
 ```python
 def run_mesh_cleanup(args: argparse.Namespace, cache: PipelineCache | None = None) -> int:
@@ -669,16 +789,72 @@ def run_mesh_cleanup(args: argparse.Namespace, cache: PipelineCache | None = Non
 
     input_path = Path(args.input).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
-    config = resolve_cleanup_config(args.preset, args.overrides)
+    if input_path == output_path:
+        emit("error", ok=False, stage="mesh_cleanup", error_kind="invalid_input", error="Input and output mesh paths must differ")
+        return 2
+    if not input_path.is_file():
+        emit("error", ok=False, stage="mesh_cleanup", error_kind="invalid_input", error=f"Input mesh does not exist: {input_path}")
+        return 2
+    if input_path.suffix.lower() not in {".glb", ".obj"} or output_path.suffix.lower() not in {".glb", ".obj"}:
+        emit("error", ok=False, stage="mesh_cleanup", error_kind="invalid_input", error="Mesh cleanup supports only .glb and .obj")
+        return 2
+
     started = time.perf_counter()
-    # load/cache/cleanup, then atomic export
-    # emit progress stage="cleaning_mesh" before cleanup
-    # emit completed with cleanup_report and mesh_cleanup_ms
+    cleanup_cache_hit = False
+    try:
+        config = resolve_cleanup_config(args.preset, args.overrides)
+        emit("progress", ok=True, stage="cleaning_mesh", progress=0.20)
+
+        def build_cleaned():
+            return cleanup_mesh(load_mesh(input_path), config)
+
+        if cache is None:
+            cleaned, report = build_cleaned()
+        else:
+            key = cleanup_cache_key(input_path, config)
+            cleaned, report, cleanup_cache_hit = cache.cleanup_mesh_cache.get_or_create(key, build_cleaned)
+
+        emit("progress", ok=True, stage="exporting_clean_mesh", progress=0.85, cleanup_cache_hit=cleanup_cache_hit)
+        export_mesh_atomic(cleaned, output_path)
+        mesh_cleanup_ms = (time.perf_counter() - started) * 1000.0
+        report.cleanup_ms = round(mesh_cleanup_ms, 3)
+        emit(
+            "completed",
+            ok=True,
+            stage="completed",
+            progress=1.0,
+            output=str(output_path),
+            cleanup_cache_hit=cleanup_cache_hit,
+            mesh_cleanup_ms=round(mesh_cleanup_ms, 3),
+            cleanup_report=report.to_dict(),
+        )
+        return 0
+    except Exception as exc:
+        emit(
+            "error",
+            ok=False,
+            stage="mesh_cleanup",
+            error_kind="mesh_cleanup_error",
+            error=f"{type(exc).__name__}: {exc}",
+            cleanup_cache_hit=cleanup_cache_hit,
+            mesh_cleanup_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        )
+        return 1
 ```
 
-Do not reuse the texture prepared-mesh cache for this command. Add `cleanup_mesh_cache` as a distinct member of `PipelineCache` or compose a `CleanupMeshCache` instance inside it. `PipelineCache.clear()` must clear it together with prepared image/mesh/model caches.
+- [ ] **Step 8: Add namespace, CLI command, and JSONL dispatch**
 
-Add `_mesh_cleanup_namespace(request)` and dispatch:
+```python
+def _mesh_cleanup_namespace(request: dict[str, Any]) -> argparse.Namespace:
+    return argparse.Namespace(
+        input=request["input"],
+        output=request["output"],
+        preset=str(request.get("preset", "game-ready")),
+        overrides=dict(request.get("overrides") or {}),
+    )
+```
+
+Add to `dispatch_serve_command`:
 
 ```python
 if command == "mesh_cleanup":
@@ -689,15 +865,21 @@ if command == "mesh_cleanup":
     return True
 ```
 
-Also add a direct CLI subcommand for diagnostics/manual testing:
+Set Python `PROTOCOL_VERSION = 2`.
 
-```text
-worker.py mesh-cleanup --input source.glb --output source-clean.glb --preset game-ready
+Add parser:
+
+```python
+mesh_cleanup = subparsers.add_parser("mesh-cleanup", help="Clean an existing GLB/OBJ mesh")
+mesh_cleanup.add_argument("--input", required=True)
+mesh_cleanup.add_argument("--output", required=True)
+mesh_cleanup.add_argument("--preset", choices=["off", "light", "game-ready", "aggressive"], default="game-ready")
+mesh_cleanup.set_defaults(overrides={}, func=run_mesh_cleanup)
 ```
 
-- [ ] **Step 7: Make runtime dependencies/package copy explicit**
+- [ ] **Step 9: Make runtime dependencies and package copy explicit**
 
-Update `requirements-base.txt` to:
+Set `requirements-base.txt` to:
 
 ```text
 # Lightweight worker-side dependencies. PyTorch and Hunyuan3D are installed separately.
@@ -706,23 +888,25 @@ numpy>=1.26
 trimesh>=4.0
 ```
 
-In `windows-native-rocm.ps1`, copy the package next to the installed worker:
+In `windows-native-rocm.ps1` add:
 
 ```powershell
 $MeshProcessingSource = Join-Path $RepoRoot "backends\mesh_processing"
-$InstalledMeshProcessing = Join-Path $RuntimeDir "backends\mesh_processing"
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $InstalledMeshProcessing) | Out-Null
+$InstalledBackendsRoot = Join-Path $RuntimeDir "backends"
+$InstalledMeshProcessing = Join-Path $InstalledBackendsRoot "mesh_processing"
+New-Item -ItemType Directory -Force -Path $InstalledBackendsRoot | Out-Null
+Set-Content -Path (Join-Path $InstalledBackendsRoot "__init__.py") -Value ""
 if (Test-Path $InstalledMeshProcessing) { Remove-Item -Recurse -Force $InstalledMeshProcessing }
 Copy-Item -Recurse -Force $MeshProcessingSource $InstalledMeshProcessing
 ```
 
-Also create `$RuntimeDir\backends\__init__.py` if absent so `from backends.mesh_processing...` resolves from the runtime directory.
+The copy happens in the existing worker-install step for both normal setup and `-VerifyOnly`.
 
-Extend `test_windows_scripts.py` to assert the script contains `MeshProcessingSource`, `InstalledMeshProcessing`, and recursive copy logic.
+Extend `test_windows_scripts.py` to assert these variable names and recursive copy statements exist.
 
-- [ ] **Step 8: Update Python CI to exercise the real geometry package**
+- [ ] **Step 10: Update Python CI**
 
-Change the `python-worker` job to:
+Change `python-worker` steps to:
 
 ```yaml
 - run: python -m pip install -r backends/hunyuan/requirements-base.txt
@@ -730,9 +914,7 @@ Change the `python-worker` job to:
 - run: python -m unittest discover -s backends/mesh_processing/tests -v
 ```
 
-- [ ] **Step 9: Run all Python tests and verify GREEN**
-
-Run:
+- [ ] **Step 11: Run all Python tests and verify GREEN**
 
 ```bash
 python -m pip install -r backends/hunyuan/requirements-base.txt
@@ -740,9 +922,9 @@ python -m unittest discover -s backends/hunyuan/tests -v
 python -m unittest discover -s backends/mesh_processing/tests -v
 ```
 
-Expected: all tests PASS.
+Expected: zero failures.
 
-- [ ] **Step 10: Commit Task 3**
+- [ ] **Step 12: Commit Task 3**
 
 ```bash
 git add backends/hunyuan backends/mesh_processing scripts/setup/windows-native-rocm.ps1 .github/workflows/ci.yml
@@ -759,16 +941,16 @@ git commit -m "feat: expose mesh cleanup through persistent worker"
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
 **Interfaces:**
-- Consumes worker command/result from Task 3.
-- Produces Tauri command `cleanup_mesh(request, on_event)` and typed `MeshCleanupRequest`/`MeshCleanupReport`.
+- Consumes worker protocol from Task 3.
+- Produces Tauri command `cleanup_mesh` and typed `MeshCleanupRequest`, `MeshCleanupReport`.
 
-- [ ] **Step 1: Write failing Rust serialization/session tests**
+- [ ] **Step 1: Write failing Rust request/result tests**
 
-Add to `worker.rs` tests:
+In `worker.rs` tests:
 
 ```rust
 #[test]
-fn mesh_cleanup_request_serializes_camel_case_overrides() {
+fn mesh_cleanup_request_serializes_expected_fields() {
     let request = MeshCleanupRequest {
         input: "source.glb".into(),
         output: "source-clean.glb".into(),
@@ -776,42 +958,41 @@ fn mesh_cleanup_request_serializes_camel_case_overrides() {
         overrides: Some(serde_json::json!({"smoothing_iterations": 1})),
     };
     let value = serde_json::to_value(request).unwrap();
+    assert_eq!(value["input"], "source.glb");
     assert_eq!(value["preset"], "game-ready");
     assert_eq!(value["overrides"]["smoothing_iterations"], 1);
 }
 ```
 
-Add to `worker_session.rs` tests:
+Add a decode test for `cleanup_report`, `mesh_cleanup_ms`, and `cleanup_cache_hit`.
+
+In `worker_session.rs` tests:
 
 ```rust
 #[test]
 fn mesh_cleanup_command_has_request_and_job_id() {
-    let value = mesh_cleanup_command("job-10", &fixture_mesh_cleanup_request());
+    let request = MeshCleanupRequest {
+        input: "source.glb".into(),
+        output: "source-clean.glb".into(),
+        preset: "game-ready".into(),
+        overrides: None,
+    };
+    let value = mesh_cleanup_command("job-10", &request);
     assert_eq!(value["command"], "mesh_cleanup");
     assert_eq!(value["job_id"], "job-10");
     assert_eq!(value["request"]["preset"], "game-ready");
 }
 ```
 
-Add a terminal-result decode test containing:
-
-```json
-{"cleanup_report":{"preset":"light","config_label":"Light","algorithm_version":"mesh-cleanup-v1","triangles_before":100,"triangles_after":90,"vertices_before":60,"vertices_after":55,"components_before":2,"components_after":1,"components_removed":1,"vertices_welded":2,"spikes_adjusted":0,"cleanup_ms":12.5,"warnings":[]},"mesh_cleanup_ms":12.5}
-```
-
 - [ ] **Step 2: Run Rust tests and verify RED**
-
-Run:
 
 ```bash
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
 ```
 
-Expected: compile/test failure because cleanup types/functions do not exist.
+Expected: missing cleanup types/functions.
 
-- [ ] **Step 3: Add Rust cleanup request/report/result fields**
-
-In `worker.rs`:
+- [ ] **Step 3: Add Rust types to `worker.rs`**
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -842,36 +1023,76 @@ pub struct MeshCleanupReport {
 }
 ```
 
-Add optional fields to both `WorkerProgressEvent` and `GenerateResult`:
+Add these optional fields to both `WorkerProgressEvent` and `GenerateResult`:
 
 ```rust
+pub cleanup_cache_hit: Option<bool>,
 pub cleanup_report: Option<MeshCleanupReport>,
 pub mesh_cleanup_ms: Option<f64>,
 ```
 
-Increment `worker_session.rs` `PROTOCOL_VERSION` to `2`, matching Task 3.
+Initialize them to `None` in `failure_result`.
 
 - [ ] **Step 4: Add session command and manager method**
 
-Implement:
+Set Rust `PROTOCOL_VERSION: u64 = 2`.
 
 ```rust
 fn mesh_cleanup_command(job_id: &str, request: &MeshCleanupRequest) -> Value {
-    json!({"command":"mesh_cleanup","job_id":job_id,"request":request})
+    json!({
+        "command": "mesh_cleanup",
+        "job_id": job_id,
+        "request": request,
+    })
 }
-
-fn run_mesh_cleanup<F>(&mut self, request: MeshCleanupRequest, on_event: F) -> Result<GenerateResult, SessionError>
-where F: FnMut(WorkerProgressEvent) { ... }
-
-pub fn run_mesh_cleanup<F>(&self, request: MeshCleanupRequest, on_event: F) -> Result<GenerateResult, String>
-where F: FnMut(WorkerProgressEvent) { ... }
 ```
 
-Do not require `native-rocm` for mesh cleanup because it is CPU-side and has no backend field.
+Inside `WorkerSession`:
 
-- [ ] **Step 5: Add Tauri command**
+```rust
+fn run_mesh_cleanup<F>(
+    &mut self,
+    request: MeshCleanupRequest,
+    on_event: F,
+) -> Result<GenerateResult, SessionError>
+where
+    F: FnMut(WorkerProgressEvent),
+{
+    let job_id = self.next_job_id();
+    let command = mesh_cleanup_command(&job_id, &request);
+    self.run_generation(command, job_id, on_event)
+}
+```
 
-In `lib.rs`:
+Inside `WorkerSessionManager`:
+
+```rust
+pub fn run_mesh_cleanup<F>(
+    &self,
+    request: MeshCleanupRequest,
+    on_event: F,
+) -> Result<GenerateResult, String>
+where
+    F: FnMut(WorkerProgressEvent),
+{
+    let mut guard = self
+        .inner
+        .lock()
+        .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
+    let result = self.get_or_spawn(&mut guard)?.run_mesh_cleanup(request, on_event);
+    match result {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            Self::invalidate(&mut guard);
+            Ok(failure_result(error.kind, error.message))
+        }
+    }
+}
+```
+
+Do not perform `backend_is_implemented` validation because cleanup is CPU-side.
+
+- [ ] **Step 5: Add Tauri command to `lib.rs`**
 
 ```rust
 #[tauri::command]
@@ -883,7 +1104,9 @@ async fn cleanup_mesh(
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let manager = app_handle.state::<worker_session::WorkerSessionManager>();
-        manager.run_mesh_cleanup(request, |event| { let _ = on_event.send(event); })
+        manager.run_mesh_cleanup(request, |event| {
+            let _ = on_event.send(event);
+        })
     })
     .await
     .map_err(|error| format!("Mesh cleanup task failed: {error}"))?
@@ -892,9 +1115,7 @@ async fn cleanup_mesh(
 
 Register `cleanup_mesh` in `tauri::generate_handler!`.
 
-- [ ] **Step 6: Run Rust tests and cargo check**
-
-Run:
+- [ ] **Step 6: Run Rust verification and verify GREEN**
 
 ```bash
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
@@ -912,7 +1133,7 @@ git commit -m "feat: add tauri mesh cleanup transport"
 
 ---
 
-### Task 5: Add frontend cleanup types/API and Mesh-mode controls
+### Task 5: Add frontend cleanup domain/API and Mesh-mode controls
 
 **Files:**
 - Modify: `apps/desktop/src/domain/types.ts`
@@ -921,30 +1142,36 @@ git commit -m "feat: add tauri mesh cleanup transport"
 - Modify: `apps/desktop/src/components/GenerationPanel.test.tsx`
 
 **Interfaces:**
-- Produces frontend types `CleanupPreset`, `CleanupAdvancedOverrides`, `MeshCleanupReport`, `MeshCleanupRequest` and `cleanupMesh()`.
+- Produces frontend types `CleanupPreset`, `CleanupAdvancedOverrides`, `MeshCleanupReport`, Tauri `MeshCleanupRequest`, and `cleanupMesh()`.
 - `WorkflowMode` becomes `'shape' | 'texture' | 'mesh'`.
 
-- [ ] **Step 1: Write failing GenerationPanel tests**
+- [ ] **Step 1: Write failing `GenerationPanel` tests**
 
-Add tests asserting:
+Add assertions for:
 
 ```tsx
 expect(screen.getByRole('tab', { name: 'Mesh' })).toBeTruthy();
+expect(screen.getByText('Mesh cleanup')).toBeTruthy();
 ```
 
-For `workflowMode="shape"`, assert `Light` is selected through props. For `workflowMode="mesh"`, assert model picker + cleanup preset controls render, image background-removal and shape controls do not. For `preset="aggressive"`, assert warning text matching `/may alter silhouette/i`. For an override, assert label `Custom (from Game-ready)`.
+Test these states explicitly:
+
+```text
+Shape + Light: Light is pressed/selected.
+Mesh + Game-ready: model picker and cleanup controls render; Shape quality and Remove background do not.
+Aggressive: warning matches /may alter silhouette/i.
+Custom label: "Custom (from Game-ready)" is visible.
+```
 
 - [ ] **Step 2: Run focused frontend test and verify RED**
-
-Run:
 
 ```bash
 npm test -- --run apps/desktop/src/components/GenerationPanel.test.tsx
 ```
 
-Expected: FAIL because Mesh mode/cleanup props do not exist.
+Expected: Mesh tab/props are missing.
 
-- [ ] **Step 3: Add exact frontend domain types**
+- [ ] **Step 3: Add frontend domain types**
 
 In `types.ts`:
 
@@ -988,16 +1215,15 @@ export interface MeshCleanupReport {
 }
 ```
 
-Extend `GenerationTimingSummary` with:
+Extend `GenerationTimingSummary`:
 
 ```ts
 meshCleanupMs?: number;
+cleanupCacheHit?: boolean;
 cleanupReport?: MeshCleanupReport;
 ```
 
-- [ ] **Step 4: Add Tauri cleanup API**
-
-In `tauri.ts`:
+- [ ] **Step 4: Add Tauri cleanup API in `tauri.ts`**
 
 ```ts
 export interface MeshCleanupRequest {
@@ -1019,11 +1245,19 @@ export async function cleanupMesh(
 }
 ```
 
-Add `cleanup_report` and `mesh_cleanup_ms` to `GenerateResult` and `WorkerProgressEvent`.
+Add fields:
 
-- [ ] **Step 5: Add preset-first GenerationPanel UI**
+```ts
+cleanup_cache_hit?: boolean | null;
+cleanup_report?: MeshCleanupReport | null;
+mesh_cleanup_ms?: number | null;
+```
 
-Add props:
+to `GenerateResult` and `WorkerProgressEvent`.
+
+- [ ] **Step 5: Add Mesh tab and preset-first controls**
+
+Add `GenerationPanelProps` fields:
 
 ```ts
 cleanupPreset: CleanupPreset;
@@ -1034,18 +1268,17 @@ onCleanupPresetChange: (preset: CleanupPreset) => void;
 onCleanupOverridesChange: (overrides: CleanupAdvancedOverrides) => void;
 ```
 
-Render a third `Mesh` tab. In Shape, render cleanup presets below Output. In Mesh, render existing-model picker, cleanup presets, and `Process mesh` action. Hide Backend selector in Mesh mode because cleanup is CPU-side. Hide Remove background in Mesh mode.
+Render third tab `Mesh`.
 
-Preset labels are exactly:
+Behavior:
 
 ```text
-Off
-Light
-Game-ready
-Aggressive
+Shape: show Shape quality, Output, Mesh cleanup, optional Texture profile, Remove background.
+Texture: show Texture engine/profile, Existing model, Remove background.
+Mesh: show Existing model, Mesh cleanup, Advanced, Process mesh; hide Backend and Remove background.
 ```
 
-Advanced section initially exposes only these user-friendly controls, mapped to the full backend settings:
+Advanced UI exposes only:
 
 ```text
 Remove small islands -> remove_small_islands
@@ -1057,17 +1290,15 @@ Recompute normals -> recompute_normals
 Minimum component size -> min_component_area_ratio
 ```
 
-Do not expose Taubin lambda/nu or spike heuristic thresholds in the first UI; they remain stock-preset internals unless later required.
+Taubin coefficients and spike thresholds remain internal preset values in v1.
 
-- [ ] **Step 6: Run GenerationPanel tests and verify GREEN**
-
-Run:
+- [ ] **Step 6: Run `GenerationPanel` tests and verify GREEN**
 
 ```bash
 npm test -- --run apps/desktop/src/components/GenerationPanel.test.tsx
 ```
 
-Expected: all tests PASS.
+Expected: all tests pass.
 
 - [ ] **Step 7: Commit Task 5**
 
@@ -1087,15 +1318,31 @@ git commit -m "feat: add mesh cleanup controls"
 - Modify: `apps/desktop/src/App.test.tsx`
 
 **Interfaces:**
-- Produces: `MeshWorkflowRequest`, `runMeshWorkflow()`, `cleanedShapePath`, cleanup timing/report in job state.
+- Produces `MeshWorkflowRequest`, `runMeshWorkflow()`, `cleanedShapePath`, cleanup timing/report state.
 - Shape request gains `cleanupPreset` and `cleanupOverrides`.
 
-- [ ] **Step 1: Write failing orchestration tests**
+- [ ] **Step 1: Write failing workflow tests**
 
-Mock `generateShape`, `cleanupMesh`, and `textureMesh` and prove exact call order for Shape + Texture:
+Mock `generateShape`, `cleanupMesh`, and `textureMesh`. Prove these flows:
+
+```text
+Shape model-only + Light:
+  generate -> raw *-shape -> cleanup -> user-selected final path
+Shape model-only + Off:
+  generate directly to selected final path; no cleanup call
+Shape model+texture + Light:
+  generate *-shape -> cleanup *-clean -> texture user-selected final path
+Cleanup failure:
+  raw shape remains preserved; texture is not called
+Texture failure after cleanup:
+  retryContext.mesh equals cleaned path
+Standalone Mesh:
+  imported mesh -> selected output, with before=input and after=output
+```
+
+Use assertions such as:
 
 ```ts
-expect(generateShape).toHaveBeenCalledTimes(1);
 expect(cleanupMesh).toHaveBeenCalledWith(
   expect.objectContaining({
     input: expect.stringMatching(/-shape\.glb$/),
@@ -1110,34 +1357,19 @@ expect(textureMesh).toHaveBeenCalledWith(
 );
 ```
 
-Add tests for:
-
-```text
-Shape model-only + Light: generate raw -shape, cleanup to selected final output, return cleaned output.
-Shape model-only + Off: generate directly to selected final output, skip cleanup.
-Shape model+texture + Light: raw -shape -> intermediate -clean -> selected final texture output.
-Cleanup failure: preserve raw shape, do not invoke texture.
-Texture failure after cleanup: retryContext.mesh equals cleaned path.
-Standalone Mesh: cleanup source -> selected output, beforePath=source, afterPath=output.
-```
-
 - [ ] **Step 2: Run hook tests and verify RED**
-
-Run:
 
 ```bash
 npm test -- --run apps/desktop/src/lib/useGenerationJob.test.ts
 ```
 
-Expected: FAIL because cleanup workflow does not exist.
+Expected: cleanup workflow APIs are missing.
 
-- [ ] **Step 3: Add output-path helpers with backward-compatible final-output semantics**
+- [ ] **Step 3: Add deterministic intermediate-path helper**
 
-Keep the user-selected path as the final output. Add:
+Keep the Save-dialog path as the final user artifact:
 
 ```ts
-function addSuffixBeforeExtension(path: string, suffix: string): string { ... }
-
 function shapeWorkflowPaths(finalOutput: string, includesTexture: boolean, cleanupEnabled: boolean) {
   if (!cleanupEnabled) {
     return { raw: finalOutput, cleaned: finalOutput, final: finalOutput };
@@ -1157,79 +1389,142 @@ function shapeWorkflowPaths(finalOutput: string, includesTexture: boolean, clean
 }
 ```
 
-This preserves the source mesh without changing the meaning of the Save dialog: the selected path remains the final artifact.
+- [ ] **Step 4: Extend hook metadata mapping and cleanup state**
 
-- [ ] **Step 4: Add cleanup execution helper to the hook**
-
-Implement `runCleanupInternal()` that:
+Add:
 
 ```ts
-setProgress({ phase: 'mesh', value: ..., label: 'Cleaning mesh…' });
-const startedAt = nowMs();
-const result = await cleanupMesh(request, event => setProgressFromEvent('mesh', event, includesTexture));
-const meshCleanupMs = result.mesh_cleanup_ms ?? (nowMs() - startedAt);
+cleanupCacheHit: result.cleanup_cache_hit ?? undefined,
+meshCleanupMs: result.mesh_cleanup_ms ?? undefined,
+cleanupReport: result.cleanup_report ?? undefined,
 ```
 
-On success:
+Add state:
 
 ```ts
-setCleanedShapePath(result.output ?? request.output);
-merge timingSummary with meshCleanupMs and cleanupReport;
+const [cleanedShapePath, setCleanedShapePath] = useState<string | null>(null);
 ```
 
-On failure:
+Reset it in `resetForNewInput`.
 
-```text
-keep preservedShapePath pointing at the raw mesh
-set error to "Mesh cleanup failed. The raw shape was preserved."
-never call texture
-```
-
-Add stage label:
+Add labels:
 
 ```ts
-cleaning_mesh: 'Cleaning mesh…'
+cleaning_mesh: 'Cleaning mesh…',
+exporting_clean_mesh: 'Saving cleaned mesh…',
 ```
 
-- [ ] **Step 5: Compose Shape workflow**
+- [ ] **Step 5: Implement `runCleanupInternal`**
 
-Extend `ShapeWorkflowRequest`:
+```ts
+const runCleanupInternal = useCallback(async (
+  request: MeshCleanupRequest,
+  options: { keepBusy: boolean; includesTexture: boolean; totalStartedAt: number },
+): Promise<string | null> => {
+  const startedAt = nowMs();
+  setProgress({ phase: 'mesh', value: options.includesTexture ? 0.3 : 0, label: 'Cleaning mesh…' });
+  setMessage('Cleaning mesh…');
+  try {
+    const result = await cleanupMesh(
+      request,
+      event => setProgressFromEvent('mesh', event, options.includesTexture),
+    );
+    const finishedAt = nowMs();
+    if (!result.ok) {
+      setTechnicalError(result.error ?? null);
+      setError('Mesh cleanup failed. The original mesh was preserved.');
+      setMessage('Mesh cleanup failed; original mesh was preserved.');
+      setTimingSummary({
+        totalMs: finishedAt - options.totalStartedAt,
+        ...resultMetadata(result),
+      });
+      return null;
+    }
+    const output = result.output ?? request.output;
+    setCleanedShapePath(output);
+    setResultPath(output);
+    setTimingSummary({
+      totalMs: finishedAt - options.totalStartedAt,
+      ...resultMetadata(result),
+      meshCleanupMs: result.mesh_cleanup_ms ?? finishedAt - startedAt,
+    });
+    return output;
+  } catch (reason) {
+    setTechnicalError(String(reason));
+    setError('Mesh cleanup failed. The original mesh was preserved.');
+    setMessage('Mesh cleanup failed; original mesh was preserved.');
+    return null;
+  } finally {
+    if (!options.keepBusy) setBusy(false);
+  }
+}, [setProgressFromEvent]);
+```
+
+- [ ] **Step 6: Compose Shape workflow**
+
+Extend request:
 
 ```ts
 cleanupPreset: CleanupPreset;
 cleanupOverrides: CleanupAdvancedOverrides;
 ```
 
-Flow:
+Use exact flow:
 
 ```ts
 const cleanupEnabled = request.cleanupPreset !== 'off';
 const paths = shapeWorkflowPaths(request.output, includesTexture, cleanupEnabled);
-const shape = await generateShape({ ... output: paths.raw ... });
-if (!shape.ok) return null;
-setPreservedShapePath(paths.raw);
+const shapeResult = await generateShape({
+  backend: request.backend,
+  input: request.image,
+  output: paths.raw,
+  model: 'tencent/Hunyuan3D-2mini',
+  subfolder: 'hunyuan3d-dit-v2-mini',
+  steps: request.steps,
+  seed: request.seed,
+  removeBackground: request.removeBackground,
+}, event => setProgressFromEvent('shape', event, includesTexture));
+```
 
-let textureInput = paths.raw;
+After successful Shape:
+
+```ts
+setPreservedShapePath(paths.raw);
+let nextMesh = paths.raw;
 if (cleanupEnabled) {
   const cleaned = await runCleanupInternal({
     input: paths.raw,
     output: paths.cleaned,
     preset: request.cleanupPreset,
     overrides: request.cleanupOverrides,
-  }, { keepBusy: true, ... });
+  }, {
+    keepBusy: true,
+    includesTexture,
+    totalStartedAt,
+  });
   if (!cleaned) return null;
-  textureInput = cleaned;
+  nextMesh = cleaned;
 }
-
-if (!includesTexture) return textureInput;
-return runTextureInternal({ ... mesh: textureInput ... }, { keepBusy: true, ... });
+if (!includesTexture) return nextMesh;
+return runTextureInternal({
+  backend: request.backend,
+  engine: request.textureEngine,
+  profile: request.textureProfile,
+  mesh: nextMesh,
+  image: request.image,
+  output: paths.final,
+  removeBackground: request.removeBackground,
+}, {
+  includesShape: true,
+  shapeMs,
+  totalStartedAt,
+  keepBusy: true,
+});
 ```
 
-For texture failure, `retryContext.mesh` automatically becomes `textureInput`, which is the cleaned path when cleanup succeeded.
+Because `runTextureInternal` receives `nextMesh`, its existing `retryContext` automatically points to the cleaned mesh.
 
-- [ ] **Step 6: Add standalone Mesh workflow**
-
-Add:
+- [ ] **Step 7: Add standalone Mesh workflow**
 
 ```ts
 export interface MeshWorkflowRequest {
@@ -1240,50 +1535,44 @@ export interface MeshWorkflowRequest {
 }
 ```
 
-`runMeshWorkflow()` runs only cleanup, sets `preservedShapePath=input`, `cleanedShapePath=output`, `resultPath=output`, and stores report/timing.
+Implement `runMeshWorkflow()` by setting `busy`, preserving the input path, and calling `runCleanupInternal` with `keepBusy: false`, `includesTexture: false`.
 
-- [ ] **Step 7: Wire App state/defaults and mode-specific prerequisites**
+- [ ] **Step 8: Wire App defaults and prerequisites**
 
-In `App.tsx` add:
+Add App state:
 
 ```ts
-const [cleanupPreset, setCleanupPreset] = useState<CleanupPreset>('light');
-const [cleanupOverrides, setCleanupOverrides] = useState<CleanupAdvancedOverrides>({});
+const [shapeCleanupPreset, setShapeCleanupPreset] = useState<CleanupPreset>('light');
+const [shapeCleanupOverrides, setShapeCleanupOverrides] = useState<CleanupAdvancedOverrides>({});
+const [meshCleanupPreset, setMeshCleanupPreset] = useState<CleanupPreset>('game-ready');
+const [meshCleanupOverrides, setMeshCleanupOverrides] = useState<CleanupAdvancedOverrides>({});
 const [meshInputPath, setMeshInputPath] = useState<string | null>(null);
 ```
 
-When switching mode:
+Keep Shape and Mesh preset state separate so switching tabs does not reset user choices.
+
+Prerequisites:
 
 ```text
-Shape default preset -> Light
-Mesh default preset -> Game-ready unless the user already changed Mesh settings in the current app session
-Texture does not alter cleanup settings
+Shape: image required + native-rocm backend.
+Texture: image + mesh + texture runtime + native-rocm backend.
+Mesh: mesh required; image, texture runtime, and ROCm backend are not required.
 ```
 
-`canGenerate` rules become:
+Modify `chooseOutputModel(defaultPath?: string)` in `tauri.ts` so Mesh mode can suggest `<source-stem>-clean.glb` while still allowing any selected GLB/OBJ path.
 
-```text
-Shape: source image required
-Texture: source image + mesh required + texture runtime ready
-Mesh: mesh input required; image and ROCm backend are not required
-```
-
-In Mesh mode, Save dialog should default to the imported stem plus `-clean` where platform dialog API permits; otherwise keep the existing save picker and pass the chosen output unchanged.
-
-- [ ] **Step 8: Run hook/App tests and verify GREEN**
-
-Run:
+- [ ] **Step 9: Run hook/App tests and verify GREEN**
 
 ```bash
 npm test -- --run apps/desktop/src/lib/useGenerationJob.test.ts apps/desktop/src/App.test.tsx
 ```
 
-Expected: all tests PASS.
+Expected: all tests pass.
 
-- [ ] **Step 9: Commit Task 6**
+- [ ] **Step 10: Commit Task 6**
 
 ```bash
-git add apps/desktop/src/lib/useGenerationJob.ts apps/desktop/src/lib/useGenerationJob.test.ts apps/desktop/src/App.tsx apps/desktop/src/App.test.tsx
+git add apps/desktop/src/lib/useGenerationJob.ts apps/desktop/src/lib/useGenerationJob.test.ts apps/desktop/src/App.tsx apps/desktop/src/App.test.tsx apps/desktop/src/lib/tauri.ts
 git commit -m "feat: integrate cleanup into shape and mesh workflows"
 ```
 
@@ -1293,67 +1582,49 @@ git commit -m "feat: integrate cleanup into shape and mesh workflows"
 
 **Files:**
 - Modify: `apps/desktop/src/components/ModelViewer.tsx`
-- Create or Modify: `apps/desktop/src/components/ModelViewer.test.tsx`
+- Create: `apps/desktop/src/components/ModelViewer.test.tsx`
 - Modify: `apps/desktop/src/App.tsx`
 - Modify: `apps/desktop/src/App.test.tsx`
 
 **Interfaces:**
-- `ModelViewer` gains optional comparison props.
+- `ModelViewer` gains optional `comparison` data.
 - App consumes `cleanedShapePath` and `cleanupReport` from Task 6.
 
 - [ ] **Step 1: Write failing comparison UI test**
 
-Mock/avoid Three.js rendering and assert these controls render when comparison paths are present:
+Use a mocked loader/helper so WebGL itself is not under test. Assert:
 
 ```tsx
 expect(screen.getByRole('button', { name: 'Before' })).toBeTruthy();
 expect(screen.getByRole('button', { name: 'After' })).toBeTruthy();
 ```
 
-Click Before/After and assert the active model URL passed to the loader/helper changes accordingly.
+Click Before then After and assert the selected URL changes from `before.glb` to `after.glb`.
 
 - [ ] **Step 2: Write failing Activity telemetry test**
 
-In `App.test.tsx`, mock timing summary:
+Mock `timingSummary` with a concrete cleanup report and assert labels:
 
-```ts
-timingSummary: {
-  totalMs: 1200,
-  meshCleanupMs: 245,
-  cleanupReport: {
-    preset: 'game-ready',
-    config_label: 'Game-ready',
-    algorithm_version: 'mesh-cleanup-v1',
-    triangles_before: 604308,
-    triangles_after: 598120,
-    vertices_before: 302100,
-    vertices_after: 299500,
-    components_before: 12,
-    components_after: 2,
-    components_removed: 10,
-    vertices_welded: 110,
-    spikes_adjusted: 4,
-    cleanup_ms: 245,
-    warnings: ['Large number of small components removed.'],
-  },
-}
+```text
+Mesh cleanup
+Cleanup cache
+Cleanup preset
+Components removed
+Vertices welded
+Spikes adjusted
 ```
 
-Assert labels `Mesh cleanup`, `Components removed`, `Spikes adjusted`, `Cleanup preset`, and warning text.
+Also assert a warning string is rendered in warning styling, not hard-error styling.
 
 - [ ] **Step 3: Run viewer/App tests and verify RED**
-
-Run:
 
 ```bash
 npm test -- --run apps/desktop/src/components/ModelViewer.test.tsx apps/desktop/src/App.test.tsx
 ```
 
-Expected: FAIL because comparison/cleanup telemetry UI is absent.
+Expected: comparison/telemetry UI is missing.
 
-- [ ] **Step 4: Implement viewer comparison state**
-
-Add props:
+- [ ] **Step 4: Add typed comparison props and selected URL**
 
 ```ts
 interface ModelComparison {
@@ -1366,68 +1637,72 @@ interface ModelComparison {
 interface ModelViewerProps {
   modelUrl: string | null;
   comparison?: ModelComparison | null;
-  ...
+  busy: boolean;
+  progress?: number | null;
+  progressLabel?: string | null;
 }
 ```
 
-Inside `ModelViewer`, keep local `comparisonSide: 'before' | 'after'` reset to `after` whenever comparison paths change. Derive:
+Inside the component:
 
 ```ts
+const [comparisonSide, setComparisonSide] = useState<'before' | 'after'>('after');
+useEffect(() => setComparisonSide('after'), [comparison?.beforeUrl, comparison?.afterUrl]);
 const activeModelUrl = comparison
   ? comparisonSide === 'before' ? comparison.beforeUrl : comparison.afterUrl
   : modelUrl;
 ```
 
-Use `activeModelUrl` in the existing Three loader effect. Overlay two buttons:
+Change the existing load effect dependency and loader input from `modelUrl` to `activeModelUrl`.
+
+Render:
 
 ```tsx
-<div className="viewer-comparison" aria-label="Mesh comparison">
-  <button aria-pressed={comparisonSide === 'before'} onClick={() => setComparisonSide('before')}>Before</button>
-  <button aria-pressed={comparisonSide === 'after'} onClick={() => setComparisonSide('after')}>After</button>
-</div>
+{comparison && (
+  <div className="viewer-comparison" aria-label="Mesh comparison">
+    <button type="button" aria-pressed={comparisonSide === 'before'} onClick={() => setComparisonSide('before')}>
+      Before{comparison.beforeTriangles !== undefined ? ` · ${comparison.beforeTriangles.toLocaleString()}` : ''}
+    </button>
+    <button type="button" aria-pressed={comparisonSide === 'after'} onClick={() => setComparisonSide('after')}>
+      After{comparison.afterTriangles !== undefined ? ` · ${comparison.afterTriangles.toLocaleString()}` : ''}
+    </button>
+  </div>
+)}
 ```
-
-Show triangle counts beside labels when available.
 
 - [ ] **Step 5: Wire Mesh-mode comparison from App**
 
-Only enable comparison when:
+Enable only when:
 
-```text
-workflowMode === 'mesh'
-meshInputPath exists
-job.cleanedShapePath exists
+```ts
+workflowMode === 'mesh' && meshInputPath && job.cleanedShapePath
 ```
 
-Pass local asset URLs for both paths. Shape/Texture continue to use the existing single model preview.
+Use `localAssetUrl(meshInputPath)` and `localAssetUrl(job.cleanedShapePath)`. Triangle counts come from `timingSummary.cleanupReport`.
 
 - [ ] **Step 6: Add cleanup Activity rows**
 
 Render when available:
 
 ```text
-Mesh cleanup       245 ms / formatted duration
-Cleanup preset     Game-ready or Custom (from ...)
-Mesh               604,308 -> 598,120 triangles
-Components removed 10
-Vertices welded    110
-Spikes adjusted    4
-Algorithm          mesh-cleanup-v1 (technical/details section is acceptable)
+Mesh cleanup       formatDuration(meshCleanupMs)
+Cleanup cache      hit/miss
+Cleanup preset     config_label
+Mesh               triangles_before -> triangles_after
+Components removed count
+Vertices welded    count
+Spikes adjusted    count
 ```
 
-Warnings render in a dedicated warning block and do not reuse the hard-error styling.
-
-Do not fold `meshCleanupMs` into `Image prep`, `Mesh prep`, or `Inference` rows.
+Render `cleanupReport.warnings` in a separate nonfatal warning block. Keep `algorithm_version` in Technical details or a compact `Algorithm` row.
 
 - [ ] **Step 7: Run viewer/App tests and verify GREEN**
-
-Run:
 
 ```bash
 npm test -- --run apps/desktop/src/components/ModelViewer.test.tsx apps/desktop/src/App.test.tsx
 ```
 
-Expected: all tests PASS.
+Expected: all tests pass.
 
 - [ ] **Step 8: Commit Task 7**
 
@@ -1438,19 +1713,17 @@ git commit -m "feat: add mesh before-after comparison"
 
 ---
 
-### Task 8: Full integration verification, regression documentation, and hardware validation handoff
+### Task 8: Full integration verification and RX 6950 XT hardware acceptance
 
 **Files:**
-- Modify: `docs/benchmarks/2026-09-12-rx6950xt-texture-baseline.md`
 - Create: `docs/benchmarks/2026-09-12-game-ready-mesh-cleanup.md`
-- Modify tests only if verification finds a concrete regression.
+- Modify: `docs/benchmarks/2026-09-12-rx6950xt-texture-baseline.md`
+- Modify implementation/tests only if verification exposes a concrete defect; every such defect gets a failing regression test before its fix.
 
 **Interfaces:**
-- No new runtime interface. This task proves the milestone is stable and records the hardware/visual acceptance checklist.
+- No new runtime interface. This task proves the milestone and records measured results.
 
-- [ ] **Step 1: Run the complete Python suite**
-
-Run:
+- [ ] **Step 1: Run complete Python verification**
 
 ```bash
 python -m pip install -r backends/hunyuan/requirements-base.txt
@@ -1460,97 +1733,88 @@ python -m unittest discover -s backends/mesh_processing/tests -v
 
 Expected: zero failures.
 
-- [ ] **Step 2: Run the complete frontend suite and build**
-
-Run:
+- [ ] **Step 2: Run complete frontend verification**
 
 ```bash
 npm test -- --run
 npm run build
 ```
 
-Expected: zero test failures and successful build.
+Expected: zero failures and successful production build.
 
-- [ ] **Step 3: Run Rust tests/check**
-
-Run:
+- [ ] **Step 3: Run complete Rust verification**
 
 ```bash
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-Expected: both succeed.
+Expected: both commands succeed.
 
-- [ ] **Step 4: Verify persistent Windows runtime packaging**
+- [ ] **Step 4: Refresh the persistent Windows runtime**
 
-On the RX 6950 XT Windows machine:
+On the RX 6950 XT machine:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup\windows-native-rocm.ps1 -VerifyOnly
 ```
 
-Then verify these files exist:
+Verify these exact paths exist afterward:
 
 ```text
 %LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\worker.py
 %LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\backends\mesh_processing\__init__.py
 ```
 
-Expected: VerifyOnly succeeds without reinstalling ROCm/models and refreshes worker + mesh-processing package.
+- [ ] **Step 5: Run hardware acceptance matrix**
 
-- [ ] **Step 5: Run manual hardware acceptance matrix**
-
-Use the same steak source/model currently used for texture benchmarks. Record:
+Use the current steak regression asset and record actual Activity values for each run:
 
 ```text
 A. Shape -> Model only, Light
-   - raw shape preserved
-   - cleaned final opens
-   - Light does not visibly distort silhouette
+   Raw shape preserved; cleaned final opens; no obvious silhouette damage.
 
 B. Shape -> Model + texture, Light
-   - raw -shape preserved
-   - intermediate -clean preserved
-   - texture uses cleaned mesh
-   - retry texture only points at -clean after a forced/reproduced texture failure
+   Raw -shape and intermediate -clean remain on disk; Paint consumes -clean.
 
 C. Mesh mode, Game-ready
-   - imported GLB -> new clean output
-   - Before/After works
-   - protruding artifact improves without obvious valid-detail loss
+   Imported GLB creates a separate clean output; Before/After switches correctly; known protruding artifact improves without obvious valid-detail loss.
 
 D. Mesh mode, Aggressive
-   - visible warning shown
-   - output remains valid GLB/OBJ
+   Nonfatal silhouette warning is visible; output is a valid GLB/OBJ.
 
-E. Cached Balanced texture after cleanup
-   - Image cache and Paint cache still hit when valid
-   - cleanup time is a separate Activity row
-   - warm Hunyuan Paint inference remains around the previous ~28-33 s range; cleanup must not silently reappear inside Texture prep
+E. Texture retry
+   After a controlled Paint failure following successful cleanup, Retry texture only submits the cleaned path.
+
+F. Cached Balanced texture after cleanup
+   Model/image caches still hit when valid; cleanup has its own timing row; warm Paint inference stays in the established ~28-33 s band unless the hardware measurement proves a new baseline.
 ```
 
-- [ ] **Step 6: Record cleanup benchmark document**
+- [ ] **Step 6: Record measured cleanup benchmark**
 
-Create `docs/benchmarks/2026-09-12-game-ready-mesh-cleanup.md` with one table:
+Create `docs/benchmarks/2026-09-12-game-ready-mesh-cleanup.md` after Step 5. Include one row each for Light, Game-ready, and Aggressive with the actual measured values from Activity:
 
-```markdown
-| Preset | Cleanup ms | Triangles before | Triangles after | Components removed | Spikes adjusted | Visual result |
-|---|---:|---:|---:|---:|---:|---|
-| Light | ... | ... | ... | ... | ... | ... |
-| Game-ready | ... | ... | ... | ... | ... | ... |
-| Aggressive | ... | ... | ... | ... | ... | ... |
+```text
+Preset
+Cleanup ms
+Triangles before
+Triangles after
+Components removed
+Vertices welded
+Spikes adjusted
+Warnings
+Visual assessment
 ```
 
-Also note whether Before/After and retry behavior passed.
+Also record pass/fail for Before/After and retry-cleaned-mesh behavior.
 
-- [ ] **Step 7: Update the existing RX 6950 XT baseline note**
+- [ ] **Step 7: Update existing RX 6950 XT baseline**
 
-Append a short section stating that the ~29 s cached Balanced texture result remains the Paint inference baseline and mesh cleanup is measured separately. Do not claim no regression unless the hardware run from Step 5 confirms it.
+Append a section that states the previously validated cached Balanced Paint inference baseline (~28-33 s) and records the new measured post-cleanup warm run. State “no regression” only if Step 5 confirms it.
 
-- [ ] **Step 8: Confirm GitHub Actions on the final HEAD**
+- [ ] **Step 8: Verify final GitHub Actions run**
 
-Wait for the final branch CI run and verify all jobs are successful:
+On the final HEAD, require all four jobs to finish successfully:
 
 ```text
 frontend
@@ -1559,9 +1823,9 @@ rust-core
 desktop-windows
 ```
 
-Do not declare the feature complete before this check and the hardware acceptance matrix both pass.
+Do not call the feature complete before both final CI and the hardware acceptance matrix pass.
 
-- [ ] **Step 9: Commit benchmark/docs changes**
+- [ ] **Step 9: Commit benchmark documentation**
 
 ```bash
 git add docs/benchmarks
@@ -1583,25 +1847,31 @@ git commit -m "docs: record game-ready mesh cleanup validation"
 - Before/After viewer: Task 7.
 - Off/Light/Game-ready/Aggressive: Tasks 1-2 and 5.
 - Conservative multi-signal spike handling: Task 2.
-- Taubin smoothing: Task 2.
+- Shrinkage-resistant Taubin smoothing: Task 2.
 - Cleanup report/telemetry: Tasks 1, 3, 4, 5, 7.
 - Separate cleanup/texture cache concepts: Task 3.
 - Clear-cache integration: Task 3.
-- Errors/warnings/atomic output: Tasks 2, 6, 7.
+- Errors/warnings/atomic output: Tasks 2, 3, 6, 7.
 - Retry texture with cleaned mesh: Task 6.
-- Advanced -> visible Custom config: Tasks 1 and 5.
-- Synthetic geometry tests with legitimate thin feature: Task 2.
+- Advanced changes become visible Custom configuration: Tasks 1 and 5.
+- Synthetic geometry tests include a legitimate thin feature: Task 2.
 - Steak visual regression and RX 6950 XT validation: Task 8.
 - No PyMeshLab/manual editor/LOD/collision scope creep: Global Constraints.
 
+### Placeholder scan
+
+- No `TBD` or `TODO` requirements.
+- No implementation body is represented by an ellipsis.
+- Measured benchmark values are intentionally obtained during Task 8 hardware validation and the plan defines exactly which values must be recorded.
+
 ### Type consistency
 
-- Python uses snake_case report keys; Rust and TypeScript consume those same JSON keys for worker results.
-- Tauri request is camelCase at the Rust boundary and worker namespace accepts request keys from JSONL.
+- Python worker emits snake_case `cleanup_report`, `mesh_cleanup_ms`, `cleanup_cache_hit`; Rust and TypeScript result structs use those JSON keys.
+- Tauri request top-level fields use the existing camelCase serialization boundary; the `overrides` JSON object deliberately uses the Python `CleanupSettings` snake_case field names.
 - Cleanup preset values are consistently `off | light | game-ready | aggressive`.
-- `meshCleanupMs` in TypeScript maps to worker `mesh_cleanup_ms`; `cleanupReport` maps to `cleanup_report`.
 - `GenerationPhase` includes `mesh` before cleanup progress is wired.
+- Python and Rust persistent-worker protocol versions both become `2` in the same implementation series.
 
 ### Execution note
 
-Implement on a fresh feature branch/worktree created from `feat/persistent-worker-cache-impl`, not directly on the validated cache baseline branch. Recommended branch name: `feat/game-ready-mesh-cleanup`.
+Create an isolated worktree/feature branch from `feat/persistent-worker-cache-impl` before implementation. Recommended branch name: `feat/game-ready-mesh-cleanup`.
