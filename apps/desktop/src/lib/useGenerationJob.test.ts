@@ -5,15 +5,17 @@ import { overallProgress, useGenerationJob, type ShapeWorkflowRequest } from './
 
 const tauriMocks = vi.hoisted(() => ({
   generateShape: vi.fn(),
+  cleanupMesh: vi.fn(),
   textureMesh: vi.fn(),
 }));
 
 vi.mock('./tauri', () => ({
   generateShape: tauriMocks.generateShape,
+  cleanupMesh: tauriMocks.cleanupMesh,
   textureMesh: tauriMocks.textureMesh,
 }));
 
-const baseRequest: ShapeWorkflowRequest = {
+const baseRequest = {
   backend: 'native-rocm',
   image: 'C:/source.png',
   output: 'C:/model.glb',
@@ -24,95 +26,191 @@ const baseRequest: ShapeWorkflowRequest = {
   removeBackground: true,
   textureEngine: 'hunyuan-paint',
   textureProfile: 'auto',
+  cleanupPreset: 'off',
+  cleanupOverrides: {},
+} as ShapeWorkflowRequest & {
+  cleanupPreset: 'off' | 'light' | 'game-ready' | 'aggressive';
+  cleanupOverrides: Record<string, unknown>;
 };
 
 beforeEach(() => {
   tauriMocks.generateShape.mockReset();
+  tauriMocks.cleanupMesh.mockReset();
   tauriMocks.textureMesh.mockReset();
 });
 
 describe('useGenerationJob', () => {
-  it('does not start texture for model-only output', async () => {
-    tauriMocks.generateShape.mockResolvedValue({
+  it('runs Light cleanup between shape generation and the selected model-only output', async () => {
+    tauriMocks.generateShape.mockResolvedValue({ ok: true, event: 'completed', output: 'C:/model-shape.glb' });
+    tauriMocks.cleanupMesh.mockResolvedValue({
       ok: true,
       event: 'completed',
       output: 'C:/model.glb',
+      cleanup_cache_hit: false,
+      mesh_cleanup_ms: 125,
+      cleanup_report: {
+        preset: 'light',
+        config_label: 'Light',
+        algorithm_version: 'mesh-cleanup-v1',
+        triangles_before: 1000,
+        triangles_after: 950,
+        vertices_before: 600,
+        vertices_after: 580,
+        components_before: 2,
+        components_after: 1,
+        components_removed: 1,
+        vertices_welded: 20,
+        spikes_adjusted: 0,
+        cleanup_ms: 125,
+        warnings: [],
+      },
     });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await result.current.runShapeWorkflow({ ...baseRequest, cleanupPreset: 'light' } as any);
+    });
+
+    expect(tauriMocks.generateShape.mock.calls[0][0]).toMatchObject({ output: 'C:/model-shape.glb' });
+    expect(tauriMocks.cleanupMesh).toHaveBeenCalledWith(
+      expect.objectContaining({ input: 'C:/model-shape.glb', output: 'C:/model.glb', preset: 'light' }),
+      expect.any(Function),
+    );
+    expect(tauriMocks.textureMesh).not.toHaveBeenCalled();
+    expect(result.current.preservedShapePath).toBe('C:/model-shape.glb');
+    expect((result.current as any).cleanedShapePath).toBe('C:/model.glb');
+    expect(result.current.resultPath).toBe('C:/model.glb');
+    expect(result.current.timingSummary).toMatchObject({ cleanupCacheHit: false, meshCleanupMs: 125 });
+  });
+
+  it('keeps Off as a direct shape-to-final path without cleanup', async () => {
+    tauriMocks.generateShape.mockResolvedValue({ ok: true, event: 'completed', output: 'C:/model.glb' });
 
     const { result } = renderHook(() => useGenerationJob());
     await act(async () => {
       await result.current.runShapeWorkflow(baseRequest);
     });
 
-    expect(tauriMocks.generateShape).toHaveBeenCalledOnce();
+    expect(tauriMocks.generateShape.mock.calls[0][0]).toMatchObject({ output: 'C:/model.glb' });
+    expect(tauriMocks.cleanupMesh).not.toHaveBeenCalled();
     expect(tauriMocks.textureMesh).not.toHaveBeenCalled();
     expect(result.current.resultPath).toBe('C:/model.glb');
     expect(result.current.preservedShapePath).toBe('C:/model.glb');
   });
 
-  it('runs texture only after successful shape', async () => {
+  it('runs shape then Light cleanup then texture using the cleaned intermediate', async () => {
     const order: string[] = [];
     tauriMocks.generateShape.mockImplementation(async () => {
       order.push('shape');
       return { ok: true, event: 'completed', output: 'C:/model-shape.glb' };
     });
+    tauriMocks.cleanupMesh.mockImplementation(async () => {
+      order.push('cleanup');
+      return { ok: true, event: 'completed', output: 'C:/model-clean.glb', mesh_cleanup_ms: 100 };
+    });
     tauriMocks.textureMesh.mockImplementation(async () => {
       order.push('texture');
-      return {
-        ok: true,
-        event: 'completed',
-        output: 'C:/model.glb',
-        resolved_profile: 'balanced',
-        faces_before: 40000,
-        faces_after: 20000,
-      };
+      return { ok: true, event: 'completed', output: 'C:/model.glb', resolved_profile: 'balanced' };
     });
 
     const { result } = renderHook(() => useGenerationJob());
     await act(async () => {
-      await result.current.runShapeWorkflow({ ...baseRequest, outputMode: 'model-and-texture' });
+      await result.current.runShapeWorkflow({
+        ...baseRequest,
+        outputMode: 'model-and-texture',
+        cleanupPreset: 'light',
+      } as any);
     });
 
-    expect(order).toEqual(['shape', 'texture']);
-    expect(tauriMocks.textureMesh.mock.calls[0][0]).toMatchObject({
-      mesh: 'C:/model-shape.glb',
-      image: 'C:/source.png',
-      profile: 'auto',
+    expect(order).toEqual(['shape', 'cleanup', 'texture']);
+    expect(tauriMocks.cleanupMesh.mock.calls[0][0]).toMatchObject({
+      input: 'C:/model-shape.glb',
+      output: 'C:/model-clean.glb',
+      preset: 'light',
     });
-    expect(result.current.resultPath).toBe('C:/model.glb');
+    expect(tauriMocks.textureMesh.mock.calls[0][0]).toMatchObject({
+      mesh: 'C:/model-clean.glb',
+      image: 'C:/source.png',
+      output: 'C:/model.glb',
+    });
     expect(result.current.preservedShapePath).toBe('C:/model-shape.glb');
+    expect((result.current as any).cleanedShapePath).toBe('C:/model-clean.glb');
+    expect(result.current.resultPath).toBe('C:/model.glb');
   });
 
-  it('preserves shape and creates retry context when texture OOMs', async () => {
-    tauriMocks.generateShape.mockResolvedValue({
-      ok: true,
-      event: 'completed',
-      output: 'C:/model-shape.glb',
+  it('preserves the raw shape and does not start texture when cleanup fails', async () => {
+    tauriMocks.generateShape.mockResolvedValue({ ok: true, event: 'completed', output: 'C:/model-shape.glb' });
+    tauriMocks.cleanupMesh.mockResolvedValue({
+      ok: false,
+      event: 'error',
+      error: 'cleanup failed',
+      error_kind: 'mesh_cleanup_failed',
     });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await result.current.runShapeWorkflow({
+        ...baseRequest,
+        outputMode: 'model-and-texture',
+        cleanupPreset: 'light',
+      } as any);
+    });
+
+    expect(result.current.preservedShapePath).toBe('C:/model-shape.glb');
+    expect(result.current.resultPath).toBe('C:/model-shape.glb');
+    expect(tauriMocks.textureMesh).not.toHaveBeenCalled();
+    expect(result.current.error).toMatch(/cleanup failed/i);
+  });
+
+  it('uses the cleaned path in retry context after a texture failure', async () => {
+    tauriMocks.generateShape.mockResolvedValue({ ok: true, event: 'completed', output: 'C:/model-shape.glb' });
+    tauriMocks.cleanupMesh.mockResolvedValue({ ok: true, event: 'completed', output: 'C:/model-clean.glb' });
     tauriMocks.textureMesh.mockResolvedValue({
       ok: false,
       event: 'error',
       stage: 'texture',
       error_kind: 'out_of_memory',
       error: 'CUDA out of memory',
-      resolved_profile: 'balanced',
-      faces_before: 40000,
-      faces_after: 20000,
     });
 
     const { result } = renderHook(() => useGenerationJob());
     await act(async () => {
-      await result.current.runShapeWorkflow({ ...baseRequest, outputMode: 'model-and-texture' });
+      await result.current.runShapeWorkflow({
+        ...baseRequest,
+        outputMode: 'model-and-texture',
+        cleanupPreset: 'light',
+      } as any);
     });
 
-    expect(result.current.error).toMatch(/out of gpu memory/i);
-    expect(result.current.technicalError).toBe('CUDA out of memory');
-    expect(result.current.resultPath).toBe('C:/model-shape.glb');
-    expect(result.current.retryContext).toMatchObject({
-      mesh: 'C:/model-shape.glb',
-      image: 'C:/source.png',
-      profile: 'auto',
+    expect(result.current.retryContext).toMatchObject({ mesh: 'C:/model-clean.glb' });
+    expect(result.current.preservedShapePath).toBe('C:/model-clean.glb');
+  });
+
+  it('runs standalone Mesh cleanup from imported input to selected output', async () => {
+    tauriMocks.cleanupMesh.mockResolvedValue({
+      ok: true,
+      event: 'completed',
+      output: 'C:/import-clean.glb',
+      mesh_cleanup_ms: 80,
     });
+
+    const { result } = renderHook(() => useGenerationJob());
+    await act(async () => {
+      await (result.current as any).runMeshWorkflow({
+        input: 'C:/import.glb',
+        output: 'C:/import-clean.glb',
+        preset: 'game-ready',
+        overrides: {},
+      });
+    });
+
+    expect(tauriMocks.cleanupMesh).toHaveBeenCalledWith(
+      expect.objectContaining({ input: 'C:/import.glb', output: 'C:/import-clean.glb', preset: 'game-ready' }),
+      expect.any(Function),
+    );
+    expect(result.current.preservedShapePath).toBe('C:/import.glb');
+    expect((result.current as any).cleanedShapePath).toBe('C:/import-clean.glb');
+    expect(result.current.resultPath).toBe('C:/import-clean.glb');
   });
 
   it('marks restart required and preserves the mesh after a texture worker crash', async () => {
