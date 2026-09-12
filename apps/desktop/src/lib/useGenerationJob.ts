@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
 import type {
   BackendId,
+  CleanupAdvancedOverrides,
+  CleanupPreset,
   GenerationOptions,
   GenerationPhase,
   GenerationProgress,
@@ -10,7 +12,14 @@ import type {
   TextureProfile,
   TextureRetryContext,
 } from '../domain/types';
-import { generateShape, textureMesh, type GenerateResult, type WorkerProgressEvent } from './tauri';
+import {
+  cleanupMesh,
+  generateShape,
+  textureMesh,
+  type GenerateResult,
+  type MeshCleanupRequest,
+  type WorkerProgressEvent,
+} from './tauri';
 
 export interface ShapeWorkflowRequest {
   backend: BackendId;
@@ -23,9 +32,18 @@ export interface ShapeWorkflowRequest {
   removeBackground: boolean;
   textureEngine: TextureEngineId;
   textureProfile: TextureProfile;
+  cleanupPreset?: CleanupPreset;
+  cleanupOverrides?: CleanupAdvancedOverrides;
 }
 
 export interface TextureWorkflowRequest extends TextureRetryContext {}
+
+export interface MeshWorkflowRequest {
+  input: string;
+  output: string;
+  preset: CleanupPreset;
+  overrides: CleanupAdvancedOverrides;
+}
 
 interface StageTracker {
   lastStage?: string;
@@ -33,11 +51,18 @@ interface StageTracker {
   durations: Record<string, number>;
 }
 
+interface CleanupOutcome {
+  output: string;
+  metadata: Partial<GenerationTimingSummary>;
+}
+
 const stageLabels: Record<string, string> = {
   starting_backend: 'Starting AMD backend…',
   preparing_input: 'Preparing source image…',
   loading_model: 'Loading Hunyuan model…',
   running_shape: 'Generating 3D shape…',
+  cleaning_mesh: 'Cleaning mesh…',
+  exporting_clean_mesh: 'Saving cleaned mesh…',
   preparing_mesh: 'Preparing mesh for texturing…',
   mesh_ready: 'Texture mesh is ready…',
   running_texture: 'Generating Hunyuan Paint texture…',
@@ -72,7 +97,9 @@ function eventLabel(phase: GenerationPhase, event: WorkerProgressEvent): string 
     return `Texture mesh ready · ${event.faces_after.toLocaleString()} triangles`;
   }
   if (event.stage && stageLabels[event.stage]) return stageLabels[event.stage];
-  return phase === 'shape' ? 'Generating 3D shape…' : 'Generating texture…';
+  if (phase === 'shape') return 'Generating 3D shape…';
+  if (phase === 'mesh') return 'Cleaning mesh…';
+  return 'Generating texture…';
 }
 
 function addSuffixBeforeExtension(path: string, suffix: string): string {
@@ -80,6 +107,24 @@ function addSuffixBeforeExtension(path: string, suffix: string): string {
   const dot = path.lastIndexOf('.');
   if (dot <= separator) return `${path}${suffix}`;
   return `${path.slice(0, dot)}${suffix}${path.slice(dot)}`;
+}
+
+export function shapeWorkflowPaths(finalOutput: string, includesTexture: boolean, cleanupEnabled: boolean) {
+  if (!cleanupEnabled) {
+    return { raw: finalOutput, cleaned: finalOutput, final: finalOutput };
+  }
+  if (includesTexture) {
+    return {
+      raw: addSuffixBeforeExtension(finalOutput, '-shape'),
+      cleaned: addSuffixBeforeExtension(finalOutput, '-clean'),
+      final: finalOutput,
+    };
+  }
+  return {
+    raw: addSuffixBeforeExtension(finalOutput, '-shape'),
+    cleaned: finalOutput,
+    final: finalOutput,
+  };
 }
 
 function noteStage(tracker: StageTracker, stage: string | null | undefined, at: number): void {
@@ -111,6 +156,9 @@ function resultMetadata(result: GenerateResult): Partial<GenerationTimingSummary
     cacheKind: result.cache_kind ?? undefined,
     imageCacheHit: result.image_cache_hit ?? undefined,
     meshCacheHit: result.mesh_cache_hit ?? undefined,
+    cleanupCacheHit: result.cleanup_cache_hit ?? undefined,
+    cleanupReport: result.cleanup_report ?? undefined,
+    meshCleanupMs: result.mesh_cleanup_ms ?? undefined,
     modelLoadMs: result.model_load_ms ?? undefined,
     imagePreprocessMs: result.image_preprocess_ms ?? undefined,
     meshPreprocessMs: result.mesh_preprocess_ms ?? undefined,
@@ -118,6 +166,21 @@ function resultMetadata(result: GenerateResult): Partial<GenerationTimingSummary
     preprocessMs: result.preprocess_ms ?? undefined,
     exportMs: result.export_ms ?? undefined,
   };
+}
+
+function mergeMetadata(
+  ...parts: Array<Partial<GenerationTimingSummary> | undefined>
+): Partial<GenerationTimingSummary> {
+  const merged: Partial<GenerationTimingSummary> = {};
+  for (const part of parts) {
+    if (!part) continue;
+    for (const [key, value] of Object.entries(part)) {
+      if (value !== undefined) {
+        (merged as Record<string, unknown>)[key] = value;
+      }
+    }
+  }
+  return merged;
 }
 
 export function useGenerationJob() {
@@ -128,6 +191,7 @@ export function useGenerationJob() {
   const [technicalError, setTechnicalError] = useState<string | null>(null);
   const [resultPath, setResultPath] = useState<string | null>(null);
   const [preservedShapePath, setPreservedShapePath] = useState<string | null>(null);
+  const [cleanedShapePath, setCleanedShapePath] = useState<string | null>(null);
   const [retryContext, setRetryContext] = useState<TextureRetryContext | null>(null);
   const [timingSummary, setTimingSummary] = useState<GenerationTimingSummary | null>(null);
   const [workerNeedsRestart, setWorkerNeedsRestart] = useState(false);
@@ -152,6 +216,7 @@ export function useGenerationJob() {
     setTechnicalError(null);
     setResultPath(null);
     setPreservedShapePath(null);
+    setCleanedShapePath(null);
     setRetryContext(null);
     setTimingSummary(null);
   }, []);
@@ -173,6 +238,73 @@ export function useGenerationJob() {
     setMessage(next.label);
   }, []);
 
+  const runCleanupInternal = useCallback(async (
+    request: MeshCleanupRequest,
+    options: {
+      keepBusy: boolean;
+      includesTexture: boolean;
+      totalStartedAt: number;
+      shapeMs?: number;
+      priorMetadata?: Partial<GenerationTimingSummary>;
+    },
+  ): Promise<CleanupOutcome | null> => {
+    const startedAt = nowMs();
+    setProgress({
+      phase: 'mesh',
+      value: options.includesTexture ? 0.3 : 0,
+      label: 'Cleaning mesh…',
+    });
+    setMessage('Cleaning mesh…');
+
+    try {
+      const result = await cleanupMesh(
+        request,
+        (event) => setProgressFromEvent('mesh', event, options.includesTexture),
+      );
+      const finishedAt = nowMs();
+      const metadata = mergeMetadata(
+        options.priorMetadata,
+        resultMetadata(result),
+        { meshCleanupMs: result.mesh_cleanup_ms ?? finishedAt - startedAt },
+      );
+
+      if (!result.ok) {
+        setTechnicalError(result.error ?? null);
+        setError('Mesh cleanup failed. The original mesh was preserved.');
+        setMessage('Mesh cleanup failed; original mesh was preserved.');
+        setTimingSummary({
+          shapeMs: options.shapeMs,
+          totalMs: finishedAt - options.totalStartedAt,
+          ...metadata,
+        });
+        return null;
+      }
+
+      const output = result.output ?? request.output;
+      setCleanedShapePath(output);
+      setResultPath(output);
+      setTimingSummary({
+        shapeMs: options.shapeMs,
+        totalMs: finishedAt - options.totalStartedAt,
+        ...metadata,
+      });
+      return { output, metadata };
+    } catch (reason) {
+      const finishedAt = nowMs();
+      setTechnicalError(String(reason));
+      setError('Mesh cleanup failed. The original mesh was preserved.');
+      setMessage('Mesh cleanup failed; original mesh was preserved.');
+      setTimingSummary({
+        shapeMs: options.shapeMs,
+        totalMs: finishedAt - options.totalStartedAt,
+        ...options.priorMetadata,
+      });
+      return null;
+    } finally {
+      if (!options.keepBusy) setBusy(false);
+    }
+  }, [setProgressFromEvent]);
+
   const runTextureInternal = useCallback(async (
     request: TextureWorkflowRequest,
     options?: {
@@ -180,6 +312,8 @@ export function useGenerationJob() {
       shapeMs?: number;
       totalStartedAt?: number;
       keepBusy?: boolean;
+      preserveExistingShape?: boolean;
+      priorMetadata?: Partial<GenerationTimingSummary>;
     },
   ): Promise<string | null> => {
     const includesShape = Boolean(options?.includesShape);
@@ -193,7 +327,9 @@ export function useGenerationJob() {
       setRetryContext(null);
       setTimingSummary(null);
     }
-    setPreservedShapePath(request.mesh);
+    if (!options?.preserveExistingShape) {
+      setPreservedShapePath(request.mesh);
+    }
     setResultPath(request.mesh);
     setProgress({
       phase: 'texture',
@@ -221,6 +357,7 @@ export function useGenerationJob() {
       const finishedAt = nowMs();
       const textureMs = finishedAt - textureStartedAt;
       const textureStages = finishStages(stageTracker, finishedAt);
+      const metadata = mergeMetadata(options?.priorMetadata, resultMetadata(result));
 
       if (!result.ok) {
         setTechnicalError(result.error ?? null);
@@ -241,7 +378,7 @@ export function useGenerationJob() {
           textureMs,
           totalMs: finishedAt - totalStartedAt,
           textureStages,
-          ...resultMetadata(result),
+          ...metadata,
         });
         return null;
       }
@@ -256,7 +393,7 @@ export function useGenerationJob() {
         textureMs,
         totalMs: finishedAt - totalStartedAt,
         textureStages,
-        ...resultMetadata(result),
+        ...metadata,
       });
       return output;
     } catch (reason) {
@@ -271,6 +408,7 @@ export function useGenerationJob() {
         textureMs,
         totalMs: finishedAt - totalStartedAt,
         textureStages: finishStages(stageTracker, finishedAt),
+        ...options?.priorMetadata,
       });
       return null;
     } finally {
@@ -280,15 +418,19 @@ export function useGenerationJob() {
 
   const runShapeWorkflow = useCallback(async (request: ShapeWorkflowRequest): Promise<string | null> => {
     const includesTexture = request.outputMode === 'model-and-texture';
+    const cleanupPreset = request.cleanupPreset ?? 'off';
+    const cleanupOverrides = request.cleanupOverrides ?? {};
+    const cleanupEnabled = cleanupPreset !== 'off';
+    const paths = shapeWorkflowPaths(request.output, includesTexture, cleanupEnabled);
     const totalStartedAt = nowMs();
     const shapeStartedAt = totalStartedAt;
-    const shapeOutput = includesTexture ? addSuffixBeforeExtension(request.output, '-shape') : request.output;
 
     setBusy(true);
     clearError();
     setRetryContext(null);
     setTimingSummary(null);
     setPreservedShapePath(null);
+    setCleanedShapePath(null);
     setProgress({ phase: 'shape', value: 0, label: 'Starting Hunyuan shape generation…' });
     setMessage('Starting Hunyuan shape generation…');
 
@@ -297,7 +439,7 @@ export function useGenerationJob() {
         {
           backend: request.backend,
           input: request.image,
-          output: shapeOutput,
+          output: paths.raw,
           model: 'tencent/Hunyuan3D-2mini',
           subfolder: 'hunyuan3d-dit-v2-mini',
           steps: request.steps,
@@ -309,6 +451,7 @@ export function useGenerationJob() {
 
       const shapeFinishedAt = nowMs();
       const shapeMs = shapeFinishedAt - shapeStartedAt;
+      const shapeMetadata = resultMetadata(result);
       if (!result.ok) {
         setTechnicalError(result.error ?? null);
         if (result.error_kind === 'worker_crashed') {
@@ -322,33 +465,57 @@ export function useGenerationJob() {
         setTimingSummary({
           shapeMs,
           totalMs: shapeFinishedAt - totalStartedAt,
-          ...resultMetadata(result),
+          ...shapeMetadata,
         });
         return null;
       }
 
-      const shapePath = result.output ?? shapeOutput;
-      setPreservedShapePath(shapePath);
-      setResultPath(shapePath);
+      const rawShapePath = result.output ?? paths.raw;
+      setPreservedShapePath(rawShapePath);
+      setResultPath(rawShapePath);
+
+      let nextMesh = rawShapePath;
+      let cleanupMetadata: Partial<GenerationTimingSummary> | undefined;
+      if (cleanupEnabled) {
+        const cleanup = await runCleanupInternal(
+          {
+            input: rawShapePath,
+            output: paths.cleaned,
+            preset: cleanupPreset,
+            overrides: cleanupOverrides,
+          },
+          {
+            keepBusy: true,
+            includesTexture,
+            totalStartedAt,
+            shapeMs,
+            priorMetadata: shapeMetadata,
+          },
+        );
+        if (!cleanup) return null;
+        nextMesh = cleanup.output;
+        cleanupMetadata = cleanup.metadata;
+      }
 
       if (!includesTexture) {
-        setProgress({ phase: 'shape', value: 1, label: 'Shape complete.' });
-        setMessage(`Shape completed: ${shapePath}`);
+        const finishedAt = nowMs();
+        setProgress({ phase: cleanupEnabled ? 'mesh' : 'shape', value: 1, label: cleanupEnabled ? 'Shape + cleanup complete.' : 'Shape complete.' });
+        setMessage(cleanupEnabled ? `Shape + cleanup completed: ${nextMesh}` : `Shape completed: ${nextMesh}`);
         setTimingSummary({
           shapeMs,
-          totalMs: shapeFinishedAt - totalStartedAt,
-          ...resultMetadata(result),
+          totalMs: finishedAt - totalStartedAt,
+          ...mergeMetadata(shapeMetadata, cleanupMetadata),
         });
-        return shapePath;
+        return nextMesh;
       }
 
       const textureRequest: TextureWorkflowRequest = {
         backend: request.backend,
         engine: request.textureEngine,
         profile: request.textureProfile,
-        mesh: shapePath,
+        mesh: nextMesh,
         image: request.image,
-        output: request.output,
+        output: paths.final,
         removeBackground: request.removeBackground,
       };
       return await runTextureInternal(textureRequest, {
@@ -356,6 +523,8 @@ export function useGenerationJob() {
         shapeMs,
         totalStartedAt,
         keepBusy: true,
+        preserveExistingShape: true,
+        priorMetadata: mergeMetadata(shapeMetadata, cleanupMetadata),
       });
     } catch (reason) {
       setTechnicalError(String(reason));
@@ -366,11 +535,51 @@ export function useGenerationJob() {
     } finally {
       setBusy(false);
     }
-  }, [clearError, runTextureInternal, setProgressFromEvent]);
+  }, [clearError, runCleanupInternal, runTextureInternal, setProgressFromEvent]);
 
   const runTextureWorkflow = useCallback(async (request: TextureWorkflowRequest): Promise<string | null> => {
     return runTextureInternal(request);
   }, [runTextureInternal]);
+
+  const runMeshWorkflow = useCallback(async (request: MeshWorkflowRequest): Promise<string | null> => {
+    const totalStartedAt = nowMs();
+    setBusy(true);
+    clearError();
+    setRetryContext(null);
+    setTimingSummary(null);
+    setCleanedShapePath(null);
+    setPreservedShapePath(request.input);
+    setResultPath(request.input);
+    setProgress({ phase: 'mesh', value: 0, label: 'Cleaning mesh…' });
+    setMessage('Cleaning mesh…');
+
+    try {
+      const cleanup = await runCleanupInternal(
+        {
+          input: request.input,
+          output: request.output,
+          preset: request.preset,
+          overrides: request.overrides,
+        },
+        {
+          keepBusy: true,
+          includesTexture: false,
+          totalStartedAt,
+        },
+      );
+      if (!cleanup) return null;
+      const finishedAt = nowMs();
+      setProgress({ phase: 'mesh', value: 1, label: 'Mesh cleanup complete.' });
+      setMessage(`Mesh cleanup completed: ${cleanup.output}`);
+      setTimingSummary({
+        totalMs: finishedAt - totalStartedAt,
+        ...cleanup.metadata,
+      });
+      return cleanup.output;
+    } finally {
+      setBusy(false);
+    }
+  }, [clearError, runCleanupInternal]);
 
   const retryTexture = useCallback(async (): Promise<string | null> => {
     if (!retryContext) return null;
@@ -390,11 +599,13 @@ export function useGenerationJob() {
     technicalError,
     resultPath,
     preservedShapePath,
+    cleanedShapePath,
     retryContext,
     timingSummary,
     workerNeedsRestart,
     runShapeWorkflow,
     runTextureWorkflow,
+    runMeshWorkflow,
     retryTexture,
     retryTextureSafe,
     clearError,
