@@ -136,6 +136,7 @@ describe('App persistent worker controls', () => {
         textureMs: 67000,
         cacheHit: true,
         cacheKind: 'texture',
+        meshCacheHit: true,
         modelLoadMs: 2.5,
         preprocessMs: 12100,
         inferenceMs: 30900,
@@ -150,6 +151,8 @@ describe('App persistent worker controls', () => {
 
     expect(screen.getByText('Cache')).toBeTruthy();
     expect(screen.getByText(/hit.*texture/i)).toBeTruthy();
+    expect(screen.getByText('Prep cache')).toBeTruthy();
+    expect(screen.getByText('hit', { selector: 'strong' })).toBeTruthy();
     expect(screen.getByText('Load')).toBeTruthy();
     expect(screen.getByText('Prep')).toBeTruthy();
     expect(screen.getByText('Inference')).toBeTruthy();
