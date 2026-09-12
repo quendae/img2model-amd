@@ -93,6 +93,7 @@ fn failure_result(kind: &str, message: String) -> GenerateResult {
         job_id: None,
         cache_hit: None,
         cache_kind: None,
+        mesh_cache_hit: None,
         model_load_ms: None,
         inference_ms: None,
         preprocess_ms: None,
