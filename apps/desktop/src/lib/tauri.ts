@@ -1,9 +1,16 @@
 import { Channel, convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { SystemDiagnostics, TextureHealth, WorkerHealth } from '../domain/types';
+import type {
+  BackendId,
+  SystemDiagnostics,
+  TextureEngineId,
+  TextureHealth,
+  TextureProfile,
+  WorkerHealth,
+} from '../domain/types';
 
 export interface GenerateShapeRequest {
-  backend: 'native-rocm' | 'wsl-rocm' | 'vulkan';
+  backend: BackendId;
   input: string;
   output: string;
   model?: string;
@@ -14,21 +21,29 @@ export interface GenerateShapeRequest {
 }
 
 export interface TextureMeshRequest {
-  backend: 'native-rocm' | 'wsl-rocm' | 'vulkan';
+  backend: BackendId;
+  engine: TextureEngineId;
+  profile: TextureProfile;
   mesh: string;
   image: string;
   output: string;
   model?: string;
   subfolder?: string;
-  cpuOffload: boolean;
   removeBackground: boolean;
 }
 
-export interface GenerateShapeResult {
+export interface GenerateResult {
   ok: boolean;
   event: string;
   output?: string | null;
   error?: string | null;
+  error_kind?: string | null;
+  stage?: string | null;
+  requested_profile?: string | null;
+  resolved_profile?: string | null;
+  faces_before?: number | null;
+  faces_after?: number | null;
+  max_faces?: number | null;
   model?: string | null;
   subfolder?: string | null;
 }
@@ -37,6 +52,9 @@ export interface WorkerProgressEvent {
   event: 'progress' | 'completed' | 'error' | string;
   stage?: string | null;
   progress?: number | null;
+  error_kind?: string | null;
+  requested_profile?: string | null;
+  resolved_profile?: string | null;
   faces_before?: number | null;
   faces_after?: number | null;
   max_faces?: number | null;
@@ -103,6 +121,16 @@ export async function chooseInputImage(): Promise<string | null> {
   return typeof selected === 'string' ? selected : null;
 }
 
+export async function chooseInputMesh(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: '3D mesh', extensions: ['glb', 'obj'] }],
+  });
+  return typeof selected === 'string' ? selected : null;
+}
+
 export async function chooseOutputModel(): Promise<string | null> {
   if (!isTauri()) return null;
   const selected = await save({
@@ -124,11 +152,11 @@ function progressChannel(onProgress?: ProgressHandler): Channel<WorkerProgressEv
 export async function generateShape(
   request: GenerateShapeRequest,
   onProgress?: ProgressHandler,
-): Promise<GenerateShapeResult> {
+): Promise<GenerateResult> {
   if (!isTauri()) {
     throw new Error('Generation requires the Tauri desktop runtime.');
   }
-  return invoke<GenerateShapeResult>('generate_shape', {
+  return invoke<GenerateResult>('generate_shape', {
     request,
     onEvent: progressChannel(onProgress),
   });
@@ -137,11 +165,11 @@ export async function generateShape(
 export async function textureMesh(
   request: TextureMeshRequest,
   onProgress?: ProgressHandler,
-): Promise<GenerateShapeResult> {
+): Promise<GenerateResult> {
   if (!isTauri()) {
     throw new Error('Texture generation requires the Tauri desktop runtime.');
   }
-  return invoke<GenerateShapeResult>('texture_mesh', {
+  return invoke<GenerateResult>('texture_mesh', {
     request,
     onEvent: progressChannel(onProgress),
   });
