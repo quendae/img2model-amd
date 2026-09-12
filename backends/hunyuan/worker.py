@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any
 
 
+TEXTURE_PROFILES = {
+    "safe": {"max_faces": 10_000, "cpu_offload": True, "attention_slicing": "max"},
+    "balanced": {"max_faces": 20_000, "cpu_offload": True, "attention_slicing": "max"},
+    "quality": {"max_faces": 40_000, "cpu_offload": True, "attention_slicing": "max"},
+}
+
+
 def emit(event: str, **values: Any) -> None:
     payload = {"event": event, **values}
     print(json.dumps(payload, ensure_ascii=False), flush=True)
@@ -168,13 +175,7 @@ def prepare_texture_mesh(
     degenerate_face_remover_cls: Any,
     face_reducer_cls: Any,
 ) -> Any:
-    """Match the official Hunyuan texture preprocessing flow.
-
-    Tencent's API worker removes floaters and degenerate faces and then reduces
-    the shape to 40k faces by default before Hunyuan Paint. Feeding the raw
-    multi-million-face shape directly into UV wrapping/rasterization can make the
-    texture stage impractically slow and memory hungry.
-    """
+    """Match the official Hunyuan texture preprocessing flow."""
 
     mesh = floater_remover_cls()(mesh)
     mesh = degenerate_face_remover_cls()(mesh)
@@ -188,13 +189,7 @@ def configure_texture_memory_profile(
     cpu_offload: bool,
     attention_slicing: str,
 ) -> None:
-    """Apply the validated low-VRAM profile for Hunyuan Paint.
-
-    The RX 6950 XT 16 GB hardware validation requires model CPU offload plus
-    maximum Diffusers attention slicing on the bundled multiview pipeline. Keep
-    these controls explicit so higher-memory GPUs can opt out without changing
-    the model or mesh preprocessing path.
-    """
+    """Apply low-VRAM controls to Hunyuan Paint."""
 
     if cpu_offload:
         if not hasattr(pipeline, "enable_model_cpu_offload"):
@@ -221,6 +216,23 @@ def configure_texture_memory_profile(
         return
 
     raise RuntimeError("Hunyuan Paint multiview pipeline does not expose attention slicing")
+
+
+def resolve_texture_profile(profile: str, total_vram_gib: float) -> dict[str, Any]:
+    if profile == "auto":
+        resolved_name = "safe" if total_vram_gib <= 16.5 else "balanced"
+    else:
+        resolved_name = profile
+    if resolved_name not in TEXTURE_PROFILES:
+        raise ValueError(f"Unsupported texture profile: {profile}")
+    return {"name": resolved_name, **TEXTURE_PROFILES[resolved_name]}
+
+
+def classify_texture_error(exc: BaseException) -> str:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if "outofmemory" in text or "out of memory" in text:
+        return "out_of_memory"
+    return "worker_error"
 
 
 def run_health(_args: argparse.Namespace) -> int:
@@ -352,7 +364,7 @@ def run_texture(args: argparse.Namespace) -> int:
     if output_path.suffix.lower() not in {".glb", ".obj"}:
         emit("error", ok=False, error="Texture output must use .glb or .obj extension")
         return 2
-    if args.max_faces <= 0:
+    if args.max_faces is not None and args.max_faces <= 0:
         emit("error", ok=False, error="--max-faces must be greater than zero")
         return 2
 
@@ -361,12 +373,21 @@ def run_texture(args: argparse.Namespace) -> int:
         emit(
             "error",
             ok=False,
+            stage="texture",
+            error_kind="runtime_unavailable",
             error=(
                 "Hunyuan texture runtime is unavailable: "
                 f"{capability['error']}. Run scripts/setup/windows-hunyuan-texture.ps1 first."
             ),
+            requested_profile=args.profile,
         )
         return 3
+
+    requested_profile = args.profile
+    resolved_profile: str | None = None
+    max_faces: int | None = None
+    faces_before: int | None = None
+    faces_after: int | None = None
 
     try:
         emit("progress", ok=True, stage="starting_backend", progress=0.05)
@@ -377,6 +398,17 @@ def run_texture(args: argparse.Namespace) -> int:
         from hy3dgen.shapegen import DegenerateFaceRemover, FaceReducer, FloaterRemover  # type: ignore
         from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore
         import hy3dgen.texgen.utils.multiview_utils as multiview_utils  # type: ignore
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("ROCm PyTorch does not expose an available GPU for texture generation")
+        total_vram_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        profile = resolve_texture_profile(requested_profile, total_vram_gib)
+        resolved_profile = str(profile["name"])
+        max_faces = int(args.max_faces if args.max_faces is not None else profile["max_faces"])
+        cpu_offload = bool(profile["cpu_offload"] if args.cpu_offload is None else args.cpu_offload)
+        attention_slicing = str(
+            profile["attention_slicing"] if args.attention_slicing is None else args.attention_slicing
+        )
 
         emit("progress", ok=True, stage="preparing_input", progress=0.10)
         mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
@@ -392,12 +424,14 @@ def run_texture(args: argparse.Namespace) -> int:
             ok=True,
             stage="preparing_mesh",
             progress=0.14,
+            requested_profile=requested_profile,
+            resolved_profile=resolved_profile,
             faces_before=faces_before,
-            max_faces=args.max_faces,
+            max_faces=max_faces,
         )
         mesh = prepare_texture_mesh(
             mesh,
-            max_faces=args.max_faces,
+            max_faces=max_faces,
             floater_remover_cls=FloaterRemover,
             degenerate_face_remover_cls=DegenerateFaceRemover,
             face_reducer_cls=FaceReducer,
@@ -408,12 +442,14 @@ def run_texture(args: argparse.Namespace) -> int:
             ok=True,
             stage="mesh_ready",
             progress=0.18,
+            requested_profile=requested_profile,
+            resolved_profile=resolved_profile,
             faces_before=faces_before,
             faces_after=faces_after,
+            max_faces=max_faces,
         )
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
         emit("progress", ok=True, stage="loading_model", progress=0.22)
         pipeline = load_hunyuan_paint_pipeline(
@@ -424,20 +460,22 @@ def run_texture(args: argparse.Namespace) -> int:
         )
         configure_texture_memory_profile(
             pipeline,
-            cpu_offload=bool(args.cpu_offload),
-            attention_slicing=args.attention_slicing,
+            cpu_offload=cpu_offload,
+            attention_slicing=attention_slicing,
         )
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
         emit(
             "progress",
             ok=True,
             stage="running_texture",
             progress=0.35,
-            cpu_offload=bool(args.cpu_offload),
-            attention_slicing=args.attention_slicing,
+            requested_profile=requested_profile,
+            resolved_profile=resolved_profile,
+            max_faces=max_faces,
+            cpu_offload=cpu_offload,
+            attention_slicing=attention_slicing,
         )
         textured_mesh = pipeline(mesh, image=image)
 
@@ -452,15 +490,28 @@ def run_texture(args: argparse.Namespace) -> int:
             output=str(output_path),
             model=args.model,
             subfolder=args.subfolder,
-            max_faces=args.max_faces,
+            requested_profile=requested_profile,
+            resolved_profile=resolved_profile,
+            max_faces=max_faces,
             faces_before=faces_before,
             faces_after=faces_after,
-            cpu_offload=bool(args.cpu_offload),
-            attention_slicing=args.attention_slicing,
+            cpu_offload=cpu_offload,
+            attention_slicing=attention_slicing,
         )
         return 0
     except Exception as exc:
-        emit("error", ok=False, error=f"{type(exc).__name__}: {exc}")
+        emit(
+            "error",
+            ok=False,
+            stage="texture",
+            error_kind=classify_texture_error(exc),
+            error=f"{type(exc).__name__}: {exc}",
+            requested_profile=requested_profile,
+            resolved_profile=resolved_profile,
+            max_faces=max_faces,
+            faces_before=faces_before,
+            faces_after=faces_after,
+        )
         return 1
 
 
@@ -500,18 +551,28 @@ def build_parser() -> argparse.ArgumentParser:
     texture.add_argument("--output", required=True)
     texture.add_argument("--model", default="tencent/Hunyuan3D-2")
     texture.add_argument("--subfolder", default="hunyuan3d-paint-v2-0-turbo")
-    texture.add_argument("--max-faces", type=int, default=40000)
+    texture.add_argument(
+        "--profile",
+        choices=["auto", "safe", "balanced", "quality"],
+        default="auto",
+    )
+    texture.add_argument(
+        "--max-faces",
+        type=int,
+        default=None,
+        help="Expert override for the profile working triangle budget",
+    )
     texture.add_argument(
         "--cpu-offload",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Offload Hunyuan Paint modules to CPU between use; enabled by default for 16 GB GPUs",
+        default=None,
+        help="Expert override for profile CPU model offload",
     )
     texture.add_argument(
         "--attention-slicing",
         choices=("max", "off"),
-        default="max",
-        help="Diffusers multiview attention slicing mode; max is the validated RX 6950 XT setting",
+        default=None,
+        help="Expert override for Diffusers multiview attention slicing",
     )
     texture.add_argument("--remove-background", action="store_true")
     texture.set_defaults(func=run_texture)
