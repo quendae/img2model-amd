@@ -169,10 +169,10 @@ export async function chooseInputMesh(): Promise<string | null> {
   return typeof selected === 'string' ? selected : null;
 }
 
-export async function chooseOutputModel(): Promise<string | null> {
+export async function chooseOutputModel(defaultPath = 'model.glb'): Promise<string | null> {
   if (!isTauri()) return null;
   const selected = await save({
-    defaultPath: 'model.glb',
+    defaultPath,
     filters: [
       { name: 'glTF Binary', extensions: ['glb'] },
       { name: 'Wavefront OBJ', extensions: ['obj'] },
