@@ -98,7 +98,7 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(args.variant, "fp16")
 
-    def test_texture_defaults_to_validated_rx6950xt_safe_profile(self) -> None:
+    def test_texture_defaults_to_auto_profile(self) -> None:
         module = self.load_worker_module()
         parser = module.build_parser()
         args = parser.parse_args(
@@ -114,11 +114,58 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(args.model, "tencent/Hunyuan3D-2")
         self.assertEqual(args.subfolder, "hunyuan3d-paint-v2-0-turbo")
-        self.assertEqual(args.max_faces, 40000)
-        self.assertTrue(args.cpu_offload)
-        self.assertEqual(args.attention_slicing, "max")
+        self.assertEqual(args.profile, "auto")
+        self.assertIsNone(args.max_faces)
+        self.assertIsNone(args.cpu_offload)
+        self.assertIsNone(args.attention_slicing)
 
-    def test_texture_allows_explicitly_disabling_low_vram_features(self) -> None:
+    def test_texture_parser_accepts_all_profiles(self) -> None:
+        module = self.load_worker_module()
+        parser = module.build_parser()
+        for profile in ("auto", "safe", "balanced", "quality"):
+            args = parser.parse_args(
+                [
+                    "texture",
+                    "--mesh",
+                    "input.glb",
+                    "--image",
+                    "input.png",
+                    "--output",
+                    "output.glb",
+                    "--profile",
+                    profile,
+                ]
+            )
+            self.assertEqual(args.profile, profile)
+
+    def test_auto_texture_profile_is_safe_at_16_gib(self) -> None:
+        module = self.load_worker_module()
+        resolved = module.resolve_texture_profile("auto", 15.98)
+        self.assertEqual(resolved["name"], "safe")
+        self.assertEqual(resolved["max_faces"], 10_000)
+        self.assertTrue(resolved["cpu_offload"])
+        self.assertEqual(resolved["attention_slicing"], "max")
+
+    def test_auto_texture_profile_is_balanced_above_16_gib(self) -> None:
+        module = self.load_worker_module()
+        resolved = module.resolve_texture_profile("auto", 24.0)
+        self.assertEqual(resolved["name"], "balanced")
+        self.assertEqual(resolved["max_faces"], 20_000)
+
+    def test_explicit_quality_profile_uses_40k(self) -> None:
+        module = self.load_worker_module()
+        resolved = module.resolve_texture_profile("quality", 16.0)
+        self.assertEqual(resolved["name"], "quality")
+        self.assertEqual(resolved["max_faces"], 40_000)
+
+    def test_classify_texture_error_detects_rocm_cuda_oom_wording(self) -> None:
+        module = self.load_worker_module()
+        kind = module.classify_texture_error(
+            RuntimeError("CUDA out of memory. Tried to allocate 2.81 GiB")
+        )
+        self.assertEqual(kind, "out_of_memory")
+
+    def test_texture_allows_expert_overrides(self) -> None:
         module = self.load_worker_module()
         parser = module.build_parser()
         args = parser.parse_args(
@@ -130,11 +177,14 @@ class WorkerProtocolTests(unittest.TestCase):
                 "input.png",
                 "--output",
                 "textured.glb",
+                "--max-faces",
+                "12000",
                 "--no-cpu-offload",
                 "--attention-slicing",
                 "off",
             ]
         )
+        self.assertEqual(args.max_faces, 12000)
         self.assertFalse(args.cpu_offload)
         self.assertEqual(args.attention_slicing, "off")
 
