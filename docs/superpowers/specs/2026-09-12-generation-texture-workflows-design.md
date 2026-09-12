@@ -61,6 +61,8 @@ The main action reads either:
 - `Generate model`
 - `Generate model + texture`
 
+For `Model + texture`, the user selects the final output path. The successful shape is preserved beside it with the `-shape` suffix before the texture job starts.
+
 ### 3.2 Texture mode
 
 Texture mode accepts:
@@ -94,16 +96,16 @@ No Advanced drawer is required for the first implementation.
 
 Initial policy:
 
-| Profile | Mesh working limit | CPU offload | Attention slicing | Allocator |
+| Profile | Texture working triangle limit | CPU offload | Attention slicing | Allocator |
 | --- | ---: | --- | --- | --- |
 | Auto | based on detected VRAM | automatic | automatic | expandable segments |
-| Safe | 10,000 faces | on | max | expandable segments |
-| Balanced | 20,000 faces | on | max | expandable segments |
-| Quality | 40,000 faces | on | max | expandable segments |
+| Safe | 10,000 | on | max | expandable segments |
+| Balanced | 20,000 | on | max | expandable segments |
+| Quality | 40,000 | on | max | expandable segments |
 
-For approximately 16 GB VRAM, `Auto` initially resolves to `Safe`.
+For the first implementation, `Auto` resolves GPUs with approximately 16 GiB VRAM or less to `Safe`. Larger cards default to `Balanced` until benchmark data justifies more aggressive automatic thresholds.
 
-These face counts are policy defaults, not permanent model limitations. They must remain easy to tune after benchmark data is collected.
+These triangle counts are policy defaults, not permanent model limitations. They must remain easy to tune after benchmark data is collected.
 
 ## 4. Job Architecture
 
@@ -193,7 +195,7 @@ The initial public request shape should resemble:
 
 The Rust/worker side resolves the profile into concrete parameters such as:
 
-- max faces,
+- maximum working triangles,
 - CPU offload,
 - attention slicing,
 - allocator policy,
@@ -220,7 +222,7 @@ The UI then presents a concise message instead of only a raw traceback:
 Actions:
 
 - **Retry texture only** — same settings and same preserved mesh,
-- **Retry with Safe** — immediately retry with the Safe texture profile,
+- **Retry with Safe** — immediately retry with the Safe texture profile when the failed profile was not already Safe,
 - **Open Texture mode** — switch modes and preload the image and preserved mesh.
 
 The full worker traceback remains available as technical details/log output.
@@ -257,15 +259,15 @@ Example completion summary:
 Shape: 01:32
 Texture: 04:48
 Total: 06:20
-Mesh: 40,000 -> 10,000 faces
+Mesh: 40,000 -> 10,000 triangles
 Profile: Safe
 ```
 
 ## 9. Mesh Budget and Future Game-Ready Controls
 
-Hunyuan Paint preprocessing already reduces the working mesh before texturing.
+Hunyuan Paint preprocessing already reduces the working mesh before texturing. The budget is measured as triangular faces after triangulation, so the UI and logs call them **triangles** consistently.
 
-The texture profiles use that same reduction path to control memory use.
+The texture profiles use that reduction path to control memory use.
 
 Separately, the already planned game-ready output controls remain a product feature:
 
@@ -279,8 +281,8 @@ Separately, the already planned game-ready output controls remain a product feat
 
 The implementation must keep these two concepts distinguishable:
 
-1. **texture working mesh budget** — controls inference cost and reliability,
-2. **final game-ready polycount** — controls exported asset complexity.
+1. **texture working triangle budget** — controls inference cost and reliability,
+2. **final game-ready triangle target** — controls exported asset complexity.
 
 They may initially share the same decimation machinery, but the UI meaning is different and must not be conflated silently.
 
@@ -293,7 +295,7 @@ Initial Safe behavior:
 - CPU model offload enabled,
 - maximum Diffusers attention slicing,
 - `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` supplied to the worker environment,
-- working mesh limited to approximately 10k faces,
+- texture working mesh limited to approximately 10k triangles,
 - shape and texture run as separate processes/jobs,
 - no silent fallback to another compute backend.
 
@@ -357,7 +359,7 @@ The first optimization pass should benchmark low-risk knobs before adding custom
 3. texture/intermediate resolution,
 4. attention slicing policy,
 5. CPU offload strategy,
-6. mesh working size,
+6. texture working triangle budget,
 7. PyTorch allocator configuration.
 
 Only then should SageAttention/Triton/quantized kernels be introduced experimentally.
@@ -455,7 +457,7 @@ Capture:
 
 - elapsed time,
 - stage timings,
-- faces before/after preprocessing,
+- triangles before/after preprocessing,
 - peak VRAM if available,
 - shared GPU memory observation,
 - pass/OOM result,
@@ -481,12 +483,12 @@ Implement now:
 - existing-model texture-only flow,
 - Hunyuan Paint texture engine adapter boundary,
 - Auto / Safe / Balanced / Quality texture profiles,
-- 16 GB Auto -> Safe policy,
+- <=16 GiB Auto -> Safe policy,
 - `expandable_segments` worker environment,
 - independent shape and texture jobs,
 - OOM classification and retry actions,
 - stage timings,
-- mesh before/after reporting,
+- mesh triangle before/after reporting,
 - existing streamed progress integration,
 - tests for the above behavior.
 
