@@ -8,9 +8,11 @@ import { modelFormatFromUrl } from './modelPreview';
 interface ModelViewerProps {
   modelUrl: string | null;
   busy: boolean;
+  progress?: number | null;
+  progressLabel?: string | null;
 }
 
-export function ModelViewer({ modelUrl, busy }: ModelViewerProps) {
+export function ModelViewer({ modelUrl, busy, progress, progressLabel }: ModelViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -137,9 +139,14 @@ export function ModelViewer({ modelUrl, busy }: ModelViewerProps) {
       {busy && (
         <div className="viewer-status">
           <span className="spinner" aria-hidden="true" />
-          <div>
-            <strong>Generating shape</strong>
-            <small>Hunyuan is running in the configured AMD Python environment.</small>
+          <div className="viewer-status-copy">
+            <strong>{progressLabel ?? 'Generating model…'}</strong>
+            <small>{typeof progress === 'number' ? `${progress}% complete` : 'Hunyuan is running on the configured Radeon runtime.'}</small>
+            {typeof progress === 'number' && (
+              <div className="viewer-progress-track" aria-hidden="true">
+                <span style={{ width: `${Math.min(100, Math.max(0, progress))}%` }} />
+              </div>
+            )}
           </div>
         </div>
       )}
