@@ -5,6 +5,8 @@ import { InputPanel } from './components/InputPanel';
 import { ModelViewer } from './components/ModelViewer';
 import type {
   BackendId,
+  CleanupAdvancedOverrides,
+  CleanupPreset,
   GenerationOptions,
   ShapeOutputMode,
   SystemDiagnostics,
@@ -33,6 +35,13 @@ const profileSteps: Record<GenerationOptions['profile'], number> = {
   quality: 50,
 };
 
+const cleanupPresetLabels: Record<CleanupPreset, string> = {
+  off: 'Off',
+  light: 'Light',
+  'game-ready': 'Game-ready',
+  aggressive: 'Aggressive',
+};
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -40,16 +49,33 @@ function formatDuration(ms: number): string {
   return minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${seconds}s`;
 }
 
+function cleanupLabel(preset: CleanupPreset, overrides: CleanupAdvancedOverrides): string {
+  const base = cleanupPresetLabels[preset];
+  return Object.keys(overrides).length > 0 ? `Custom (from ${base})` : base;
+}
+
+function cleanedOutputSuggestion(path: string): string {
+  const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const dot = path.lastIndexOf('.');
+  if (dot <= separator) return `${path}-clean.glb`;
+  return `${path.slice(0, dot)}-clean${path.slice(dot)}`;
+}
+
 export function App() {
   const [inputPath, setInputPath] = useState<string | null>(null);
   const [modelPath, setModelPath] = useState<string | null>(null);
   const [textureMeshPath, setTextureMeshPath] = useState<string | null>(null);
+  const [meshInputPath, setMeshInputPath] = useState<string | null>(null);
   const [backend, setBackend] = useState<BackendId>('native-rocm');
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>('shape');
   const [shapeOutputMode, setShapeOutputMode] = useState<ShapeOutputMode>('model-only');
   const [profile, setProfile] = useState<GenerationOptions['profile']>('balanced');
   const [textureProfile, setTextureProfile] = useState<TextureProfile>('auto');
   const [textureEngine] = useState<TextureEngineId>('hunyuan-paint');
+  const [shapeCleanupPreset, setShapeCleanupPreset] = useState<CleanupPreset>('light');
+  const [shapeCleanupOverrides, setShapeCleanupOverrides] = useState<CleanupAdvancedOverrides>({});
+  const [meshCleanupPreset, setMeshCleanupPreset] = useState<CleanupPreset>('game-ready');
+  const [meshCleanupOverrides, setMeshCleanupOverrides] = useState<CleanupAdvancedOverrides>({});
   const [seed, setSeed] = useState(1234);
   const [steps, setSteps] = useState(profileSteps.balanced);
   const [removeBackground, setRemoveBackground] = useState(true);
@@ -63,6 +89,14 @@ export function App() {
 
   const previewUrl = useMemo(() => (inputPath ? localAssetUrl(inputPath) : null), [inputPath]);
   const modelUrl = useMemo(() => (modelPath ? localAssetUrl(modelPath) : null), [modelPath]);
+  const activeCleanupPreset = workflowMode === 'mesh' ? meshCleanupPreset : shapeCleanupPreset;
+  const activeCleanupOverrides = workflowMode === 'mesh' ? meshCleanupOverrides : shapeCleanupOverrides;
+  const activeCleanupLabel = cleanupLabel(activeCleanupPreset, activeCleanupOverrides);
+  const canGenerate = workflowMode === 'shape'
+    ? Boolean(inputPath)
+    : workflowMode === 'texture'
+      ? Boolean(inputPath && textureMeshPath && textureHealth?.ok)
+      : Boolean(meshInputPath);
 
   useEffect(() => {
     if (job.resultPath) setModelPath(job.resultPath);
@@ -149,6 +183,7 @@ export function App() {
     setInputPath(path);
     setModelPath(null);
     setTextureMeshPath(null);
+    setMeshInputPath(null);
     setDiagnosticError(null);
     job.resetForNewInput('Source image loaded. Choose settings and start generation.');
   };
@@ -156,9 +191,14 @@ export function App() {
   const chooseMesh = async () => {
     const path = await chooseInputMesh();
     if (!path) return;
-    setTextureMeshPath(path);
     setModelPath(path);
-    job.setStatusMessage('Existing model selected. Choose a texture profile and generate texture.');
+    if (workflowMode === 'mesh') {
+      setMeshInputPath(path);
+      job.setStatusMessage('Existing model selected. Choose cleanup settings and process the mesh.');
+    } else {
+      setTextureMeshPath(path);
+      job.setStatusMessage('Existing model selected. Choose a texture profile and generate texture.');
+    }
   };
 
   const changeProfile = (nextProfile: GenerationOptions['profile']) => {
@@ -166,8 +206,40 @@ export function App() {
     setSteps(profileSteps[nextProfile]);
   };
 
+  const changeCleanupPreset = (preset: CleanupPreset) => {
+    if (workflowMode === 'mesh') {
+      setMeshCleanupPreset(preset);
+      setMeshCleanupOverrides({});
+    } else {
+      setShapeCleanupPreset(preset);
+      setShapeCleanupOverrides({});
+    }
+  };
+
+  const changeCleanupOverrides = (overrides: CleanupAdvancedOverrides) => {
+    if (workflowMode === 'mesh') {
+      setMeshCleanupOverrides(overrides);
+    } else {
+      setShapeCleanupOverrides(overrides);
+    }
+  };
+
   const runGeneration = async () => {
+    if (workflowMode === 'mesh') {
+      if (!meshInputPath) return;
+      const output = await chooseOutputModel(cleanedOutputSuggestion(meshInputPath));
+      if (!output) return;
+      await job.runMeshWorkflow({
+        input: meshInputPath,
+        output,
+        preset: meshCleanupPreset,
+        overrides: meshCleanupOverrides,
+      });
+      return;
+    }
+
     if (!inputPath || backend !== 'native-rocm') return;
+    if (workflowMode === 'texture' && (!textureMeshPath || !textureHealth?.ok)) return;
     const output = await chooseOutputModel();
     if (!output) return;
 
@@ -183,16 +255,17 @@ export function App() {
         removeBackground,
         textureEngine,
         textureProfile,
+        cleanupPreset: shapeCleanupPreset,
+        cleanupOverrides: shapeCleanupOverrides,
       });
       return;
     }
 
-    if (!textureMeshPath) return;
     await job.runTextureWorkflow({
       backend,
       engine: textureEngine,
       profile: textureProfile,
-      mesh: textureMeshPath,
+      mesh: textureMeshPath!,
       image: inputPath,
       output,
       removeBackground,
@@ -200,7 +273,7 @@ export function App() {
   };
 
   const openTextureForCurrentModel = () => {
-    const mesh = job.preservedShapePath ?? job.resultPath ?? modelPath;
+    const mesh = job.cleanedShapePath ?? job.resultPath ?? job.preservedShapePath ?? modelPath;
     if (!mesh) return;
     setTextureMeshPath(mesh);
     setWorkflowMode('texture');
@@ -229,9 +302,9 @@ export function App() {
   const hasSplitPreprocessTiming = timing?.imagePreprocessMs !== undefined || timing?.meshPreprocessMs !== undefined;
   const canTextureCurrentModel = Boolean(
     workflowMode === 'shape'
+      && shapeOutputMode === 'model-only'
       && inputPath
-      && job.preservedShapePath
-      && job.resultPath === job.preservedShapePath
+      && (job.cleanedShapePath ?? job.resultPath ?? job.preservedShapePath)
       && !job.busy,
   );
 
@@ -261,6 +334,7 @@ export function App() {
               setInputPath(null);
               setModelPath(null);
               setTextureMeshPath(null);
+              setMeshInputPath(null);
               job.resetForNewInput();
             }}
           />
@@ -272,12 +346,16 @@ export function App() {
             textureProfile={textureProfile}
             textureEngine={textureEngine}
             textureMeshPath={textureMeshPath}
+            meshInputPath={meshInputPath}
+            cleanupPreset={activeCleanupPreset}
+            cleanupConfigLabel={activeCleanupLabel}
+            cleanupOverrides={activeCleanupOverrides}
             seed={seed}
             steps={steps}
             removeBackground={removeBackground}
             textureAvailable={Boolean(textureHealth?.ok)}
             busy={job.busy}
-            canGenerate={Boolean(inputPath)}
+            canGenerate={canGenerate}
             progress={progressPercent}
             progressLabel={progressLabelText}
             onBackendChange={setBackend}
@@ -285,6 +363,8 @@ export function App() {
             onShapeOutputModeChange={setShapeOutputMode}
             onProfileChange={changeProfile}
             onTextureProfileChange={setTextureProfile}
+            onCleanupPresetChange={changeCleanupPreset}
+            onCleanupOverridesChange={changeCleanupOverrides}
             onSeedChange={setSeed}
             onStepsChange={setSteps}
             onRemoveBackgroundChange={setRemoveBackground}
@@ -375,12 +455,19 @@ export function App() {
               <span>Output</span><strong>GLB / OBJ</strong>
               <span>Texture</span><strong>{textureHealth?.ok ? 'Hunyuan Paint ready' : 'Optional · runtime not ready'}</strong>
               {timing?.shapeMs !== undefined && <><span>Shape</span><strong>{formatDuration(timing.shapeMs)}</strong></>}
+              {timing?.meshCleanupMs !== undefined && <><span>Mesh cleanup</span><strong>{formatDuration(timing.meshCleanupMs)}</strong></>}
               {timing?.textureMs !== undefined && <><span>Texture</span><strong>{formatDuration(timing.textureMs)}</strong></>}
               {timing && <><span>Total</span><strong>{formatDuration(timing.totalMs)}</strong></>}
               {timing?.cacheHit !== undefined && (
                 <>
                   <span>Cache</span>
                   <strong>{timing.cacheHit ? 'hit' : 'miss'}{timing.cacheKind ? ` · ${timing.cacheKind}` : ''}</strong>
+                </>
+              )}
+              {timing?.cleanupCacheHit !== undefined && (
+                <>
+                  <span>Cleanup cache</span>
+                  <strong>{timing.cleanupCacheHit ? 'hit' : 'miss'}</strong>
                 </>
               )}
               {timing?.imageCacheHit !== undefined && (
@@ -405,6 +492,12 @@ export function App() {
                 <>
                   <span>Mesh</span>
                   <strong>{timing.trianglesBefore.toLocaleString()} → {timing.trianglesAfter.toLocaleString()} triangles</strong>
+                </>
+              )}
+              {timing?.cleanupReport && (
+                <>
+                  <span>Cleanup</span>
+                  <strong>{timing.cleanupReport.config_label} · {timing.cleanupReport.components_removed ?? 0} components removed</strong>
                 </>
               )}
               {timing?.resolvedTextureProfile && (
