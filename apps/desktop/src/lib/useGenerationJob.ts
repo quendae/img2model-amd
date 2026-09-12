@@ -126,6 +126,21 @@ export function useGenerationJob() {
     setTechnicalError(null);
   }, []);
 
+  const setStatusMessage = useCallback((nextMessage: string) => {
+    setMessage(nextMessage);
+  }, []);
+
+  const resetForNewInput = useCallback((nextMessage = 'Choose a source image to begin.') => {
+    setProgress(null);
+    setMessage(nextMessage);
+    setError(null);
+    setTechnicalError(null);
+    setResultPath(null);
+    setPreservedShapePath(null);
+    setRetryContext(null);
+    setTimingSummary(null);
+  }, []);
+
   const setProgressFromEvent = useCallback((
     phase: GenerationPhase,
     event: WorkerProgressEvent,
@@ -349,5 +364,7 @@ export function useGenerationJob() {
     retryTexture,
     retryTextureSafe,
     clearError,
+    setStatusMessage,
+    resetForNewInput,
   };
 }
