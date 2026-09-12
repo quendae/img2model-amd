@@ -151,7 +151,7 @@ describe('App persistent worker controls', () => {
 
     expect(screen.getByText('Cache')).toBeTruthy();
     expect(screen.getByText(/hit.*texture/i)).toBeTruthy();
-    expect(screen.getByText('Prep cache')).toBeTruthy();
+    expect(screen.getByText('Mesh cache')).toBeTruthy();
     expect(screen.getByText('hit', { selector: 'strong' })).toBeTruthy();
     expect(screen.getByText('Load')).toBeTruthy();
     expect(screen.getByText('Prep')).toBeTruthy();
