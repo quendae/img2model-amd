@@ -27,7 +27,12 @@ if ([string]::IsNullOrWhiteSpace($RuntimeDir)) {
 $RuntimeDir = [System.IO.Path]::GetFullPath($RuntimeDir)
 $PythonExe = Join-Path $RuntimeDir "Scripts\python.exe"
 $WorkerSource = Join-Path $RepoRoot "backends\hunyuan\worker.py"
+$WorkerBaseSource = Join-Path $RepoRoot "backends\hunyuan\worker_base.py"
 $InstalledWorker = Join-Path $RuntimeDir "worker.py"
+$InstalledWorkerBase = Join-Path $RuntimeDir "worker_base.py"
+$MeshProcessingSource = Join-Path $RepoRoot "backends\mesh_processing"
+$InstalledBackendsRoot = Join-Path $RuntimeDir "backends"
+$InstalledMeshProcessing = Join-Path $InstalledBackendsRoot "mesh_processing"
 $BaseRequirements = Join-Path $RepoRoot "backends\hunyuan\requirements-base.txt"
 
 switch ($Channel) {
@@ -105,6 +110,13 @@ if ($VerifyOnly) {
 
 Write-Host "[6/7] Installing the Img2Model worker into the persistent runtime..."
 Copy-Item -Force $WorkerSource $InstalledWorker
+Copy-Item -Force $WorkerBaseSource $InstalledWorkerBase
+New-Item -ItemType Directory -Force -Path $InstalledBackendsRoot | Out-Null
+Set-Content -Path (Join-Path $InstalledBackendsRoot "__init__.py") -Value "" -Encoding utf8
+if (Test-Path $InstalledMeshProcessing) {
+    Remove-Item -Recurse -Force $InstalledMeshProcessing
+}
+Copy-Item -Recurse -Force $MeshProcessingSource $InstalledMeshProcessing
 
 Write-Host "[7/7] Verifying HIP, GPU and Hunyuan imports through the worker..."
 $HealthLines = @(& $PythonExe $InstalledWorker health --json)
