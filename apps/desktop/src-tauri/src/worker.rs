@@ -1,4 +1,4 @@
-use crate::diagnostics::configured_python;
+use crate::diagnostics::{configured_python, native_rocm_runtime_dir};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -71,13 +71,25 @@ pub fn resolve_worker_path(start: &Path) -> Option<PathBuf> {
     None
 }
 
+fn runtime_worker_path(runtime_dir: Option<&Path>) -> Option<PathBuf> {
+    let worker = runtime_dir?.join("worker.py");
+    worker.is_file().then_some(worker)
+}
+
 pub fn configured_worker_path() -> Result<PathBuf, String> {
     if let Ok(value) = std::env::var("IMG2MODEL_WORKER") {
-        let path = PathBuf::from(value);
-        if path.is_file() {
-            return Ok(path);
+        let value = value.trim();
+        if !value.is_empty() {
+            let path = PathBuf::from(value);
+            if path.is_file() {
+                return Ok(path);
+            }
+            return Err(format!("IMG2MODEL_WORKER does not point to a file: {}", path.display()));
         }
-        return Err(format!("IMG2MODEL_WORKER does not point to a file: {}", path.display()));
+    }
+
+    if let Some(path) = runtime_worker_path(native_rocm_runtime_dir().as_deref()) {
+        return Ok(path);
     }
 
     if let Ok(current_dir) = std::env::current_dir() {
@@ -94,7 +106,7 @@ pub fn configured_worker_path() -> Result<PathBuf, String> {
         }
     }
 
-    Err("Could not locate backends/hunyuan/worker.py. Set IMG2MODEL_WORKER explicitly.".to_string())
+    Err("Could not locate the installed runtime worker or backends/hunyuan/worker.py. Set IMG2MODEL_WORKER explicitly.".to_string())
 }
 
 pub fn parse_last_json_line<T: DeserializeOwned>(stdout: &str) -> Result<T, String> {
@@ -254,8 +266,8 @@ pub fn texture_mesh(request: TextureRequest) -> Result<GenerateResult, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        backend_is_implemented, parse_last_json_line, resolve_worker_path, texture_arguments,
-        TextureRequest,
+        backend_is_implemented, parse_last_json_line, resolve_worker_path, runtime_worker_path,
+        texture_arguments, TextureRequest,
     };
     use serde_json::Value;
     use std::fs;
@@ -272,6 +284,18 @@ mod tests {
 
         let resolved = resolve_worker_path(&nested);
         assert_eq!(resolved, Some(worker.clone()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn finds_worker_inside_persisted_runtime() {
+        let root = std::env::temp_dir().join(format!("img2model-persisted-worker-test-{}", std::process::id()));
+        let worker = root.join("worker.py");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&worker, "print('ok')").unwrap();
+
+        assert_eq!(runtime_worker_path(Some(&root)), Some(worker.clone()));
 
         let _ = fs::remove_dir_all(root);
     }
