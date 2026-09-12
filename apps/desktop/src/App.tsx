@@ -505,18 +505,22 @@ export function App() {
               )}
               {timing?.cleanupReport && (
                 <>
-                  <span>Cleanup</span>
+                  <span>Cleanup preset</span>
                   <strong>{timing.cleanupReport.config_label}</strong>
                   <span>Triangles</span>
                   <strong>{timing.cleanupReport.triangles_before.toLocaleString()} → {timing.cleanupReport.triangles_after.toLocaleString()}</strong>
                   <span>Vertices</span>
                   <strong>{timing.cleanupReport.vertices_before.toLocaleString()} → {timing.cleanupReport.vertices_after.toLocaleString()}</strong>
-                  <span>Islands</span>
+                  <span>Components</span>
                   <strong>{timing.cleanupReport.components_before.toLocaleString()} → {timing.cleanupReport.components_after.toLocaleString()}</strong>
-                  <span>Welded</span>
+                  <span>Components removed</span>
+                  <strong>{(timing.cleanupReport.components_removed ?? 0).toLocaleString()}</strong>
+                  <span>Vertices welded</span>
                   <strong>{(timing.cleanupReport.vertices_welded ?? 0).toLocaleString()}</strong>
-                  <span>Spikes</span>
+                  <span>Spikes adjusted</span>
                   <strong>{(timing.cleanupReport.spikes_adjusted ?? 0).toLocaleString()}</strong>
+                  <span>Algorithm</span>
+                  <strong>{timing.cleanupReport.algorithm_version}</strong>
                 </>
               )}
               {timing?.resolvedTextureProfile && (
