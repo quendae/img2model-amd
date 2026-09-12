@@ -32,6 +32,9 @@ pub struct WorkerProgressEvent {
     pub event: String,
     pub stage: Option<String>,
     pub progress: Option<f64>,
+    pub error_kind: Option<String>,
+    pub requested_profile: Option<String>,
+    pub resolved_profile: Option<String>,
     pub faces_before: Option<u64>,
     pub faces_after: Option<u64>,
     pub max_faces: Option<u64>,
@@ -56,12 +59,13 @@ pub struct GenerateRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TextureRequest {
     pub backend: String,
+    pub engine: String,
+    pub profile: String,
     pub mesh: String,
     pub image: String,
     pub output: String,
     pub model: Option<String>,
     pub subfolder: Option<String>,
-    pub cpu_offload: bool,
     pub remove_background: bool,
 }
 
@@ -71,6 +75,13 @@ pub struct GenerateResult {
     pub event: String,
     pub output: Option<String>,
     pub error: Option<String>,
+    pub error_kind: Option<String>,
+    pub stage: Option<String>,
+    pub requested_profile: Option<String>,
+    pub resolved_profile: Option<String>,
+    pub faces_before: Option<u64>,
+    pub faces_after: Option<u64>,
+    pub max_faces: Option<u64>,
     pub model: Option<String>,
     pub subfolder: Option<String>,
 }
@@ -155,10 +166,13 @@ where
 {
     let python = configured_python();
     let worker = configured_worker_path()?;
+    let allocator = std::env::var("PYTORCH_CUDA_ALLOC_CONF")
+        .unwrap_or_else(|_| "expandable_segments:True".to_string());
 
     let mut child = Command::new(&python)
         .arg(worker)
         .args(arguments)
+        .env("PYTORCH_CUDA_ALLOC_CONF", allocator)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -283,6 +297,12 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
             request.backend
         ));
     }
+    if request.engine != "hunyuan-paint" {
+        return Err(format!("Texture engine '{}' is not implemented.", request.engine));
+    }
+    if !matches!(request.profile.as_str(), "auto" | "safe" | "balanced" | "quality") {
+        return Err(format!("Texture profile '{}' is not implemented.", request.profile));
+    }
 
     let model = request
         .model
@@ -305,11 +325,10 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
         model,
         "--subfolder".to_string(),
         subfolder,
+        "--profile".to_string(),
+        request.profile.clone(),
     ];
 
-    if request.cpu_offload {
-        arguments.push("--cpu-offload".to_string());
-    }
     if request.remove_background {
         arguments.push("--remove-background".to_string());
     }
@@ -340,7 +359,7 @@ where
 mod tests {
     use super::{
         backend_is_implemented, parse_last_json_line, resolve_worker_path, runtime_worker_path,
-        texture_arguments, TextureRequest, WorkerProgressEvent,
+        texture_arguments, GenerateResult, TextureRequest, WorkerProgressEvent,
     };
     use serde_json::Value;
     use std::fs;
@@ -399,6 +418,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_texture_profile_progress_payload() {
+        let event: WorkerProgressEvent = serde_json::from_str(
+            r#"{"event":"progress","stage":"mesh_ready","progress":0.18,"requested_profile":"auto","resolved_profile":"safe","faces_before":40000,"faces_after":10000,"max_faces":10000}"#,
+        )
+        .unwrap();
+        assert_eq!(event.requested_profile.as_deref(), Some("auto"));
+        assert_eq!(event.resolved_profile.as_deref(), Some("safe"));
+        assert_eq!(event.faces_after, Some(10_000));
+        assert_eq!(event.max_faces, Some(10_000));
+    }
+
+    #[test]
+    fn parses_structured_texture_oom_result() {
+        let result: GenerateResult = serde_json::from_str(
+            r#"{"event":"error","ok":false,"stage":"texture","error_kind":"out_of_memory","error":"CUDA out of memory"}"#,
+        )
+        .unwrap();
+        assert_eq!(result.error_kind.as_deref(), Some("out_of_memory"));
+        assert_eq!(result.stage.as_deref(), Some("texture"));
+    }
+
+    #[test]
     fn malformed_final_worker_line_is_an_error() {
         let error = parse_last_json_line::<Value>("progress\nnot-json\n").unwrap_err();
         assert!(error.contains("valid JSON"));
@@ -415,12 +456,13 @@ mod tests {
     fn texture_arguments_keep_paths_as_separate_process_arguments() {
         let request = TextureRequest {
             backend: "native-rocm".to_string(),
+            engine: "hunyuan-paint".to_string(),
+            profile: "safe".to_string(),
             mesh: "C:\\input folder\\shape.glb".to_string(),
             image: "C:\\input folder\\source.png".to_string(),
             output: "C:\\output folder\\textured.glb".to_string(),
             model: None,
             subfolder: None,
-            cpu_offload: true,
             remove_background: true,
         };
 
@@ -429,7 +471,25 @@ mod tests {
         assert!(arguments.windows(2).any(|pair| pair == ["--mesh", "C:\\input folder\\shape.glb"]));
         assert!(arguments.windows(2).any(|pair| pair == ["--image", "C:\\input folder\\source.png"]));
         assert!(arguments.windows(2).any(|pair| pair == ["--output", "C:\\output folder\\textured.glb"]));
-        assert!(arguments.contains(&"--cpu-offload".to_string()));
+        assert!(arguments.windows(2).any(|pair| pair == ["--profile", "safe"]));
+        assert!(!arguments.iter().any(|arg| arg == "--cpu-offload"));
         assert!(arguments.contains(&"--remove-background".to_string()));
+    }
+
+    #[test]
+    fn texture_arguments_reject_unknown_engine() {
+        let request = TextureRequest {
+            backend: "native-rocm".to_string(),
+            engine: "future-engine".to_string(),
+            profile: "auto".to_string(),
+            mesh: "shape.glb".to_string(),
+            image: "source.png".to_string(),
+            output: "textured.glb".to_string(),
+            model: None,
+            subfolder: None,
+            remove_background: false,
+        };
+        let error = texture_arguments(&request).unwrap_err();
+        assert!(error.contains("not implemented"));
     }
 }
