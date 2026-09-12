@@ -226,6 +226,7 @@ export function App() {
   const displayError = job.error ?? diagnosticError;
   const timing = job.timingSummary;
   const inferenceMs = timing?.inferenceMs ?? timing?.textureStages?.running_texture;
+  const hasSplitPreprocessTiming = timing?.imagePreprocessMs !== undefined || timing?.meshPreprocessMs !== undefined;
   const canTextureCurrentModel = Boolean(
     workflowMode === 'shape'
       && inputPath
@@ -382,14 +383,22 @@ export function App() {
                   <strong>{timing.cacheHit ? 'hit' : 'miss'}{timing.cacheKind ? ` · ${timing.cacheKind}` : ''}</strong>
                 </>
               )}
+              {timing?.imageCacheHit !== undefined && (
+                <>
+                  <span>Image cache</span>
+                  <strong>{timing.imageCacheHit ? 'hit' : 'miss'}</strong>
+                </>
+              )}
               {timing?.meshCacheHit !== undefined && (
                 <>
-                  <span>Prep cache</span>
+                  <span>Mesh cache</span>
                   <strong>{timing.meshCacheHit ? 'hit' : 'miss'}</strong>
                 </>
               )}
               {timing?.modelLoadMs !== undefined && <><span>Load</span><strong>{formatDuration(timing.modelLoadMs)}</strong></>}
-              {timing?.preprocessMs !== undefined && <><span>Prep</span><strong>{formatDuration(timing.preprocessMs)}</strong></>}
+              {timing?.imagePreprocessMs !== undefined && <><span>Image prep</span><strong>{formatDuration(timing.imagePreprocessMs)}</strong></>}
+              {timing?.meshPreprocessMs !== undefined && <><span>Mesh prep</span><strong>{formatDuration(timing.meshPreprocessMs)}</strong></>}
+              {!hasSplitPreprocessTiming && timing?.preprocessMs !== undefined && <><span>Prep</span><strong>{formatDuration(timing.preprocessMs)}</strong></>}
               {inferenceMs !== undefined && <><span>Inference</span><strong>{formatDuration(inferenceMs)}</strong></>}
               {timing?.exportMs !== undefined && <><span>Export</span><strong>{formatDuration(timing.exportMs)}</strong></>}
               {timing?.trianglesBefore !== undefined && timing.trianglesAfter !== undefined && (
