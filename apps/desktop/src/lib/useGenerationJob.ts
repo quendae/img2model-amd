@@ -109,6 +109,7 @@ function resultMetadata(result: GenerateResult): Partial<GenerationTimingSummary
       resolved === 'safe' || resolved === 'balanced' || resolved === 'quality' ? resolved : undefined,
     cacheHit: result.cache_hit ?? undefined,
     cacheKind: result.cache_kind ?? undefined,
+    meshCacheHit: result.mesh_cache_hit ?? undefined,
     modelLoadMs: result.model_load_ms ?? undefined,
     inferenceMs: result.inference_ms ?? undefined,
     preprocessMs: result.preprocess_ms ?? undefined,
