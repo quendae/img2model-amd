@@ -99,9 +99,11 @@ button { color: inherit; }
 .primary-button:disabled { cursor: not-allowed; opacity: .38; }
 .secondary-button { padding: 9px 11px; border: 1px solid #353b44; background: #20242a; font-size: 11px; font-weight: 600; }
 .secondary-button:hover:not(:disabled) { background: #272c33; }
+.secondary-button:disabled { cursor: not-allowed; opacity: .42; }
 .secondary-button.full { width: 100%; margin-top: 12px; }
 .ghost-button { padding: 9px 11px; background: transparent; color: #87909b; font-size: 11px; }
-.ghost-button:hover { background: #20242a; }
+.ghost-button:hover:not(:disabled) { background: #20242a; }
+.ghost-button:disabled { cursor: not-allowed; opacity: .42; }
 .icon-button { width: 30px; height: 30px; display: grid; place-items: center; background: #20242a; border: 1px solid #303640; color: #a4acb6; }
 .icon-button:disabled { opacity: .4; }
 
@@ -125,28 +127,30 @@ button { color: inherit; }
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
-  padding: 4px;
+  padding: 3px;
   border: 1px solid #303640;
   border-radius: 8px;
   background: #101216;
+  margin-bottom: 12px;
 }
 .mode-tabs button, .segmented-control button {
   min-height: 32px;
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #858e99;
+  color: #818a95;
   cursor: pointer;
   font-size: 10px;
   font-weight: 650;
 }
-.mode-tabs button:hover:not(:disabled), .segmented-control button:hover:not(:disabled) { background: #20242a; color: #c8ced5; }
-.mode-tabs button.active, .segmented-control button.active { background: #282d34; color: #fff; box-shadow: inset 0 0 0 1px #3b424c; }
-.mode-tabs button:disabled, .segmented-control button:disabled { cursor: not-allowed; opacity: .4; }
-.segmented-control { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-.texture-profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.mode-tabs button.active, .segmented-control button.active {
+  background: #252a31;
+  color: #f0f2f5;
+  box-shadow: inset 0 0 0 1px #3a414b;
+}
+.segmented-control { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 7px; }
+.texture-profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 7px; }
 .texture-profile-grid button {
-  min-width: 0;
   min-height: 58px;
   display: grid;
   align-content: start;
@@ -221,6 +225,8 @@ button { color: inherit; }
 .error-box { margin: 8px 0; max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #241619; border: 1px solid #4b2a30; border-radius: 7px; color: #e8a6ad; font-size: 9px; line-height: 1.45; padding: 9px; }
 .technical-details { margin-top: 7px; color: #7d8691; font-size: 9px; }
 .technical-details summary { cursor: pointer; user-select: none; }
+.worker-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.worker-actions .secondary-button, .worker-actions .ghost-button { flex: 1 1 auto; min-width: 105px; }
 .recovery-actions { display: grid; gap: 6px; margin-top: 10px; }
 .recovery-actions .secondary-button, .recovery-actions .ghost-button { width: 100%; }
 .activity-meta { border-top: 1px solid #252a31; margin-top: 10px; padding-top: 10px; display: grid; grid-template-columns: 58px 1fr; gap: 7px 8px; font-size: 9px; }
