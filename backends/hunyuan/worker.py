@@ -8,12 +8,14 @@ run diagnostics before PyTorch or Hunyuan3D has been installed.
 from __future__ import annotations
 
 import argparse
+import gc
 import importlib.util
 import json
 import platform
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 TEXTURE_PROFILES = {
@@ -22,10 +24,25 @@ TEXTURE_PROFILES = {
     "quality": {"max_faces": 40_000, "cpu_offload": True, "attention_slicing": "max"},
 }
 
+PROTOCOL_VERSION = 1
+_CURRENT_JOB_ID: str | None = None
+_EVENT_SINK: Callable[[dict[str, Any]], None] | None = None
+
 
 def emit(event: str, **values: Any) -> None:
     payload = {"event": event, **values}
+    if _CURRENT_JOB_ID is not None:
+        payload["job_id"] = _CURRENT_JOB_ID
+    if _EVENT_SINK is not None:
+        _EVENT_SINK(payload)
+        return
     print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def _emit_payload(payload: dict[str, Any]) -> None:
+    values = dict(payload)
+    event = str(values.pop("event", "cache"))
+    emit(event, **values)
 
 
 def module_available(name: str) -> bool:
@@ -33,6 +50,104 @@ def module_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
         return False
+
+
+def release_torch_memory() -> None:
+    gc.collect()
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+class PipelineCache:
+    """Bounded cache for one heavyweight Hunyuan pipeline at a time."""
+
+    def __init__(self, event_sink: Callable[[dict[str, Any]], None] | None = None) -> None:
+        self.shape_pipeline: Any | None = None
+        self.shape_key: tuple[Any, ...] | None = None
+        self.texture_pipeline: Any | None = None
+        self.texture_key: tuple[Any, ...] | None = None
+        self.event_sink = event_sink
+
+    def _event(self, stage: str, cache_kind: str, cache_hit: bool | None = None) -> None:
+        if self.event_sink is None:
+            return
+        payload: dict[str, Any] = {
+            "event": "cache",
+            "stage": stage,
+            "cache_kind": cache_kind,
+        }
+        if cache_hit is not None:
+            payload["cache_hit"] = cache_hit
+        self.event_sink(payload)
+
+    def clear_shape(self, *, evicted: bool = False) -> None:
+        if self.shape_pipeline is None:
+            self.shape_key = None
+            return
+        pipeline = self.shape_pipeline
+        self.shape_pipeline = None
+        self.shape_key = None
+        del pipeline
+        release_torch_memory()
+        self._event("evicted_shape" if evicted else "cache_cleared", "shape")
+
+    def clear_texture(self, *, evicted: bool = False) -> None:
+        if self.texture_pipeline is None:
+            self.texture_key = None
+            return
+        pipeline = self.texture_pipeline
+        self.texture_pipeline = None
+        self.texture_key = None
+        del pipeline
+        release_torch_memory()
+        self._event("evicted_texture" if evicted else "cache_cleared", "texture")
+
+    def clear(self) -> None:
+        had_shape = self.shape_pipeline is not None
+        had_texture = self.texture_pipeline is not None
+        self.clear_shape()
+        self.clear_texture()
+        if not had_shape and not had_texture:
+            self._event("cache_cleared", "all")
+
+    def get_shape_pipeline(
+        self,
+        loader: Callable[[], Any],
+        key: tuple[Any, ...] = (),
+    ) -> tuple[Any, bool]:
+        if self.texture_pipeline is not None:
+            self.clear_texture(evicted=True)
+        if self.shape_pipeline is not None and self.shape_key == key:
+            self._event("cache_hit", "shape", True)
+            return self.shape_pipeline, True
+        if self.shape_pipeline is not None:
+            self.clear_shape(evicted=True)
+        self._event("cache_miss", "shape", False)
+        self.shape_pipeline = loader()
+        self.shape_key = key
+        return self.shape_pipeline, False
+
+    def get_texture_pipeline(
+        self,
+        loader: Callable[[], Any],
+        key: tuple[Any, ...] = (),
+    ) -> tuple[Any, bool]:
+        if self.shape_pipeline is not None:
+            self.clear_shape(evicted=True)
+        if self.texture_pipeline is not None and self.texture_key == key:
+            self._event("cache_hit", "texture", True)
+            return self.texture_pipeline, True
+        if self.texture_pipeline is not None:
+            self.clear_texture(evicted=True)
+        self._event("cache_miss", "texture", False)
+        self.texture_pipeline = loader()
+        self.texture_key = key
+        return self.texture_pipeline, False
 
 
 def health_payload() -> dict[str, Any]:
@@ -219,10 +334,8 @@ def configure_texture_memory_profile(
 
 
 def resolve_texture_profile(profile: str, total_vram_gib: float) -> dict[str, Any]:
-    if profile == "auto":
-        resolved_name = "safe" if total_vram_gib <= 16.5 else "balanced"
-    else:
-        resolved_name = profile
+    _ = total_vram_gib
+    resolved_name = "balanced" if profile == "auto" else profile
     if resolved_name not in TEXTURE_PROFILES:
         raise ValueError(f"Unsupported texture profile: {profile}")
     return {"name": resolved_name, **TEXTURE_PROFILES[resolved_name]}
@@ -233,6 +346,10 @@ def classify_texture_error(exc: BaseException) -> str:
     if "outofmemory" in text or "out of memory" in text:
         return "out_of_memory"
     return "worker_error"
+
+
+def classify_generation_error(exc: BaseException) -> str:
+    return classify_texture_error(exc)
 
 
 def run_health(_args: argparse.Namespace) -> int:
@@ -282,23 +399,60 @@ def run_probe(_args: argparse.Namespace) -> int:
         return 1
 
 
-def run_generate(args: argparse.Namespace) -> int:
+def build_shape_pipeline(args: argparse.Namespace) -> Any:
+    from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline  # type: ignore
+
+    return Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        args.model,
+        subfolder=args.subfolder,
+        variant=args.variant,
+    )
+
+
+def build_texture_pipeline(
+    args: argparse.Namespace,
+    *,
+    cpu_offload: bool,
+    attention_slicing: str,
+) -> Any:
+    from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore
+    import hy3dgen.texgen.utils.multiview_utils as multiview_utils  # type: ignore
+
+    pipeline = load_hunyuan_paint_pipeline(
+        Hunyuan3DPaintPipeline,
+        multiview_utils,
+        args.model,
+        args.subfolder,
+    )
+    configure_texture_memory_profile(
+        pipeline,
+        cpu_offload=cpu_offload,
+        attention_slicing=attention_slicing,
+    )
+    return pipeline
+
+
+def run_generate(args: argparse.Namespace, cache: PipelineCache | None = None) -> int:
     input_path = Path(args.input).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
 
     if not input_path.is_file():
-        emit("error", ok=False, error=f"Input image does not exist: {input_path}")
+        emit("error", ok=False, stage="shape", error=f"Input image does not exist: {input_path}")
         return 2
     if output_path.suffix.lower() not in {".glb", ".obj"}:
-        emit("error", ok=False, error="Output must use .glb or .obj extension")
+        emit("error", ok=False, stage="shape", error="Output must use .glb or .obj extension")
         return 2
+
+    cache_hit = False
+    model_load_ms = 0.0
+    inference_ms = 0.0
+    export_ms = 0.0
 
     try:
         emit("progress", ok=True, stage="starting_backend", progress=0.05)
 
         import torch  # type: ignore
         from PIL import Image  # type: ignore
-        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline  # type: ignore
 
         image = Image.open(input_path).convert("RGBA")
         if args.remove_background:
@@ -308,11 +462,15 @@ def run_generate(args: argparse.Namespace) -> int:
             image = BackgroundRemover()(image)
 
         emit("progress", ok=True, stage="loading_model", progress=0.2)
-        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            args.model,
-            subfolder=args.subfolder,
-            variant=args.variant,
-        )
+        load_started = time.perf_counter()
+        if cache is None:
+            pipeline = build_shape_pipeline(args)
+        else:
+            pipeline, cache_hit = cache.get_shape_pipeline(
+                lambda: build_shape_pipeline(args),
+                (args.model, args.subfolder, args.variant),
+            )
+        model_load_ms = (time.perf_counter() - load_started) * 1000.0
 
         generator = None
         if hasattr(torch, "Generator") and torch.cuda.is_available():
@@ -328,12 +486,16 @@ def run_generate(args: argparse.Namespace) -> int:
         if generator is not None:
             generate_kwargs["generator"] = generator
 
-        emit("progress", ok=True, stage="running_shape", progress=0.3)
+        emit("progress", ok=True, stage="running_shape", progress=0.3, cache_hit=cache_hit, cache_kind="shape")
+        inference_started = time.perf_counter()
         mesh = pipeline(**generate_kwargs)[0]
+        inference_ms = (time.perf_counter() - inference_started) * 1000.0
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         emit("progress", ok=True, stage="postprocessing", progress=0.92)
+        export_started = time.perf_counter()
         mesh.export(str(output_path))
+        export_ms = (time.perf_counter() - export_started) * 1000.0
         emit(
             "completed",
             ok=True,
@@ -343,29 +505,48 @@ def run_generate(args: argparse.Namespace) -> int:
             model=args.model,
             subfolder=args.subfolder,
             variant=args.variant,
+            cache_hit=cache_hit,
+            cache_kind="shape",
+            model_load_ms=round(model_load_ms, 3),
+            inference_ms=round(inference_ms, 3),
+            export_ms=round(export_ms, 3),
         )
         return 0
     except Exception as exc:
-        emit("error", ok=False, error=f"{type(exc).__name__}: {exc}")
+        error_kind = classify_generation_error(exc)
+        if error_kind == "out_of_memory" and cache is not None:
+            cache.clear_shape()
+        emit(
+            "error",
+            ok=False,
+            stage="shape",
+            error_kind=error_kind,
+            error=f"{type(exc).__name__}: {exc}",
+            cache_hit=cache_hit,
+            cache_kind="shape",
+            model_load_ms=round(model_load_ms, 3),
+            inference_ms=round(inference_ms, 3),
+            export_ms=round(export_ms, 3),
+        )
         return 1
 
 
-def run_texture(args: argparse.Namespace) -> int:
+def run_texture(args: argparse.Namespace, cache: PipelineCache | None = None) -> int:
     mesh_path = Path(args.mesh).expanduser().resolve()
     image_path = Path(args.image).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
 
     if not mesh_path.is_file():
-        emit("error", ok=False, error=f"Input mesh does not exist: {mesh_path}")
+        emit("error", ok=False, stage="texture", error=f"Input mesh does not exist: {mesh_path}")
         return 2
     if not image_path.is_file():
-        emit("error", ok=False, error=f"Input image does not exist: {image_path}")
+        emit("error", ok=False, stage="texture", error=f"Input image does not exist: {image_path}")
         return 2
     if output_path.suffix.lower() not in {".glb", ".obj"}:
-        emit("error", ok=False, error="Texture output must use .glb or .obj extension")
+        emit("error", ok=False, stage="texture", error="Texture output must use .glb or .obj extension")
         return 2
     if args.max_faces is not None and args.max_faces <= 0:
-        emit("error", ok=False, error="--max-faces must be greater than zero")
+        emit("error", ok=False, stage="texture", error="--max-faces must be greater than zero")
         return 2
 
     capability = texture_health_payload()
@@ -388,6 +569,11 @@ def run_texture(args: argparse.Namespace) -> int:
     max_faces: int | None = None
     faces_before: int | None = None
     faces_after: int | None = None
+    cache_hit = False
+    model_load_ms = 0.0
+    preprocess_ms = 0.0
+    inference_ms = 0.0
+    export_ms = 0.0
 
     try:
         emit("progress", ok=True, stage="starting_backend", progress=0.05)
@@ -396,8 +582,6 @@ def run_texture(args: argparse.Namespace) -> int:
         import trimesh  # type: ignore
         from PIL import Image  # type: ignore
         from hy3dgen.shapegen import DegenerateFaceRemover, FaceReducer, FloaterRemover  # type: ignore
-        from hy3dgen.texgen import Hunyuan3DPaintPipeline  # type: ignore
-        import hy3dgen.texgen.utils.multiview_utils as multiview_utils  # type: ignore
 
         if not torch.cuda.is_available():
             raise RuntimeError("ROCm PyTorch does not expose an available GPU for texture generation")
@@ -410,6 +594,7 @@ def run_texture(args: argparse.Namespace) -> int:
             profile["attention_slicing"] if args.attention_slicing is None else args.attention_slicing
         )
 
+        preprocess_started = time.perf_counter()
         emit("progress", ok=True, stage="preparing_input", progress=0.10)
         mesh = trimesh.load(str(mesh_path), force="mesh", process=False)
         image = Image.open(image_path).convert("RGBA")
@@ -437,6 +622,7 @@ def run_texture(args: argparse.Namespace) -> int:
             face_reducer_cls=FaceReducer,
         )
         faces_after = int(len(mesh.faces))
+        preprocess_ms = (time.perf_counter() - preprocess_started) * 1000.0
         emit(
             "progress",
             ok=True,
@@ -452,17 +638,24 @@ def run_texture(args: argparse.Namespace) -> int:
         torch.cuda.empty_cache()
 
         emit("progress", ok=True, stage="loading_model", progress=0.22)
-        pipeline = load_hunyuan_paint_pipeline(
-            Hunyuan3DPaintPipeline,
-            multiview_utils,
-            args.model,
-            args.subfolder,
-        )
-        configure_texture_memory_profile(
-            pipeline,
-            cpu_offload=cpu_offload,
-            attention_slicing=attention_slicing,
-        )
+        load_started = time.perf_counter()
+        texture_key = (args.model, args.subfolder, cpu_offload, attention_slicing)
+        if cache is None:
+            pipeline = build_texture_pipeline(
+                args,
+                cpu_offload=cpu_offload,
+                attention_slicing=attention_slicing,
+            )
+        else:
+            pipeline, cache_hit = cache.get_texture_pipeline(
+                lambda: build_texture_pipeline(
+                    args,
+                    cpu_offload=cpu_offload,
+                    attention_slicing=attention_slicing,
+                ),
+                texture_key,
+            )
+        model_load_ms = (time.perf_counter() - load_started) * 1000.0
 
         torch.cuda.empty_cache()
 
@@ -476,12 +669,18 @@ def run_texture(args: argparse.Namespace) -> int:
             max_faces=max_faces,
             cpu_offload=cpu_offload,
             attention_slicing=attention_slicing,
+            cache_hit=cache_hit,
+            cache_kind="texture",
         )
+        inference_started = time.perf_counter()
         textured_mesh = pipeline(mesh, image=image)
+        inference_ms = (time.perf_counter() - inference_started) * 1000.0
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         emit("progress", ok=True, stage="postprocessing", progress=0.92)
+        export_started = time.perf_counter()
         textured_mesh.export(str(output_path))
+        export_ms = (time.perf_counter() - export_started) * 1000.0
         emit(
             "completed",
             ok=True,
@@ -497,22 +696,159 @@ def run_texture(args: argparse.Namespace) -> int:
             faces_after=faces_after,
             cpu_offload=cpu_offload,
             attention_slicing=attention_slicing,
+            cache_hit=cache_hit,
+            cache_kind="texture",
+            model_load_ms=round(model_load_ms, 3),
+            preprocess_ms=round(preprocess_ms, 3),
+            inference_ms=round(inference_ms, 3),
+            export_ms=round(export_ms, 3),
         )
         return 0
     except Exception as exc:
+        error_kind = classify_texture_error(exc)
+        if error_kind == "out_of_memory" and cache is not None:
+            cache.clear_texture()
         emit(
             "error",
             ok=False,
             stage="texture",
-            error_kind=classify_texture_error(exc),
+            error_kind=error_kind,
             error=f"{type(exc).__name__}: {exc}",
             requested_profile=requested_profile,
             resolved_profile=resolved_profile,
             max_faces=max_faces,
             faces_before=faces_before,
             faces_after=faces_after,
+            cache_hit=cache_hit,
+            cache_kind="texture",
+            model_load_ms=round(model_load_ms, 3),
+            preprocess_ms=round(preprocess_ms, 3),
+            inference_ms=round(inference_ms, 3),
+            export_ms=round(export_ms, 3),
         )
         return 1
+
+
+def _shape_namespace(request: dict[str, Any]) -> argparse.Namespace:
+    return argparse.Namespace(
+        input=request["input"],
+        output=request["output"],
+        model=request.get("model") or "tencent/Hunyuan3D-2mini",
+        subfolder=request.get("subfolder") or "hunyuan3d-dit-v2-mini",
+        variant=request.get("variant") or "fp16",
+        steps=int(request.get("steps", 30)),
+        seed=int(request.get("seed", 1234)),
+        remove_background=bool(request.get("removeBackground", request.get("remove_background", False))),
+    )
+
+
+def _texture_namespace(request: dict[str, Any]) -> argparse.Namespace:
+    engine = request.get("engine", "hunyuan-paint")
+    if engine != "hunyuan-paint":
+        raise ValueError(f"Texture engine '{engine}' is not implemented")
+    profile = str(request.get("profile", "auto"))
+    if profile not in {"auto", "safe", "balanced", "quality"}:
+        raise ValueError(f"Texture profile '{profile}' is not implemented")
+    return argparse.Namespace(
+        mesh=request["mesh"],
+        image=request["image"],
+        output=request["output"],
+        model=request.get("model") or "tencent/Hunyuan3D-2",
+        subfolder=request.get("subfolder") or "hunyuan3d-paint-v2-0-turbo",
+        profile=profile,
+        max_faces=request.get("maxFaces", request.get("max_faces")),
+        cpu_offload=request.get("cpuOffload", request.get("cpu_offload")),
+        attention_slicing=request.get("attentionSlicing", request.get("attention_slicing")),
+        remove_background=bool(request.get("removeBackground", request.get("remove_background", False))),
+    )
+
+
+def dispatch_serve_command(
+    message: dict[str, Any],
+    *,
+    cache: PipelineCache,
+    emit_fn: Callable[[dict[str, Any]], None] | None = None,
+) -> bool:
+    global _CURRENT_JOB_ID, _EVENT_SINK
+
+    command = message.get("command")
+    job_id = message.get("job_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        sink = emit_fn or (lambda payload: print(json.dumps(payload, ensure_ascii=False), flush=True))
+        sink({"event": "error", "ok": False, "error_kind": "protocol_error", "error": "Missing non-empty job_id"})
+        return True
+
+    previous_job_id = _CURRENT_JOB_ID
+    previous_sink = _EVENT_SINK
+    _CURRENT_JOB_ID = job_id
+    _EVENT_SINK = emit_fn
+    try:
+        if command == "ping":
+            emit("pong", ok=True, protocol_version=PROTOCOL_VERSION)
+            return True
+        if command == "clear_cache":
+            cache.clear()
+            emit("completed", ok=True, stage="cache_cleared", progress=1.0)
+            return True
+        if command == "shutdown":
+            cache.clear()
+            emit("completed", ok=True, stage="shutdown", progress=1.0)
+            return False
+        if command == "shape":
+            request = message.get("request")
+            if not isinstance(request, dict):
+                raise ValueError("shape command requires a request object")
+            run_generate(_shape_namespace(request), cache=cache)
+            return True
+        if command == "texture":
+            request = message.get("request")
+            if not isinstance(request, dict):
+                raise ValueError("texture command requires a request object")
+            run_texture(_texture_namespace(request), cache=cache)
+            return True
+        raise ValueError(f"Unsupported serve command: {command}")
+    except Exception as exc:
+        emit(
+            "error",
+            ok=False,
+            stage="worker",
+            error_kind="protocol_error",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return True
+    finally:
+        _CURRENT_JOB_ID = previous_job_id
+        _EVENT_SINK = previous_sink
+
+
+def run_serve(_args: argparse.Namespace) -> int:
+    cache = PipelineCache(event_sink=_emit_payload)
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+            if not isinstance(message, dict):
+                raise ValueError("Serve command must be a JSON object")
+        except Exception as exc:
+            print(
+                json.dumps(
+                    {
+                        "event": "error",
+                        "ok": False,
+                        "error_kind": "protocol_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            continue
+        if not dispatch_serve_command(message, cache=cache):
+            return 0
+    cache.clear()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -576,6 +912,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     texture.add_argument("--remove-background", action="store_true")
     texture.set_defaults(func=run_texture)
+
+    serve = subparsers.add_parser("serve", help="Run the persistent JSONL desktop worker")
+    serve.set_defaults(func=run_serve)
 
     return parser
 
