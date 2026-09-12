@@ -54,7 +54,7 @@ describe('GenerationPanel', () => {
   it('shows Light mesh cleanup selected in Shape mode', () => {
     render(<GenerationPanel {...(commonProps as any)} />);
     expect(screen.getByText('Mesh cleanup')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Light' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Light' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('shows all four texture profiles when Model + texture is selected', () => {
@@ -84,7 +84,7 @@ describe('GenerationPanel', () => {
     );
     expect(screen.getByText('C:/import.glb')).toBeTruthy();
     expect(screen.getByText('Mesh cleanup')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Game-ready' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Game-ready' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.queryByText('Shape quality')).toBeNull();
     expect(screen.queryByText('Remove background')).toBeNull();
     expect(screen.getByRole('button', { name: 'Process mesh' })).toBeTruthy();
