@@ -1,0 +1,139 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ModelViewer } from './ModelViewer';
+
+const mocks = vi.hoisted(() => ({
+  loadedUrls: [] as string[],
+}));
+
+vi.mock('three', () => {
+  class Scene {
+    background: unknown;
+    add() {}
+  }
+
+  class Color {
+    constructor(_value: number) {}
+  }
+
+  class PerspectiveCamera {
+    position = { set: vi.fn() };
+    aspect = 1;
+    updateProjectionMatrix = vi.fn();
+    constructor(_fov: number, _aspect: number, _near: number, _far: number) {}
+  }
+
+  class WebGLRenderer {
+    domElement = document.createElement('canvas');
+    outputColorSpace: unknown;
+    toneMapping: unknown;
+    toneMappingExposure = 1;
+    setPixelRatio = vi.fn();
+    setSize = vi.fn();
+    render = vi.fn();
+    dispose = vi.fn();
+    constructor(_options: unknown) {}
+  }
+
+  class HemisphereLight {
+    constructor(_sky: number, _ground: number, _intensity: number) {}
+  }
+
+  class DirectionalLight {
+    position = { set: vi.fn() };
+    constructor(_color: number, _intensity: number) {}
+  }
+
+  class GridHelper {
+    position = { y: 0 };
+    constructor(_size: number, _divisions: number, _color1: number, _color2: number) {}
+  }
+
+  class Mesh {}
+
+  return {
+    Scene,
+    Color,
+    PerspectiveCamera,
+    WebGLRenderer,
+    HemisphereLight,
+    DirectionalLight,
+    GridHelper,
+    Mesh,
+    SRGBColorSpace: 'srgb',
+    ACESFilmicToneMapping: 'aces',
+  };
+});
+
+vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
+  OrbitControls: class {
+    enableDamping = false;
+    target = { set: vi.fn() };
+    update = vi.fn();
+    dispose = vi.fn();
+    constructor(_camera: unknown, _element: unknown) {}
+  },
+}));
+
+vi.mock('three/examples/jsm/loaders/GLTFLoader.js', () => ({
+  GLTFLoader: class {
+    load(url: string) {
+      mocks.loadedUrls.push(url);
+    }
+  },
+}));
+
+vi.mock('three/examples/jsm/loaders/OBJLoader.js', () => ({
+  OBJLoader: class {
+    load(url: string) {
+      mocks.loadedUrls.push(url);
+    }
+  },
+}));
+
+beforeEach(() => {
+  mocks.loadedUrls.length = 0;
+  Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    disconnect() {}
+  });
+  vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('ModelViewer mesh comparison', () => {
+  it('defaults to After and switches the loaded mesh between Before and After', async () => {
+    render(
+      <ModelViewer
+        modelUrl="after.glb"
+        comparison={{
+          beforeUrl: 'before.glb',
+          afterUrl: 'after.glb',
+          beforeTriangles: 312000,
+          afterTriangles: 305000,
+        }}
+        busy={false}
+      />,
+    );
+
+    const before = screen.getByRole('button', { name: /Before.*312,000/i });
+    const after = screen.getByRole('button', { name: /After.*305,000/i });
+
+    expect(before).toBeTruthy();
+    expect(after).toBeTruthy();
+    expect(mocks.loadedUrls.at(-1)).toBe('after.glb');
+
+    fireEvent.click(before);
+    await waitFor(() => expect(mocks.loadedUrls.at(-1)).toBe('before.glb'));
+
+    fireEvent.click(after);
+    await waitFor(() => expect(mocks.loadedUrls.at(-1)).toBe('after.glb'));
+  });
+});
