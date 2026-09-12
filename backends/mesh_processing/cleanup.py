@@ -30,16 +30,36 @@ def _weld_near_vertices(mesh: trimesh.Trimesh, relative_epsilon: float) -> int:
 
 
 def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
-    if len(mesh.faces) == 0:
+    """Return connected face groups without optional graph dependencies."""
+
+    face_count = len(mesh.faces)
+    if face_count == 0:
         return []
-    return [
-        np.asarray(component, dtype=int)
-        for component in trimesh.graph.connected_components(
-            mesh.face_adjacency,
-            nodes=np.arange(len(mesh.faces)),
-            min_len=1,
-        )
-    ]
+
+    neighbors: list[list[int]] = [[] for _ in range(face_count)]
+    adjacency = np.asarray(mesh.face_adjacency, dtype=int)
+    for first, second in adjacency:
+        neighbors[int(first)].append(int(second))
+        neighbors[int(second)].append(int(first))
+
+    seen = np.zeros(face_count, dtype=bool)
+    components: list[np.ndarray] = []
+    for start in range(face_count):
+        if seen[start]:
+            continue
+        stack = [start]
+        seen[start] = True
+        component: list[int] = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            for neighbor in neighbors[current]:
+                if seen[neighbor]:
+                    continue
+                seen[neighbor] = True
+                stack.append(neighbor)
+        components.append(np.asarray(component, dtype=int))
+    return components
 
 
 def _remove_small_components(mesh: trimesh.Trimesh, min_area_ratio: float) -> int:
