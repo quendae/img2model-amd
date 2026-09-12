@@ -55,6 +55,12 @@ export interface GenerationTimingSummary {
   trianglesBefore?: number;
   trianglesAfter?: number;
   resolvedTextureProfile?: Exclude<TextureProfile, 'auto'>;
+  cacheHit?: boolean;
+  cacheKind?: string;
+  modelLoadMs?: number;
+  inferenceMs?: number;
+  preprocessMs?: number;
+  exportMs?: number;
 }
 
 export interface TextureRetryContext {
