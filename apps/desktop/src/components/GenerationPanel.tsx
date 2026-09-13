@@ -166,10 +166,10 @@ export function GenerationPanel({
 
   return (
     <section className="panel generation-panel" aria-labelledby="generation-heading">
-      <div className="panel-heading">
+      <div className="panel-heading generation-heading">
         <div>
           <h2 id="generation-heading">Generation</h2>
-          <p>Hunyuan3D 2 Mini · separate shape, mesh and texture jobs</p>
+          <p>Hunyuan3D 2 Mini · shape, mesh and texture jobs</p>
         </div>
       </div>
 
@@ -191,7 +191,7 @@ export function GenerationPanel({
 
       {workflowMode !== 'mesh' && (
         <>
-          <label className="field">
+          <label className="field compact-field">
             <span>Backend</span>
             <select value={backend} onChange={(event) => onBackendChange(event.target.value as BackendId)}>
               {Object.entries(backendLabels).map(([value, label]) => (
@@ -200,17 +200,17 @@ export function GenerationPanel({
             </select>
           </label>
 
-          <div className={`backend-note ${backendReady ? 'ready' : 'warning'}`}>
-            {backendReady
-              ? 'Native ROCm worker is executable. No silent backend fallback will be applied.'
-              : `${backendLabels[backend]} is not executable in this workflow yet. No silent fallback will be applied.`}
-          </div>
+          {!backendReady && (
+            <div className="backend-note warning">
+              {backendLabels[backend]} is not executable in this workflow yet. No silent fallback will be applied.
+            </div>
+          )}
         </>
       )}
 
       {workflowMode === 'shape' && (
         <>
-          <label className="field">
+          <label className="field compact-field">
             <span>Shape quality</span>
             <select
               value={profile}
@@ -222,8 +222,8 @@ export function GenerationPanel({
             </select>
           </label>
 
-          <div className="field-grid">
-            <label className="field">
+          <div className="field-grid compact-field-grid">
+            <label className="field compact-field">
               <span>Steps</span>
               <input
                 type="number"
@@ -233,7 +233,7 @@ export function GenerationPanel({
                 onChange={(event) => onStepsChange(Number(event.target.value))}
               />
             </label>
-            <label className="field">
+            <label className="field compact-field">
               <span>Seed</span>
               <input
                 type="number"
@@ -244,7 +244,7 @@ export function GenerationPanel({
             </label>
           </div>
 
-          <div className="field">
+          <div className="field compact-field">
             <span>Output</span>
             <div className="segmented-control" aria-label="Shape output">
               <button
@@ -271,14 +271,14 @@ export function GenerationPanel({
 
       {workflowMode === 'texture' && (
         <>
-          <label className="field">
+          <label className="field compact-field">
             <span>Texture engine</span>
             <select value={textureEngine} disabled aria-label="Texture engine">
               <option value="hunyuan-paint">Hunyuan Paint</option>
             </select>
           </label>
 
-          <div className="field">
+          <div className="field compact-field">
             <span>Existing model</span>
             <div className="mesh-picker">
               <div title={textureMeshPath ?? undefined}>{textureMeshPath ?? 'No GLB / OBJ selected'}</div>
@@ -291,7 +291,7 @@ export function GenerationPanel({
       )}
 
       {workflowMode === 'mesh' && (
-        <div className="field">
+        <div className="field compact-field">
           <span>Existing model</span>
           <div className="mesh-picker">
             <div title={meshInputPath ?? undefined}>{meshInputPath ?? 'No GLB / OBJ selected'}</div>
@@ -303,9 +303,9 @@ export function GenerationPanel({
       )}
 
       {cleanupVisible && (
-        <div className="field">
+        <div className="field compact-field">
           <span>Mesh cleanup</span>
-          <div className="segmented-control" aria-label="Mesh cleanup preset">
+          <div className="segmented-control cleanup-preset-control" aria-label="Mesh cleanup preset">
             {cleanupPresets.map((value) => (
               <button
                 key={value}
@@ -319,7 +319,7 @@ export function GenerationPanel({
               </button>
             ))}
           </div>
-          <small>{cleanupConfigLabel}</small>
+          <small className="cleanup-config-label">{cleanupConfigLabel}</small>
           {cleanupPreset === 'aggressive' && (
             <div className="backend-note warning">Aggressive cleanup may alter silhouette and fine detail.</div>
           )}
@@ -359,7 +359,7 @@ export function GenerationPanel({
                 />
                 <span>Smooth surface</span>
               </label>
-              <label className="field">
+              <label className="field compact-field">
                 <span>Smoothing iterations</span>
                 <input
                   type="number"
@@ -377,7 +377,7 @@ export function GenerationPanel({
                 />
                 <span>Recompute normals</span>
               </label>
-              <label className="field">
+              <label className="field compact-field">
                 <span>Minimum component size</span>
                 <input
                   type="number"
@@ -394,9 +394,9 @@ export function GenerationPanel({
       )}
 
       {textureRequested && (
-        <div className="field">
+        <div className="field compact-field">
           <span>Texture profile</span>
-          <div className="texture-profile-grid">
+          <div className="texture-profile-grid compact-texture-profiles">
             {textureProfiles.map((value) => (
               <button
                 key={value}
@@ -417,7 +417,7 @@ export function GenerationPanel({
       )}
 
       {workflowMode !== 'mesh' && (
-        <label className="toggle-row">
+        <label className="toggle-row compact-toggle-row">
           <input
             type="checkbox"
             checked={removeBackground}
@@ -432,7 +432,7 @@ export function GenerationPanel({
 
       <button
         type="button"
-        className="primary-button"
+        className="primary-button compact-primary-action"
         disabled={actionDisabled}
         onClick={onGenerate}
       >
