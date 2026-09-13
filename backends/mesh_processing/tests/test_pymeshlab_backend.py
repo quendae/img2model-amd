@@ -3,7 +3,12 @@ import unittest
 import numpy as np
 import trimesh
 
-from backends.mesh_processing.pymeshlab_backend import RepairPolicy, repair_with_pymeshlab
+from backends.mesh_processing.pymeshlab_backend import (
+    ReductionPolicy,
+    RepairPolicy,
+    adaptive_qem_reduce,
+    repair_with_pymeshlab,
+)
 
 
 def _open_main_with_tiny_component() -> trimesh.Trimesh:
@@ -16,6 +21,17 @@ def _open_main_with_tiny_component() -> trimesh.Trimesh:
     tiny = trimesh.creation.icosphere(subdivisions=0, radius=0.01)
     tiny.apply_translation([2.0, 0.0, 0.0])
     return trimesh.util.concatenate([main, tiny])
+
+
+def _dense_simple_prop() -> trimesh.Trimesh:
+    return trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+
+
+def _thin_feature_prop() -> trimesh.Trimesh:
+    body = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    stem = trimesh.creation.cylinder(radius=0.05, height=2.0, sections=32)
+    stem.apply_translation([0.0, 0.0, 2.0])
+    return trimesh.util.concatenate([body, stem])
 
 
 class PyMeshLabRepairBackendTests(unittest.TestCase):
@@ -50,6 +66,53 @@ class PyMeshLabRepairBackendTests(unittest.TestCase):
         self.assertGreater(len(repaired.vertices), 0)
         self.assertGreater(len(repaired.faces), 0)
         self.assertTrue(stats.repair_backend.startswith("pymeshlab"))
+
+    def test_auto_qem_reduction_accepts_smallest_candidate_within_error(self) -> None:
+        source = _dense_simple_prop()
+        policy = ReductionPolicy(
+            min_faces=900,
+            start_faces=3000,
+            error_tolerance=0.02,
+        )
+
+        reduced, stats = adaptive_qem_reduce(source, policy)
+
+        self.assertLess(len(reduced.faces), len(source.faces) * 0.70)
+        self.assertGreaterEqual(len(reduced.faces), 800)
+        self.assertIsNotNone(stats.normalized_error)
+        self.assertLessEqual(float(stats.normalized_error), policy.error_tolerance)
+        self.assertGreaterEqual(stats.attempts, 1)
+        self.assertEqual(stats.accepted_faces, len(reduced.faces))
+
+    def test_manual_target_is_honored_approximately(self) -> None:
+        source = _dense_simple_prop()
+        policy = ReductionPolicy(
+            min_faces=900,
+            start_faces=3000,
+            error_tolerance=0.10,
+            manual_target_faces=1200,
+        )
+
+        reduced, stats = adaptive_qem_reduce(source, policy)
+
+        self.assertLessEqual(abs(len(reduced.faces) - 1200), 150)
+        self.assertEqual(stats.requested_target_faces, 1200)
+        self.assertEqual(stats.accepted_faces, len(reduced.faces))
+
+    def test_auto_qem_preserves_thin_legitimate_extent_within_tolerance(self) -> None:
+        source = _thin_feature_prop()
+        source_max_z = float(source.bounds[1][2])
+        policy = ReductionPolicy(
+            min_faces=600,
+            start_faces=1000,
+            error_tolerance=0.008,
+        )
+
+        reduced, stats = adaptive_qem_reduce(source, policy)
+
+        self.assertGreaterEqual(float(reduced.bounds[1][2]), source_max_z - 0.10)
+        self.assertIsNotNone(stats.normalized_error)
+        self.assertLessEqual(float(stats.normalized_error), policy.error_tolerance)
 
 
 if __name__ == "__main__":
