@@ -23,9 +23,31 @@ class CleanupCacheTests(unittest.TestCase):
         stock = cleanup_cache_key(self.path, resolve_cleanup_config("game-ready", {}))
         custom = cleanup_cache_key(
             self.path,
-            resolve_cleanup_config("game-ready", {"smoothing_iterations": 0}),
+            resolve_cleanup_config(
+                "game-ready",
+                {"triangle_budget_mode": "manual", "target_triangles": 5000},
+            ),
         )
         self.assertNotEqual(stock, custom)
+
+    def test_auto_and_manual_triangle_budget_have_distinct_keys(self):
+        auto = cleanup_cache_key(self.path, resolve_cleanup_config("game-ready", {}))
+        manual = cleanup_cache_key(
+            self.path,
+            resolve_cleanup_config(
+                "game-ready",
+                {"triangle_budget_mode": "manual", "target_triangles": 5000},
+            ),
+        )
+        manual_other = cleanup_cache_key(
+            self.path,
+            resolve_cleanup_config(
+                "game-ready",
+                {"triangle_budget_mode": "manual", "target_triangles": 6000},
+            ),
+        )
+        self.assertNotEqual(auto, manual)
+        self.assertNotEqual(manual, manual_other)
 
     def test_file_mtime_changes_key(self):
         first = cleanup_cache_key(self.path, resolve_cleanup_config("light", {}))
