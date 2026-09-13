@@ -119,8 +119,7 @@ if (Test-Path $InstalledMeshProcessing) {
 Copy-Item -Recurse -Force $MeshProcessingSource $InstalledMeshProcessing
 
 Write-Host "Verifying game-ready mesh dependencies..." -ForegroundColor Cyan
-$MeshDependencyProbe = 'import json; import importlib.metadata as metadata; import pymeshlab; import manifold3d; print(json.dumps({"pymeshlab": metadata.version("pymeshlab"), "manifold3d": metadata.version("manifold3d")}))'
-$MeshDependencyLines = @(& $PythonExe -c $MeshDependencyProbe)
+$MeshDependencyLines = @(& $PythonExe -c 'import json; import importlib.metadata as metadata; import pymeshlab; import manifold3d; print(json.dumps({"pymeshlab": metadata.version("pymeshlab"), "manifold3d": metadata.version("manifold3d")}))')
 $MeshDependencyExitCode = $LASTEXITCODE
 $MeshDependencyLines | ForEach-Object { Write-Host $_ }
 if ($MeshDependencyExitCode -ne 0) {
