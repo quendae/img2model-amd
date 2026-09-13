@@ -149,6 +149,13 @@ export async function getHunyuanTextureHealth(): Promise<TextureHealth> {
   return invoke<TextureHealth>('hunyuan_texture_health');
 }
 
+export async function preloadHunyuanShape(): Promise<GenerateResult> {
+  if (!isTauri()) {
+    throw new Error('Shape preload requires the Tauri desktop runtime.');
+  }
+  return invoke<GenerateResult>('preload_hunyuan_shape');
+}
+
 export async function chooseInputImage(): Promise<string | null> {
   if (!isTauri()) return null;
   const selected = await open({
