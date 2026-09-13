@@ -119,8 +119,26 @@ if (Test-Path $InstalledMeshProcessing) {
 Copy-Item -Recurse -Force $MeshProcessingSource $InstalledMeshProcessing
 
 Write-Host "Verifying game-ready mesh dependencies..." -ForegroundColor Cyan
-$MeshDependencyLines = @(& $PythonExe -c 'import json; import importlib.metadata as metadata; import pymeshlab; import manifold3d; print(json.dumps({"pymeshlab": metadata.version("pymeshlab"), "manifold3d": metadata.version("manifold3d")}))')
-$MeshDependencyExitCode = $LASTEXITCODE
+$MeshDependencyProbePath = Join-Path ([System.IO.Path]::GetTempPath()) ("img2model-mesh-deps-{0}.py" -f [Guid]::NewGuid().ToString("N"))
+$MeshDependencyProbe = @'
+import json
+import importlib.metadata as metadata
+import pymeshlab
+import manifold3d
+
+print(json.dumps({
+    "pymeshlab": metadata.version("pymeshlab"),
+    "manifold3d": metadata.version("manifold3d"),
+}))
+'@
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($MeshDependencyProbePath, $MeshDependencyProbe, $Utf8NoBom)
+try {
+    $MeshDependencyLines = @(& $PythonExe $MeshDependencyProbePath)
+    $MeshDependencyExitCode = $LASTEXITCODE
+} finally {
+    Remove-Item -LiteralPath $MeshDependencyProbePath -Force -ErrorAction SilentlyContinue
+}
 $MeshDependencyLines | ForEach-Object { Write-Host $_ }
 if ($MeshDependencyExitCode -ne 0) {
     throw "PyMeshLab / Manifold3D verification failed. Run without -VerifyOnly once to install the pinned game-ready mesh dependencies."
