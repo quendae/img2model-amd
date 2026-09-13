@@ -17,7 +17,10 @@ class MeshCleanupWorkerProtocolTests(unittest.TestCase):
                 "input": "source.glb",
                 "output": "source-clean.glb",
                 "preset": "game-ready",
-                "overrides": {"smoothing_iterations": 1},
+                "overrides": {
+                    "triangle_budget_mode": "manual",
+                    "target_triangles": 5000,
+                },
             },
         }
         with mock.patch.object(worker, "run_mesh_cleanup", return_value=0) as run:
@@ -32,7 +35,8 @@ class MeshCleanupWorkerProtocolTests(unittest.TestCase):
         self.assertEqual(args.input, "source.glb")
         self.assertEqual(args.output, "source-clean.glb")
         self.assertEqual(args.preset, "game-ready")
-        self.assertEqual(args.overrides["smoothing_iterations"], 1)
+        self.assertEqual(args.overrides["triangle_budget_mode"], "manual")
+        self.assertEqual(args.overrides["target_triangles"], 5000)
 
 
 if __name__ == "__main__":
