@@ -46,6 +46,22 @@ class RepairStats:
 
 
 @dataclass(frozen=True)
+class ReductionPolicy:
+    min_faces: int
+    start_faces: int
+    error_tolerance: float
+    manual_target_faces: int | None = None
+
+
+@dataclass
+class ReductionStats:
+    requested_target_faces: int | None
+    accepted_faces: int
+    normalized_error: float | None
+    attempts: int
+
+
+@dataclass(frozen=True)
 class ResolvedCleanupConfig:
     preset: CleanupPreset
     label: str
