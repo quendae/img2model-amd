@@ -20,6 +20,8 @@ class CleanupSettings:
     taubin_lambda: float
     taubin_nu: float
     recompute_normals: bool
+    triangle_budget_mode: str = "auto"
+    target_triangles: int | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,19 @@ class CleanupReport:
     vertices_welded: int = 0
     spikes_adjusted: int = 0
     cleanup_ms: float = 0.0
+    watertight_before: bool | None = None
+    watertight_after: bool | None = None
+    manifold_before: bool | None = None
+    manifold_after: bool | None = None
+    boundary_edges_before: int | None = None
+    boundary_edges_after: int | None = None
+    holes_closed: int | None = None
+    non_manifold_edges_fixed: int | None = None
+    reduction_ratio: float = 0.0
+    remeshed: bool = False
+    repair_backend: str | None = None
+    normalized_error: float | None = None
+    target_triangles: int | None = None
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
