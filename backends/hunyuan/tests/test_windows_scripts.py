@@ -38,6 +38,20 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn("PyMeshLab", script)
         self.assertIn("Manifold3D", script)
 
+    def test_mesh_dependency_probe_uses_script_file_instead_of_python_dash_c(self) -> None:
+        script = SETUP.read_text(encoding="utf-8")
+        start = script.index('Write-Host "Verifying game-ready mesh dependencies..."')
+        end = script.index('Write-Host "[7/7] Verifying HIP, GPU and Hunyuan imports through the worker..."')
+        probe = script[start:end]
+
+        self.assertNotIn(
+            "& $PythonExe -c",
+            probe,
+            "Windows PowerShell 5.1 can strip nested Python string quotes from native -c arguments",
+        )
+        self.assertIn("MeshDependencyProbePath", probe)
+        self.assertIn("WriteAllText", probe)
+
     def test_texture_setup_reuses_existing_rocm_runtime_and_builds_native_extensions(self) -> None:
         text = TEXTURE_SETUP.read_text(encoding="utf-8")
         self.assertIn("IMG2MODEL_PYTHON", text)
