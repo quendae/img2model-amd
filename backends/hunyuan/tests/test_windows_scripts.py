@@ -85,7 +85,7 @@ class WindowsScriptRegressionTests(unittest.TestCase):
 
     def test_texture_setup_points_hipcc_at_therock_device_bitcode(self) -> None:
         text = TEXTURE_SETUP.read_text(encoding="utf-8")
-        self.assertIn('lib\\\\llvm\\\\amdgcn\\\\bitcode', text)
+        self.assertIn('lib\\llvm\\amdgcn\\bitcode', text)
         self.assertIn('$env:HIP_DEVICE_LIB_PATH', text)
         self.assertIn('$env:ROCM_DEVICE_LIB_PATH', text)
         self.assertIn('$env:HIP_PATH', text)
@@ -106,7 +106,7 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn('rocm-sdk.exe', text)
         self.assertIn('Initializing TheRock development tree', text)
         self.assertIn('path --root', text)
-        self.assertIn('thrust\\\\complex.h', text)
+        self.assertIn('thrust\\complex.h', text)
         self.assertIn('$RocmDevelRoot', text)
         self.assertIn('$env:ROCM_HOME = $RocmDevelRoot', text)
         self.assertIn('$env:CPATH', text)
