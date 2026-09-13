@@ -96,7 +96,7 @@ if ($VerifyOnly) {
         throw "ROCm/PyTorch/torchvision installation failed. Try -Channel nightly if stable does not contain a compatible gfx1030 build."
     }
 
-    Write-Host "[4/7] Installing lightweight Img2Model worker dependencies..."
+    Write-Host "[4/7] Installing Img2Model worker and game-ready mesh dependencies..."
     & $PythonExe -m pip install -r $BaseRequirements
     if ($LASTEXITCODE -ne 0) { throw "Worker dependency installation failed." }
 
@@ -117,6 +117,26 @@ if (Test-Path $InstalledMeshProcessing) {
     Remove-Item -Recurse -Force $InstalledMeshProcessing
 }
 Copy-Item -Recurse -Force $MeshProcessingSource $InstalledMeshProcessing
+
+Write-Host "Verifying game-ready mesh dependencies..." -ForegroundColor Cyan
+$MeshDependencyProbe = 'import json; import importlib.metadata as metadata; import pymeshlab; import manifold3d; print(json.dumps({"pymeshlab": metadata.version("pymeshlab"), "manifold3d": metadata.version("manifold3d")}))'
+$MeshDependencyLines = @(& $PythonExe -c $MeshDependencyProbe)
+$MeshDependencyExitCode = $LASTEXITCODE
+$MeshDependencyLines | ForEach-Object { Write-Host $_ }
+if ($MeshDependencyExitCode -ne 0) {
+    throw "PyMeshLab / Manifold3D verification failed. Run without -VerifyOnly once to install the pinned game-ready mesh dependencies."
+}
+$MeshDependencyJson = $MeshDependencyLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1
+if ([string]::IsNullOrWhiteSpace($MeshDependencyJson)) {
+    throw "PyMeshLab / Manifold3D verification returned no JSON output."
+}
+try {
+    $MeshDependencies = $MeshDependencyJson | ConvertFrom-Json
+} catch {
+    throw "PyMeshLab / Manifold3D verification output was not valid JSON: $MeshDependencyJson"
+}
+Write-Host ("  PyMeshLab : {0}" -f $MeshDependencies.pymeshlab) -ForegroundColor Green
+Write-Host ("  Manifold3D: {0}" -f $MeshDependencies.manifold3d) -ForegroundColor Green
 
 Write-Host "[7/7] Verifying HIP, GPU and Hunyuan imports through the worker..."
 $HealthLines = @(& $PythonExe $InstalledWorker health --json)
