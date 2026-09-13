@@ -100,6 +100,44 @@ describe('GenerationPanel', () => {
     expect(screen.getByRole('button', { name: 'Process mesh' })).toBeTruthy();
   });
 
+  it('defaults Game-ready triangle budget to Auto and hides manual target', () => {
+    render(
+      <GenerationPanel
+        {...(commonProps as any)}
+        workflowMode="mesh"
+        meshInputPath="C:/import.glb"
+        cleanupPreset="game-ready"
+        cleanupConfigLabel="Game-ready"
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Advanced'));
+    expect(screen.getByRole('button', { name: 'Auto triangle budget' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Manual triangle budget' }).getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByLabelText('Target triangles')).toBeNull();
+  });
+
+  it('emits a 5000 triangle target when Manual budget is selected', () => {
+    const onCleanupOverridesChange = vi.fn();
+    render(
+      <GenerationPanel
+        {...(commonProps as any)}
+        workflowMode="mesh"
+        meshInputPath="C:/import.glb"
+        cleanupPreset="game-ready"
+        cleanupConfigLabel="Game-ready"
+        onCleanupOverridesChange={onCleanupOverridesChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Advanced'));
+    fireEvent.click(screen.getByRole('button', { name: 'Manual triangle budget' }));
+    expect(onCleanupOverridesChange).toHaveBeenCalledWith({
+      triangle_budget_mode: 'manual',
+      target_triangles: 5000,
+    });
+  });
+
   it('shows a visible warning for Aggressive cleanup', () => {
     render(
       <GenerationPanel
