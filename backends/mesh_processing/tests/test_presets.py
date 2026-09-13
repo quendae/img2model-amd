@@ -12,21 +12,32 @@ class CleanupPresetTests(unittest.TestCase):
         self.assertTrue(config.settings.weld_vertices)
         self.assertFalse(config.settings.spike_cleanup)
         self.assertFalse(config.settings.smooth_surface)
+        self.assertEqual(config.settings.triangle_budget_mode, "auto")
+        self.assertIsNone(config.settings.target_triangles)
 
-    def test_game_ready_enables_spike_cleanup_and_taubin_smoothing(self):
+    def test_game_ready_defaults_to_auto_triangle_budget(self):
         config = resolve_cleanup_config("game-ready", {})
-        self.assertTrue(config.settings.spike_cleanup)
-        self.assertTrue(config.settings.smooth_surface)
-        self.assertGreater(config.settings.smoothing_iterations, 0)
-        self.assertLess(config.settings.taubin_nu, 0.0)
+        self.assertEqual(config.settings.triangle_budget_mode, "auto")
+        self.assertIsNone(config.settings.target_triangles)
 
-    def test_advanced_override_becomes_custom(self):
-        config = resolve_cleanup_config("game-ready", {"smoothing_iterations": 0})
+    def test_manual_triangle_override_becomes_custom(self):
+        config = resolve_cleanup_config(
+            "game-ready",
+            {"triangle_budget_mode": "manual", "target_triangles": 5000},
+        )
         self.assertEqual(config.label, "Custom (from Game-ready)")
-        self.assertEqual(config.settings.smoothing_iterations, 0)
+        self.assertEqual(config.settings.triangle_budget_mode, "manual")
+        self.assertEqual(config.settings.target_triangles, 5000)
 
-    def test_algorithm_version_is_internal_nonempty_string(self):
-        self.assertTrue(ALGORITHM_VERSION.startswith("mesh-cleanup-v"))
+    def test_algorithm_version_is_v2(self):
+        self.assertEqual(ALGORITHM_VERSION, "mesh-cleanup-v2")
+
+    def test_invalid_manual_triangle_budget_raises(self):
+        with self.assertRaisesRegex(ValueError, "target_triangles"):
+            resolve_cleanup_config(
+                "game-ready",
+                {"triangle_budget_mode": "manual", "target_triangles": 100},
+            )
 
     def test_invalid_preset_raises(self):
         with self.assertRaisesRegex(ValueError, "Unsupported cleanup preset"):
