@@ -12,6 +12,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Callable
 
@@ -52,6 +53,52 @@ _base.PROTOCOL_VERSION = PROTOCOL_VERSION
 _BasePipelineCache = _base.PipelineCache
 _original_dispatch_serve_command = _base.dispatch_serve_command
 _original_build_parser = _base.build_parser
+_original_emit = _base.emit
+_shape_debug_stage: str | None = None
+
+
+def _diagnostic_emit(event: str, **values: Any) -> None:
+    """Keep normal worker events while enriching Shape failures with traceback context."""
+
+    global _shape_debug_stage
+    stage = values.get("stage")
+    if event == "progress":
+        stage_map = {
+            "starting_backend": "opening_input",
+            "preparing_input": "background_removal",
+            "loading_model": "model_cache",
+            "running_shape": "pipeline_call",
+            "postprocessing": "export",
+        }
+        if isinstance(stage, str) and stage in stage_map:
+            _shape_debug_stage = stage_map[stage]
+    elif event == "completed" and stage == "completed":
+        _shape_debug_stage = None
+    elif event == "error" and stage == "shape":
+        debug_stage = _shape_debug_stage or "shape"
+        formatted_traceback = traceback.format_exc()
+        if formatted_traceback.strip() == "NoneType: None":
+            formatted_traceback = ""
+        values.setdefault("debug_stage", debug_stage)
+        if formatted_traceback:
+            values.setdefault("traceback", formatted_traceback)
+        error_text = str(values.get("error") or "Shape generation failed")
+        technical_parts = [error_text, f"Debug stage: {debug_stage}"]
+        if formatted_traceback:
+            technical_parts.append(formatted_traceback.rstrip())
+        # GenerateResult currently transports the error field end-to-end, so keep
+        # the full diagnostic there until structured debug fields are added to the UI.
+        values["error"] = "\n\n".join(technical_parts)
+        _shape_debug_stage = None
+
+    _original_emit(event, **values)
+
+
+# worker_base catches generation exceptions internally. Replacing its emitter lets
+# us capture traceback.format_exc() while the original exception context is alive,
+# without changing the validated Hunyuan inference implementation.
+_base.emit = _diagnostic_emit
+emit = _diagnostic_emit
 
 
 class PipelineCache(_BasePipelineCache):
