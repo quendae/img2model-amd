@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 const PROTOCOL_VERSION: u64 = 2;
-const STDERR_TAIL_LINES: usize = 200;
+const LOG_TAIL_LINES: usize = 200;
 
 #[derive(Debug)]
 struct SessionError {
@@ -33,6 +33,20 @@ impl SessionError {
             kind: "protocol_error",
             message: message.into(),
         }
+    }
+}
+
+pub fn parse_worker_stdout_line(line: &str) -> Result<Option<Value>, String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if trimmed.starts_with('{') || trimmed.starts_with('[') => Err(format!(
+            "Persistent worker emitted malformed JSON stdout: {error}; line={trimmed:?}"
+        )),
+        Err(_) => Ok(None),
     }
 }
 
@@ -120,6 +134,7 @@ struct WorkerSession {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    stdout_log_tail: VecDeque<String>,
     next_job_id: u64,
 }
 
@@ -153,13 +168,13 @@ impl WorkerSession {
             .take()
             .ok_or_else(|| "Persistent worker stderr was not captured.".to_string())?;
 
-        let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)));
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_TAIL_LINES)));
         let stderr_tail_for_thread = Arc::clone(&stderr_tail);
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
                 let Ok(line) = line else { break };
                 let Ok(mut tail) = stderr_tail_for_thread.lock() else { break };
-                if tail.len() >= STDERR_TAIL_LINES {
+                if tail.len() >= LOG_TAIL_LINES {
                     tail.pop_front();
                 }
                 tail.push_back(line);
@@ -171,6 +186,7 @@ impl WorkerSession {
             stdin,
             stdout: BufReader::new(stdout),
             stderr_tail,
+            stdout_log_tail: VecDeque::with_capacity(LOG_TAIL_LINES),
             next_job_id: 1,
         };
         session.handshake()?;
@@ -199,33 +215,56 @@ impl WorkerSession {
         tail.iter().cloned().collect::<Vec<_>>().join("\n")
     }
 
-    fn read_json_line(&mut self) -> Result<Value, SessionError> {
-        let mut line = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut line)
-            .map_err(|error| SessionError::crashed(format!("Failed reading worker stdout: {error}")))?;
-        if bytes == 0 {
-            let status = self.child.try_wait().ok().flatten();
-            let stderr = self.stderr_summary();
-            let status_text = status
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "unknown exit status".to_string());
-            let suffix = if stderr.trim().is_empty() {
-                String::new()
-            } else {
-                format!("\nWorker stderr:\n{stderr}")
-            };
-            return Err(SessionError::crashed(format!(
-                "Persistent worker closed stdout ({status_text}).{suffix}"
-            )));
+    fn stdout_log_summary(&self) -> String {
+        self.stdout_log_tail.iter().cloned().collect::<Vec<_>>().join("\n")
+    }
+
+    fn push_stdout_log(&mut self, line: &str) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
         }
-        serde_json::from_str(line.trim()).map_err(|error| {
-            SessionError::protocol(format!(
-                "Persistent worker emitted non-JSON stdout: {error}; line={:?}",
-                line.trim()
-            ))
-        })
+        if self.stdout_log_tail.len() >= LOG_TAIL_LINES {
+            self.stdout_log_tail.pop_front();
+        }
+        self.stdout_log_tail.push_back(trimmed.to_string());
+    }
+
+    fn read_json_line(&mut self) -> Result<Value, SessionError> {
+        loop {
+            let mut line = String::new();
+            let bytes = self
+                .stdout
+                .read_line(&mut line)
+                .map_err(|error| SessionError::crashed(format!("Failed reading worker stdout: {error}")))?;
+            if bytes == 0 {
+                let status = self.child.try_wait().ok().flatten();
+                let stderr = self.stderr_summary();
+                let stdout_log = self.stdout_log_summary();
+                let status_text = status
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown exit status".to_string());
+                let mut suffix = String::new();
+                if !stdout_log.trim().is_empty() {
+                    suffix.push_str(&format!("\nWorker stdout log:\n{stdout_log}"));
+                }
+                if !stderr.trim().is_empty() {
+                    suffix.push_str(&format!("\nWorker stderr:\n{stderr}"));
+                }
+                return Err(SessionError::crashed(format!(
+                    "Persistent worker closed stdout ({status_text}).{suffix}"
+                )));
+            }
+
+            match parse_worker_stdout_line(&line) {
+                Ok(Some(value)) => return Ok(value),
+                Ok(None) => {
+                    self.push_stdout_log(&line);
+                    continue;
+                }
+                Err(message) => return Err(SessionError::protocol(message)),
+            }
+        }
     }
 
     fn handshake(&mut self) -> Result<(), String> {
