@@ -9,6 +9,7 @@ cleanup command without embedding geometry algorithms into Hunyuan code.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import time
@@ -203,6 +204,13 @@ def dispatch_serve_command(
 
 
 def run_serve(_args: argparse.Namespace) -> int:
+    protocol_stdout = sys.stdout
+
+    def protocol_emit(payload: dict[str, Any]) -> None:
+        protocol_stdout.write(json.dumps(payload, ensure_ascii=False))
+        protocol_stdout.write("\n")
+        protocol_stdout.flush()
+
     cache = PipelineCache(event_sink=_emit_payload)
     for raw_line in sys.stdin:
         line = raw_line.strip()
@@ -213,22 +221,30 @@ def run_serve(_args: argparse.Namespace) -> int:
             if not isinstance(message, dict):
                 raise ValueError("Serve command must be a JSON object")
         except Exception as exc:
-            print(
-                json.dumps(
-                    {
-                        "event": "error",
-                        "ok": False,
-                        "error_kind": "protocol_error",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    },
-                    ensure_ascii=False,
-                ),
-                flush=True,
+            protocol_emit(
+                {
+                    "event": "error",
+                    "ok": False,
+                    "error_kind": "protocol_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
             )
             continue
-        if not dispatch_serve_command(message, cache=cache):
+
+        # stdout is the JSONL protocol channel. Third-party libraries in
+        # Hunyuan3D occasionally use plain print(), so isolate ambient output
+        # on stderr while protocol events keep writing to the captured stream.
+        with contextlib.redirect_stdout(sys.stderr):
+            keep_running = dispatch_serve_command(
+                message,
+                cache=cache,
+                emit_fn=protocol_emit,
+            )
+        if not keep_running:
             return 0
-    cache.clear()
+
+    with contextlib.redirect_stdout(sys.stderr):
+        cache.clear()
     return 0
 
 
