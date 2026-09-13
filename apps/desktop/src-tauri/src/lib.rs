@@ -25,6 +25,19 @@ fn hunyuan_texture_health() -> Result<worker::TextureHealth, String> {
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn preload_hunyuan_shape(app: tauri::AppHandle) -> Result<worker::GenerateResult, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app_handle
+            .state::<worker_session::WorkerSessionManager>()
+            .preload_shape()
+    })
+    .await
+    .map_err(|error| format!("Shape preload task failed: {error}"))?
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn generate_shape(
     app: tauri::AppHandle,
     request: worker::GenerateRequest,
@@ -99,6 +112,7 @@ pub fn run() {
             get_system_diagnostics,
             hunyuan_health,
             hunyuan_texture_health,
+            preload_hunyuan_shape,
             generate_shape,
             texture_mesh,
             cleanup_mesh,
