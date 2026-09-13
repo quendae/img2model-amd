@@ -7,11 +7,10 @@ const mocks = vi.hoisted(() => ({
   restartHunyuanWorker: vi.fn(),
   clearHunyuanWorkerCache: vi.fn(),
   getSystemDiagnostics: vi.fn(),
-  getHunyuanHealth: vi.fn(),
-  getHunyuanTextureHealth: vi.fn(),
   chooseInputMesh: vi.fn(),
   chooseOutputModel: vi.fn(),
   useGenerationJob: vi.fn(),
+  useRuntimeStartup: vi.fn(),
 }));
 
 vi.mock('./components/InputPanel', () => ({
@@ -45,9 +44,7 @@ vi.mock('./components/ModelViewer', () => ({
 }));
 
 vi.mock('./components/DiagnosticsPanel', () => ({
-  DiagnosticsPanel: ({ onHealthCheck }: { onHealthCheck: () => void }) => (
-    <button type="button" onClick={onHealthCheck}>Check health</button>
-  ),
+  DiagnosticsPanel: () => <div data-testid="diagnostics-panel" />,
 }));
 
 vi.mock('./lib/tauri', () => ({
@@ -55,8 +52,6 @@ vi.mock('./lib/tauri', () => ({
   chooseInputMesh: mocks.chooseInputMesh,
   chooseOutputModel: mocks.chooseOutputModel,
   getSystemDiagnostics: mocks.getSystemDiagnostics,
-  getHunyuanHealth: mocks.getHunyuanHealth,
-  getHunyuanTextureHealth: mocks.getHunyuanTextureHealth,
   restartHunyuanWorker: mocks.restartHunyuanWorker,
   clearHunyuanWorkerCache: mocks.clearHunyuanWorkerCache,
   localAssetUrl: (path: string) => path,
@@ -64,6 +59,10 @@ vi.mock('./lib/tauri', () => ({
 
 vi.mock('./lib/useGenerationJob', () => ({
   useGenerationJob: mocks.useGenerationJob,
+}));
+
+vi.mock('./lib/useRuntimeStartup', () => ({
+  useRuntimeStartup: mocks.useRuntimeStartup,
 }));
 
 function jobState(overrides: Record<string, unknown> = {}) {
@@ -92,6 +91,37 @@ function jobState(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function runtimeState(overrides: Record<string, unknown> = {}) {
+  return {
+    phase: 'ready',
+    health: {
+      ok: true,
+      python: 'python.exe',
+      torch_available: true,
+      hunyuan_available: true,
+      torch_version: '2.13.0',
+      hip_version: '7.15',
+      device_name: 'AMD Radeon RX 6950 XT',
+      error: null,
+    },
+    textureHealth: {
+      ok: true,
+      texgen_available: true,
+      custom_rasterizer_available: true,
+      mesh_processor_available: true,
+      texture_import_ok: true,
+      error: null,
+    },
+    shapeCacheReady: true,
+    shapePreloadMs: 17000,
+    error: null,
+    initialize: vi.fn().mockResolvedValue(undefined),
+    ensureShapePreloaded: vi.fn().mockResolvedValue(undefined),
+    markShapeEvicted: vi.fn(),
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   mocks.restartHunyuanWorker.mockReset().mockResolvedValue(undefined);
   mocks.clearHunyuanWorkerCache.mockReset().mockResolvedValue(undefined);
@@ -103,20 +133,8 @@ beforeEach(() => {
     wslAvailable: false,
     amdGpus: ['AMD Radeon RX 6950 XT'],
   });
-  mocks.getHunyuanHealth.mockReset().mockResolvedValue({
-    ok: true,
-    python: 'python.exe',
-    torch_available: true,
-    hunyuan_available: true,
-  });
-  mocks.getHunyuanTextureHealth.mockReset().mockResolvedValue({
-    ok: true,
-    texgen_available: true,
-    custom_rasterizer_available: true,
-    mesh_processor_available: true,
-    texture_import_ok: true,
-  });
   mocks.useGenerationJob.mockReset().mockReturnValue(jobState());
+  mocks.useRuntimeStartup.mockReset().mockReturnValue(runtimeState());
 });
 
 afterEach(() => cleanup());
@@ -131,13 +149,16 @@ describe('App cleanup workflows', () => {
   it('runs standalone Mesh with Game-ready without requiring an image or texture runtime', async () => {
     const runMeshWorkflow = vi.fn().mockResolvedValue('C:/import-clean.glb');
     mocks.useGenerationJob.mockReturnValue(jobState({ runMeshWorkflow }));
-    mocks.getHunyuanTextureHealth.mockResolvedValue({
-      ok: false,
-      texgen_available: false,
-      custom_rasterizer_available: false,
-      mesh_processor_available: false,
-      texture_import_ok: false,
-    });
+    mocks.useRuntimeStartup.mockReturnValue(runtimeState({
+      textureHealth: {
+        ok: false,
+        texgen_available: false,
+        custom_rasterizer_available: false,
+        mesh_processor_available: false,
+        texture_import_ok: false,
+        error: null,
+      },
+    }));
 
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Switch Mesh' }));
@@ -242,34 +263,38 @@ describe('App cleanup workflows', () => {
 });
 
 describe('App persistent worker controls', () => {
-  it('offers an explicit worker restart after a crash', async () => {
+  it('offers an explicit worker restart after a crash and starts runtime initialization again', async () => {
     const markWorkerRestarted = vi.fn();
     const setStatusMessage = vi.fn();
+    const initialize = vi.fn().mockResolvedValue(undefined);
     mocks.useGenerationJob.mockReturnValue(jobState({
       workerNeedsRestart: true,
       markWorkerRestarted,
       setStatusMessage,
     }));
+    mocks.useRuntimeStartup.mockReturnValue(runtimeState({ initialize }));
 
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: /restart worker/i }));
 
     await waitFor(() => expect(mocks.restartHunyuanWorker).toHaveBeenCalledOnce());
     expect(markWorkerRestarted).toHaveBeenCalledOnce();
+    expect(initialize).toHaveBeenCalledOnce();
     expect(setStatusMessage).toHaveBeenCalledWith(expect.stringMatching(/worker restarted/i));
   });
 
-  it('offers clear cache after the runtime health check succeeds', async () => {
+  it('offers clear cache when the automatic runtime is ready', async () => {
     const setStatusMessage = vi.fn();
+    const markShapeEvicted = vi.fn();
     mocks.useGenerationJob.mockReturnValue(jobState({ setStatusMessage }));
+    mocks.useRuntimeStartup.mockReturnValue(runtimeState({ markShapeEvicted }));
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /check health/i }));
-
-    const clearCache = await screen.findByRole('button', { name: /clear cache/i });
+    const clearCache = screen.getByRole('button', { name: /clear cache/i });
     fireEvent.click(clearCache);
 
     await waitFor(() => expect(mocks.clearHunyuanWorkerCache).toHaveBeenCalledOnce());
+    expect(markShapeEvicted).toHaveBeenCalledOnce();
     expect(setStatusMessage).toHaveBeenCalledWith(expect.stringMatching(/cache cleared/i));
   });
 
