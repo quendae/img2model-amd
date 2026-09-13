@@ -57,3 +57,34 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
         payload = json.loads(stdout_lines[-1])
         self.assertEqual(payload["event"], "completed")
         self.assertEqual(payload["job_id"], "job-noisy")
+
+    def test_preload_shape_reuses_shape_pipeline_cache(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+        cache = module.PipelineCache(event_sink=replies.append)
+        built: list[str] = []
+
+        def fake_build(args):
+            built.append(args.model)
+            return object()
+
+        with mock.patch.object(module._base, "build_shape_pipeline", fake_build):
+            first = module.dispatch_serve_command(
+                {"command": "preload_shape", "job_id": "job-preload-1", "request": {}},
+                cache=cache,
+                emit_fn=replies.append,
+            )
+            second = module.dispatch_serve_command(
+                {"command": "preload_shape", "job_id": "job-preload-2", "request": {}},
+                cache=cache,
+                emit_fn=replies.append,
+            )
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(built, ["tencent/Hunyuan3D-2mini"])
+        completed = [item for item in replies if item.get("event") == "completed"]
+        self.assertEqual(len(completed), 2, replies)
+        self.assertFalse(completed[0]["cache_hit"])
+        self.assertTrue(completed[1]["cache_hit"])
+        self.assertEqual(completed[-1]["stage"], "shape_preloaded")
