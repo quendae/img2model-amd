@@ -5,7 +5,8 @@ from collections import defaultdict
 import numpy as np
 import trimesh
 
-from .models import CleanupReport
+from .models import CleanupReport, ReductionPolicy, RepairPolicy
+from .pymeshlab_backend import adaptive_qem_reduce, repair_with_pymeshlab
 
 
 def _mesh_scale(mesh: trimesh.Trimesh) -> float:
@@ -101,6 +102,20 @@ def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
     return _face_components_from_neighbors(face_neighbors)
 
 
+def _boundary_edge_count(mesh: trimesh.Trimesh) -> int:
+    _vertex_faces, _vertex_neighbors, _face_neighbors, edges = _topology(
+        np.asarray(mesh.faces), len(mesh.vertices)
+    )
+    return sum(1 for occurrences in edges.values() if len(occurrences) == 1)
+
+
+def _is_edge_manifold(mesh: trimesh.Trimesh) -> bool:
+    _vertex_faces, _vertex_neighbors, _face_neighbors, edges = _topology(
+        np.asarray(mesh.faces), len(mesh.vertices)
+    )
+    return all(len(occurrences) <= 2 for occurrences in edges.values())
+
+
 def _remove_small_components(mesh: trimesh.Trimesh, min_area_ratio: float) -> int:
     components = _face_components(mesh)
     if len(components) <= 1:
@@ -178,9 +193,6 @@ def _relax_spike_vertices(
         if len(faces) < 2:
             continue
 
-        # Estimate the local contribution from a normal-sized face instead of
-        # using the stretched spike triangles themselves, which would make an
-        # obvious spike appear artificially important.
         baseline_area_ratio = typical_face_area * len(faces) / total_area
         if baseline_area_ratio > max_area_ratio:
             continue
@@ -243,8 +255,6 @@ def _repair_face_winding(mesh: trimesh.Trimesh) -> None:
         if len(occurrences) != 2:
             continue
         (first_face, first_direction), (second_face, second_direction) = occurrences
-        # Neighbor orientation multiplier needed so the shared directed edge
-        # runs in the opposite direction after applying each face flip.
         required = -first_direction * second_direction
         relations[first_face].append((second_face, required))
         relations[second_face].append((first_face, required))
@@ -268,7 +278,6 @@ def _repair_face_winding(mesh: trimesh.Trimesh) -> None:
         if len(component_flips):
             faces[component_flips] = faces[component_flips][:, [0, 2, 1]]
 
-        # For a closed component, choose outward-facing winding using signed volume.
         component_faces = faces[component]
         edge_counts: dict[tuple[int, int], int] = defaultdict(int)
         for face in component_faces:
@@ -288,6 +297,74 @@ def _repair_face_winding(mesh: trimesh.Trimesh) -> None:
     mesh.faces = faces
 
 
+def _heavy_policies(config) -> tuple[RepairPolicy, ReductionPolicy]:
+    manual_target = (
+        config.settings.target_triangles
+        if config.settings.triangle_budget_mode == "manual"
+        else None
+    )
+    if config.preset == "game-ready":
+        return (
+            RepairPolicy(
+                close_holes_max_edges=100,
+                remove_component_faces_below=25,
+                isotropic_iterations=1,
+                isotropic_target_pct=1.0,
+                manifold_finalize=True,
+            ),
+            ReductionPolicy(
+                min_faces=3000,
+                start_faces=48000,
+                error_tolerance=0.006,
+                manual_target_faces=manual_target,
+            ),
+        )
+    if config.preset == "aggressive":
+        return (
+            RepairPolicy(
+                close_holes_max_edges=250,
+                remove_component_faces_below=50,
+                isotropic_iterations=2,
+                isotropic_target_pct=1.5,
+                manifold_finalize=True,
+            ),
+            ReductionPolicy(
+                min_faces=1500,
+                start_faces=24000,
+                error_tolerance=0.012,
+                manual_target_faces=manual_target,
+            ),
+        )
+    raise ValueError(f"Heavy cleanup policy is not defined for preset: {config.preset}")
+
+
+def _cleanup_heavy(mesh: trimesh.Trimesh, config, report: CleanupReport) -> trimesh.Trimesh:
+    repair_policy, reduction_policy = _heavy_policies(config)
+    repaired, repair_stats = repair_with_pymeshlab(mesh, repair_policy)
+    reduced, reduction_stats = adaptive_qem_reduce(repaired, reduction_policy)
+
+    report.components_removed = repair_stats.components_removed
+    report.watertight_before = repair_stats.watertight_before
+    report.watertight_after = bool(reduced.is_watertight)
+    report.manifold_before = _is_edge_manifold(mesh)
+    report.manifold_after = _is_edge_manifold(reduced)
+    report.boundary_edges_before = repair_stats.boundary_edges_before
+    report.boundary_edges_after = _boundary_edge_count(reduced)
+    report.holes_closed = repair_stats.holes_closed
+    report.non_manifold_edges_fixed = repair_stats.non_manifold_edges_fixed
+    report.remeshed = repair_stats.remeshed
+    report.repair_backend = repair_stats.repair_backend
+    report.normalized_error = reduction_stats.normalized_error
+    report.target_triangles = reduction_stats.requested_target_faces
+    report.warnings.extend(repair_stats.warnings)
+
+    if len(repaired.faces) > reduction_policy.min_faces and len(reduced.faces) == len(repaired.faces):
+        report.warnings.append(
+            "Adaptive reduction kept the repaired reference because smaller candidates exceeded the geometry-error tolerance."
+        )
+    return reduced
+
+
 def cleanup_mesh(mesh: trimesh.Trimesh, config):
     working = mesh.copy()
     started = time.perf_counter()
@@ -305,46 +382,47 @@ def cleanup_mesh(mesh: trimesh.Trimesh, config):
     )
     settings = config.settings
 
-    if settings.remove_degenerate:
-        _remove_degenerate_faces(working)
-    if settings.weld_vertices:
-        report.vertices_welded = _weld_near_vertices(working, settings.weld_relative_epsilon)
-    if settings.remove_small_islands:
-        report.components_removed = _remove_small_components(working, settings.min_component_area_ratio)
-    if settings.spike_cleanup:
-        report.spikes_adjusted = _relax_spike_vertices(
-            working,
-            settings.spike_edge_ratio,
-            settings.spike_max_area_ratio,
-            settings.spike_normal_angle_deg,
-        )
-    if settings.smooth_surface and settings.smoothing_iterations > 0:
-        _taubin_smooth(
-            working,
-            settings.smoothing_iterations,
-            settings.taubin_lambda,
-            settings.taubin_nu,
-        )
-    if settings.recompute_normals:
-        _repair_face_winding(working)
+    if config.preset in {"game-ready", "aggressive"}:
+        working = _cleanup_heavy(working, config, report)
+    else:
+        if settings.remove_degenerate:
+            _remove_degenerate_faces(working)
+        if settings.weld_vertices:
+            report.vertices_welded = _weld_near_vertices(working, settings.weld_relative_epsilon)
+        if settings.remove_small_islands:
+            report.components_removed = _remove_small_components(working, settings.min_component_area_ratio)
+        if settings.spike_cleanup:
+            report.spikes_adjusted = _relax_spike_vertices(
+                working,
+                settings.spike_edge_ratio,
+                settings.spike_max_area_ratio,
+                settings.spike_normal_angle_deg,
+            )
+        if settings.smooth_surface and settings.smoothing_iterations > 0:
+            _taubin_smooth(
+                working,
+                settings.smoothing_iterations,
+                settings.taubin_lambda,
+                settings.taubin_nu,
+            )
+        if settings.recompute_normals:
+            _repair_face_winding(working)
 
     working.remove_unreferenced_vertices()
     report.triangles_after = len(working.faces)
     report.vertices_after = len(working.vertices)
     report.components_after = len(_face_components(working))
-    report.cleanup_ms = round((time.perf_counter() - started) * 1000.0, 3)
-
-    removed_ratio = (
+    report.reduction_ratio = (
         0.0
         if report.triangles_before == 0
-        else 1.0 - report.triangles_after / report.triangles_before
+        else max(0.0, 1.0 - report.triangles_after / report.triangles_before)
     )
+    report.cleanup_ms = round((time.perf_counter() - started) * 1000.0, 3)
+
     if report.components_before > 0 and report.components_removed > max(3, report.components_before // 4):
         report.warnings.append("Large number of small components removed.")
-    if config.preset == "light" and removed_ratio > 0.20:
+    if config.preset == "light" and report.reduction_ratio > 0.20:
         report.warnings.append("Light cleanup removed more geometry than expected.")
-    if config.preset == "game-ready" and removed_ratio > 0.40:
-        report.warnings.append("Game-ready cleanup removed a large amount of geometry.")
     if config.preset == "aggressive":
         report.warnings.append("Aggressive cleanup may alter silhouette and fine detail.")
     if not working.is_watertight:
