@@ -101,12 +101,37 @@ _base.emit = _diagnostic_emit
 emit = _diagnostic_emit
 
 
+class _ShapePipelineNoProgress:
+    """Prevent third-party tqdm output from writing into the desktop worker pipes."""
+
+    def __init__(self, pipeline: Any) -> None:
+        self._pipeline = pipeline
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # The desktop owns progress reporting over JSONL. Hunyuan's tqdm writes
+        # directly to a terminal stream, which is not a valid console handle for
+        # the persistent Windows/Tauri worker and can raise OSError(22).
+        kwargs["enable_pbar"] = False
+        return self._pipeline(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pipeline, name)
+
+
 class PipelineCache(_BasePipelineCache):
     """Existing Hunyuan caches plus a distinct one-entry cleanup cache."""
 
     def __init__(self, event_sink: Callable[[dict[str, Any]], None] | None = None) -> None:
         super().__init__(event_sink=event_sink)
         self.cleanup_mesh_cache = CleanupMeshCache()
+
+    def get_shape_pipeline(
+        self,
+        loader: Callable[[], Any],
+        key: tuple[Any, ...] = (),
+    ) -> tuple[Any, bool]:
+        pipeline, cache_hit = super().get_shape_pipeline(loader, key)
+        return _ShapePipelineNoProgress(pipeline), cache_hit
 
     def clear(self) -> None:
         self.cleanup_mesh_cache.clear()
