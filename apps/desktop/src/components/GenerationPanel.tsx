@@ -374,13 +374,14 @@ export function GenerationPanel({
                       <input
                         aria-label="Target triangles"
                         type="number"
-                        min={100}
-                        step={100}
+                        min={500}
+                        max={500000}
+                        step={500}
                         value={targetTriangles}
                         onChange={(event) => onCleanupOverridesChange({
                           ...cleanupOverrides,
                           triangle_budget_mode: 'manual',
-                          target_triangles: Math.max(100, Number(event.target.value) || 100),
+                          target_triangles: Math.min(500000, Math.max(500, Number(event.target.value) || 500)),
                         })}
                       />
                     </label>
