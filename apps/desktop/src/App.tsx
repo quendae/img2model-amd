@@ -328,52 +328,56 @@ export function App() {
       </header>
 
       <main className="workspace">
-        <aside className="left-rail">
-          <InputPanel
-            inputPath={inputPath}
-            previewUrl={previewUrl}
-            onChoose={chooseImage}
-            onClear={() => {
-              setInputPath(null);
-              setModelPath(null);
-              setTextureMeshPath(null);
-              setMeshInputPath(null);
-              job.resetForNewInput();
-            }}
-          />
-          <GenerationPanel
-            backend={backend}
-            workflowMode={workflowMode}
-            outputMode={shapeOutputMode}
-            profile={profile}
-            textureProfile={textureProfile}
-            textureEngine={textureEngine}
-            textureMeshPath={textureMeshPath}
-            meshInputPath={meshInputPath}
-            cleanupPreset={activeCleanupPreset}
-            cleanupConfigLabel={activeCleanupLabel}
-            cleanupOverrides={activeCleanupOverrides}
-            seed={seed}
-            steps={steps}
-            removeBackground={removeBackground}
-            textureAvailable={Boolean(textureHealth?.ok)}
-            busy={job.busy}
-            canGenerate={canGenerate}
-            progress={progressPercent}
-            progressLabel={progressLabelText}
-            onBackendChange={setBackend}
-            onWorkflowModeChange={setWorkflowMode}
-            onShapeOutputModeChange={setShapeOutputMode}
-            onProfileChange={changeProfile}
-            onTextureProfileChange={setTextureProfile}
-            onCleanupPresetChange={changeCleanupPreset}
-            onCleanupOverridesChange={changeCleanupOverrides}
-            onSeedChange={setSeed}
-            onStepsChange={setSteps}
-            onRemoveBackgroundChange={setRemoveBackground}
-            onChooseMesh={chooseMesh}
-            onGenerate={runGeneration}
-          />
+        <aside className="left-rail control-rail" data-testid="control-rail">
+          <div className="control-column input-control-column">
+            <InputPanel
+              inputPath={inputPath}
+              previewUrl={previewUrl}
+              onChoose={chooseImage}
+              onClear={() => {
+                setInputPath(null);
+                setModelPath(null);
+                setTextureMeshPath(null);
+                setMeshInputPath(null);
+                job.resetForNewInput();
+              }}
+            />
+          </div>
+          <div className="control-column generation-control-column">
+            <GenerationPanel
+              backend={backend}
+              workflowMode={workflowMode}
+              outputMode={shapeOutputMode}
+              profile={profile}
+              textureProfile={textureProfile}
+              textureEngine={textureEngine}
+              textureMeshPath={textureMeshPath}
+              meshInputPath={meshInputPath}
+              cleanupPreset={activeCleanupPreset}
+              cleanupConfigLabel={activeCleanupLabel}
+              cleanupOverrides={activeCleanupOverrides}
+              seed={seed}
+              steps={steps}
+              removeBackground={removeBackground}
+              textureAvailable={Boolean(textureHealth?.ok)}
+              busy={job.busy}
+              canGenerate={canGenerate}
+              progress={progressPercent}
+              progressLabel={progressLabelText}
+              onBackendChange={setBackend}
+              onWorkflowModeChange={setWorkflowMode}
+              onShapeOutputModeChange={setShapeOutputMode}
+              onProfileChange={changeProfile}
+              onTextureProfileChange={setTextureProfile}
+              onCleanupPresetChange={changeCleanupPreset}
+              onCleanupOverridesChange={changeCleanupOverrides}
+              onSeedChange={setSeed}
+              onStepsChange={setSteps}
+              onRemoveBackgroundChange={setRemoveBackground}
+              onChooseMesh={chooseMesh}
+              onGenerate={runGeneration}
+            />
+          </div>
         </aside>
 
         <ModelViewer
