@@ -6,10 +6,10 @@ import trimesh
 from backends.mesh_processing.pymeshlab_backend import RepairPolicy, repair_with_pymeshlab
 
 
-def _open_box_with_tiny_component() -> trimesh.Trimesh:
-    main = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+def _open_main_with_tiny_component() -> trimesh.Trimesh:
+    main = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
     keep = np.ones(len(main.faces), dtype=bool)
-    keep[[0, 1]] = False
+    keep[0] = False
     main.update_faces(keep)
     main.remove_unreferenced_vertices()
 
@@ -29,7 +29,7 @@ class PyMeshLabRepairBackendTests(unittest.TestCase):
         )
 
     def test_repair_closes_small_hole_and_removes_tiny_component(self) -> None:
-        source = _open_box_with_tiny_component()
+        source = _open_main_with_tiny_component()
         repaired, stats = repair_with_pymeshlab(source, self.policy)
 
         self.assertGreater(len(repaired.faces), 0)
