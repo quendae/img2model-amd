@@ -2,7 +2,12 @@ import contextlib
 import io
 import json
 import sys
+import tempfile
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest import mock
+
+from PIL import Image
 
 import worker_tests_base as base_worker_tests
 
@@ -88,3 +93,66 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
         self.assertFalse(completed[0]["cache_hit"])
         self.assertTrue(completed[1]["cache_hit"])
         self.assertEqual(completed[-1]["stage"], "shape_preloaded")
+
+    def test_shape_generation_uses_hunyuan_default_generator_on_windows_rocm(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+        calls: dict[str, object] = {}
+
+        fake_torch = ModuleType("torch")
+        fake_torch.cuda = SimpleNamespace(is_available=lambda: True)
+
+        class ForbiddenCudaGenerator:
+            def __init__(self, *args, **kwargs):
+                raise OSError(22, "Invalid argument")
+
+        def manual_seed(seed: int):
+            calls["seed"] = seed
+            return ("default-generator", seed)
+
+        fake_torch.Generator = ForbiddenCudaGenerator
+        fake_torch.manual_seed = manual_seed
+
+        class FakeMesh:
+            def export(self, path: str) -> None:
+                Path(path).write_bytes(b"fake-glb")
+
+        class FakePipeline:
+            def __call__(self, **kwargs):
+                calls["generator"] = kwargs.get("generator")
+                return [FakeMesh()]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "input.png"
+            output_path = Path(tmp) / "output.glb"
+            Image.new("RGBA", (2, 2), (255, 0, 0, 255)).save(input_path)
+
+            args = SimpleNamespace(
+                input=str(input_path),
+                output=str(output_path),
+                model="tencent/Hunyuan3D-2mini",
+                subfolder="hunyuan3d-dit-v2-mini",
+                variant="fp16",
+                steps=30,
+                seed=1234,
+                remove_background=False,
+            )
+            cache = module.PipelineCache(event_sink=replies.append)
+            cache.shape_pipeline = FakePipeline()
+            cache.shape_key = (args.model, args.subfolder, args.variant)
+
+            previous_sink = module._base._EVENT_SINK
+            previous_job_id = module._base._CURRENT_JOB_ID
+            module._base._EVENT_SINK = replies.append
+            module._base._CURRENT_JOB_ID = "job-shape-generator"
+            try:
+                with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+                    result = module.run_generate(args, cache=cache)
+            finally:
+                module._base._EVENT_SINK = previous_sink
+                module._base._CURRENT_JOB_ID = previous_job_id
+
+            self.assertEqual(result, 0, replies)
+            self.assertEqual(calls["seed"], 1234)
+            self.assertEqual(calls["generator"], ("default-generator", 1234))
+            self.assertTrue(output_path.is_file())
