@@ -1,0 +1,182 @@
+/* Compact desktop workspace tuned for 2560×1440-class displays. */
+
+.mode-tabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.cleanup-preset-control {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.cleanup-preset-control button {
+  min-width: 0;
+  padding: 0 5px;
+  font-size: 9px;
+}
+
+.cleanup-config-label {
+  color: #707985;
+  font-size: 9px;
+}
+
+.compact-field {
+  margin-top: 8px;
+  gap: 4px;
+}
+
+.compact-field-grid {
+  gap: 6px;
+}
+
+.compact-toggle-row {
+  margin-top: 10px;
+}
+
+.compact-primary-action {
+  min-height: 36px;
+  margin-top: 10px;
+}
+
+.generation-heading {
+  margin-bottom: 10px;
+}
+
+.compact-texture-profiles {
+  gap: 4px;
+}
+
+.compact-texture-profiles button {
+  min-height: 48px;
+  padding: 6px 7px;
+}
+
+.compact-texture-profiles small {
+  line-height: 1.2;
+}
+
+@media (min-width: 1500px) {
+  .app-shell {
+    grid-template-rows: 62px minmax(0, 1fr);
+  }
+
+  .app-header {
+    padding: 0 20px;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(560px, 610px) minmax(620px, 1fr) 310px;
+  }
+
+  .control-rail {
+    display: grid;
+    grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+    align-items: start;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .control-column {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .control-column .panel {
+    padding: 12px;
+  }
+
+  .control-column .panel-heading {
+    margin-bottom: 10px;
+  }
+
+  .control-column .panel-heading p {
+    margin-top: 3px;
+    font-size: 9.5px;
+  }
+
+  .input-control-column .image-drop {
+    height: 205px;
+    aspect-ratio: auto;
+  }
+
+  .input-control-column .empty-input {
+    padding: 12px;
+  }
+
+  .generation-control-column .field select,
+  .generation-control-column .field input[type="number"] {
+    height: 32px;
+  }
+
+  .generation-control-column .mode-tabs {
+    margin-bottom: 8px;
+  }
+
+  .generation-control-column .mode-tabs button,
+  .generation-control-column .segmented-control button {
+    min-height: 29px;
+  }
+
+  .generation-control-column .toggle-row small {
+    display: none;
+  }
+
+  .generation-control-column .primary-button {
+    min-height: 36px;
+  }
+
+  .right-rail {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .right-rail .panel {
+    padding: 12px;
+  }
+
+  .activity-line {
+    min-height: 36px;
+  }
+
+  .activity-meta {
+    grid-template-columns: 68px minmax(0, 1fr);
+    gap: 5px 7px;
+  }
+}
+
+@media (min-width: 1500px) and (max-height: 1100px) {
+  .input-control-column .image-drop {
+    height: 160px;
+  }
+
+  .control-column .panel-heading p,
+  .compact-texture-profiles small {
+    display: none;
+  }
+
+  .compact-texture-profiles button {
+    min-height: 32px;
+    align-content: center;
+  }
+}
+
+@media (max-width: 1499px) and (min-width: 981px) {
+  .workspace {
+    grid-template-columns: 320px minmax(420px, 1fr) 300px;
+  }
+
+  .control-rail {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .control-column {
+    display: contents;
+  }
+
+  .cleanup-preset-control {
+    grid-template-columns: 1fr 1fr;
+  }
+}
