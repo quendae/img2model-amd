@@ -6,7 +6,7 @@
 
 **Architecture:** Convert Tauri startup into a two-window lifecycle: `splash` is visible immediately and `main` starts hidden. Rust owns the first worker health/preload sequence and window visibility; the React runtime hook becomes a consumer/recovery layer for restart and post-Texture re-preload instead of duplicating the first startup on mount.
 
-**Tech Stack:** Tauri v2, Rust async runtime, React/TypeScript/Vite multi-page build, existing `WorkerSessionManager` and `preload_hunyuan_shape` path.
+**Tech Stack:** Tauri v2, Rust async runtime, React/TypeScript/Vite multi-page build, existing `WorkerSessionManager` and Shape preload path.
 
 **Spec:** `docs/superpowers/specs/2026-09-13-game-ready-remesh-startup-design.md`
 
@@ -26,15 +26,14 @@
 
 - `apps/desktop/src-tauri/tauri.conf.json` — configure hidden main + splash window.
 - `apps/desktop/src-tauri/src/startup.rs` — startup state/result and worker preload orchestration.
-- `apps/desktop/src-tauri/src/lib.rs` — register startup state, setup hook, and initial-runtime-state command.
+- `apps/desktop/src-tauri/src/lib.rs` — register startup state, setup hook, and startup-state command.
 - `apps/desktop/splashscreen.html` — dedicated lightweight Vite entry.
 - `apps/desktop/src/splash.tsx` — splash UI/status subscription.
 - `apps/desktop/src/splash.css` — minimal splash styling.
 - `apps/desktop/vite.config.ts` — build both `index.html` and `splashscreen.html`.
-- `apps/desktop/src/lib/tauri.ts` — startup state/event bridge.
+- `apps/desktop/src/lib/tauri.ts` — startup state bridge.
 - `apps/desktop/src/lib/useRuntimeStartup.ts` — hydrate from Rust state and keep restart/re-preload behavior.
-- `apps/desktop/src/lib/useRuntimeStartup.test.tsx` and `AppRuntimeStartup.test.tsx` — no duplicate mount preload and correct error recovery.
-- Rust tests inside `startup.rs` / existing Tauri core tests — startup state transitions independent of GUI handles.
+- `apps/desktop/src/lib/useRuntimeStartup.test.tsx` and `apps/desktop/src/AppRuntimeStartup.test.tsx` — no duplicate mount preload and correct error recovery.
 
 ---
 
@@ -46,40 +45,34 @@
 - Create: `apps/desktop/src/splash.tsx`
 - Create: `apps/desktop/src/splash.css`
 - Modify: `apps/desktop/vite.config.ts`
-- Add/modify frontend tests for splash markup/build contract.
+- Create: `apps/desktop/src/splash.test.tsx`
 
 **Interfaces:**
-- Tauri windows: labels `main` and `splash`.
-- Splash subscribes to a Tauri event named `runtime-startup-status` carrying `{ phase, message }`.
+- Tauri windows: `main`, `splash`.
+- Splash subscribes to `runtime-startup-status` with `{ phase: string, message: string }`.
 
-- [ ] **Step 1: Write RED configuration/build tests**
+- [ ] **Step 1: Write RED splash tests**
 
-Add a small test that reads Tauri config / exported splash component contract and verifies:
+In `splash.test.tsx`, render the splash and assert the default visible content:
 
-```text
-main.visible == false
-splash.visible == true
-splash.url == "splashscreen.html"
+```tsx
+expect(screen.getByText('Img2Model AMD')).toBeInTheDocument();
+expect(screen.getByText('Starting ROCm worker...')).toBeInTheDocument();
 ```
 
-And a frontend test renders:
+Add a config test or direct JSON assertion that `main.visible` is `false`, `splash.visible` is `true`, and `splash.url` is `splashscreen.html`.
 
-```text
-Img2Model AMD
-Starting ROCm worker...
-```
-
-- [ ] **Step 2: Run RED**
+- [ ] **Step 2: Verify RED**
 
 ```bash
-cd apps/desktop && npm test -- --run && npm run build
+cd apps/desktop && npm test -- --run
 ```
 
-Expected: new tests/build contract fail because the splash entry does not exist.
+Expected: FAIL because the splash entry/config does not exist.
 
-- [ ] **Step 3: Configure two Tauri windows**
+- [ ] **Step 3: Configure both windows**
 
-Set the main window to:
+Set main:
 
 ```json
 {
@@ -113,8 +106,6 @@ Add splash:
 
 - [ ] **Step 4: Add Vite multi-page build**
 
-Use Rollup input in `vite.config.ts`:
-
 ```ts
 import { resolve } from 'node:path';
 
@@ -128,13 +119,13 @@ build: {
 },
 ```
 
-`splashscreen.html` mounts `/src/splash.tsx` only; do not load the full app tree/3D viewer.
+`splashscreen.html` mounts `/src/splash.tsx` only. It must not import the main App/Three.js viewer.
 
-- [ ] **Step 5: Implement minimal responsive splash**
+- [ ] **Step 5: Implement the minimal splash**
 
-`splash.tsx` maintains local text with default `Starting ROCm worker...` and listens for `runtime-startup-status`. Render only logo/title, message, and indeterminate progress bar/spinner. No model/Three.js imports.
+`splash.tsx` owns local `{ phase, message }`, defaults to `Starting ROCm worker...`, subscribes with `@tauri-apps/api/event.listen('runtime-startup-status', ...)`, and renders title, status and an indeterminate progress element. Unlisten on unmount.
 
-- [ ] **Step 6: Run GREEN**
+- [ ] **Step 6: Verify GREEN**
 
 ```bash
 cd apps/desktop && npm test -- --run && npm run build
@@ -145,23 +136,22 @@ Expected: PASS and `dist/splashscreen.html` exists.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/tauri.conf.json apps/desktop/splashscreen.html apps/desktop/src/splash.tsx apps/desktop/src/splash.css apps/desktop/vite.config.ts apps/desktop/src/*test*
+git add apps/desktop/src-tauri/tauri.conf.json apps/desktop/splashscreen.html apps/desktop/src/splash.tsx apps/desktop/src/splash.css apps/desktop/src/splash.test.tsx apps/desktop/vite.config.ts
 git commit -m "feat: add startup splash window"
 ```
 
 ---
 
-### Task 2: Move first health/preload lifecycle into Rust startup orchestration
+### Task 2: Move first health/preload lifecycle into Rust
 
 **Files:**
 - Create: `apps/desktop/src-tauri/src/startup.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
-- Test: Rust tests in `startup.rs`
 
 **Interfaces:**
 
 ```rust
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStartupSnapshot {
     pub phase: String,
@@ -173,34 +163,46 @@ pub struct RuntimeStartupSnapshot {
 }
 
 #[derive(Default)]
-pub struct RuntimeStartupState(std::sync::Mutex<RuntimeStartupSnapshot>);
+pub struct RuntimeStartupState(pub std::sync::Mutex<RuntimeStartupSnapshot>);
+
+pub async fn run_and_publish(app: tauri::AppHandle);
 ```
 
-Command:
+Tauri command:
 
 ```rust
 #[tauri::command]
-fn get_runtime_startup_state(app: tauri::AppHandle) -> RuntimeStartupSnapshot
+fn get_runtime_startup_state(app: tauri::AppHandle) -> RuntimeStartupSnapshot;
 ```
 
 - [ ] **Step 1: Write RED state-machine tests**
 
-Test a pure helper/orchestrator abstraction with injected closures so GUI handles are not required:
+Create a pure helper in `startup.rs` with injected callbacks:
+
+```rust
+fn run_startup_with<H, T, P>(health: H, texture_health: T, preload: P) -> RuntimeStartupSnapshot
+where
+    H: FnOnce() -> Result<worker::WorkerHealth, String>,
+    T: FnOnce() -> Result<worker::TextureHealth, String>,
+    P: FnOnce() -> Result<worker::GenerateResult, String>;
+```
+
+Tests:
 
 ```rust
 #[test]
-fn successful_startup_reaches_ready_after_health_and_preload() {
+fn successful_startup_reaches_ready() {
     let snapshot = run_startup_with(
         || Ok(fake_health_ok()),
         || Ok(fake_texture_health_ok()),
-        || Ok(fake_preload_result(21000.0)),
+        || Ok(fake_preload_result(21_000.0)),
     );
     assert_eq!(snapshot.phase, "ready");
     assert!(snapshot.shape_cache_ready);
 }
 
 #[test]
-fn preload_failure_returns_error_snapshot_instead_of_hanging() {
+fn preload_failure_reaches_error_without_hanging() {
     let snapshot = run_startup_with(
         || Ok(fake_health_ok()),
         || Ok(fake_texture_health_ok()),
@@ -211,58 +213,64 @@ fn preload_failure_returns_error_snapshot_instead_of_hanging() {
 }
 ```
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 2: Verify RED**
 
 ```bash
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features startup
 ```
 
-Expected: FAIL because `startup` module/state does not exist.
+Expected: FAIL because startup module/helpers do not exist.
 
-- [ ] **Step 3: Implement startup orchestration**
+- [ ] **Step 3: Implement pure orchestration semantics**
 
-`run_startup_with` sequence:
+`run_startup_with` performs:
 
 ```text
-phase=checking -> worker health
-texture health best-effort only
-phase=preloading -> WorkerSessionManager.preload_shape()
-phase=ready or phase=error
+health fails -> error
+health ok -> texture health best effort
+the preload callback runs
+preload success -> ready + shapeCacheReady=true + model_load_ms
+preload failure -> error + shapeCacheReady=false
 ```
 
-Texture health failure sets `texture_health=None` but does not fail Shape startup.
+Texture health failure stores `None` but does not fail startup.
 
-- [ ] **Step 4: Wire Tauri `.setup()` without blocking the UI thread**
+- [ ] **Step 4: Implement `run_and_publish(app)`**
 
-In `run()`:
+`run_and_publish` must:
+
+1. emit `runtime-startup-status` / `Checking ROCm runtime...` to `splash`;
+2. execute `worker::worker_health()` and best-effort `worker::worker_texture_health()` inside `spawn_blocking`;
+3. emit `Loading Hunyuan3D 2 Mini...`;
+4. execute `app.state::<WorkerSessionManager>().preload_shape()` inside `spawn_blocking`;
+5. update `RuntimeStartupState` with the terminal snapshot;
+6. emit `Ready` or `Runtime startup failed`;
+7. close `splash` and show/focus `main` in both success and failure paths.
+
+Use the same managed `WorkerSessionManager` already registered in `run()` so startup and later jobs share one persistent session/cache.
+
+- [ ] **Step 5: Wire `.setup()` and command**
+
+In `lib.rs`:
 
 ```rust
+pub mod startup;
+
+// ...
+.manage(worker_session::WorkerSessionManager::default())
+.manage(startup::RuntimeStartupState::default())
 .setup(|app| {
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        // emit status to splash before each blocking stage
-        // use spawn_blocking for health/preload work
-        // store final RuntimeStartupSnapshot
-        // always close splash and show main at terminal success/error
+        startup::run_and_publish(handle).await;
     });
     Ok(())
 })
 ```
 
-Use `handle.emit_to("splash", "runtime-startup-status", payload)` for status text. Terminal window transition must run for both `ready` and `error`:
+Register `get_runtime_startup_state` in `generate_handler!`. It clones the snapshot held by `RuntimeStartupState`.
 
-```rust
-if let Some(splash) = handle.get_webview_window("splash") { let _ = splash.close(); }
-if let Some(main) = handle.get_webview_window("main") { let _ = main.show(); let _ = main.set_focus(); }
-```
-
-Do not call the frontend `preload_hunyuan_shape` command during this first sequence; call `WorkerSessionManager.preload_shape()` directly so a single session owns the cache.
-
-- [ ] **Step 5: Add `get_runtime_startup_state` command**
-
-Register it in `tauri::generate_handler!` so React can hydrate the final Rust snapshot after `main` becomes visible.
-
-- [ ] **Step 6: Run GREEN**
+- [ ] **Step 6: Verify GREEN**
 
 ```bash
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
@@ -279,14 +287,14 @@ git commit -m "feat: preload hunyuan before showing main window"
 
 ---
 
-### Task 3: Hydrate React runtime state instead of duplicating startup preload
+### Task 3: Hydrate React from Rust startup state
 
 **Files:**
 - Modify: `apps/desktop/src/lib/tauri.ts`
 - Modify: `apps/desktop/src/lib/useRuntimeStartup.ts`
 - Modify: `apps/desktop/src/lib/useRuntimeStartup.test.tsx`
 - Modify: `apps/desktop/src/AppRuntimeStartup.test.tsx`
-- Modify: `apps/desktop/src/App.tsx` only if runtime initialization call sites require adjustment.
+- Modify: `apps/desktop/src/App.tsx` only if call sites require it.
 
 **Interfaces:**
 
@@ -300,12 +308,12 @@ export interface RuntimeStartupSnapshot {
   error: string | null;
 }
 
-export function getRuntimeStartupState(): Promise<RuntimeStartupSnapshot>
+export function getRuntimeStartupState(): Promise<RuntimeStartupSnapshot>;
 ```
 
 - [ ] **Step 1: Write RED hook tests**
 
-Mock `getRuntimeStartupState()` to return `ready` and assert:
+Mock a ready Rust snapshot and assert:
 
 ```ts
 expect(preloadHunyuanShape).not.toHaveBeenCalled();
@@ -313,41 +321,33 @@ expect(result.current.phase).toBe('ready');
 expect(result.current.shapeCacheReady).toBe(true);
 ```
 
-Add an error snapshot test and assert the hook exposes the Rust startup error while `ensureShapePreloaded()` remains available for a later Retry/Restart.
+Mock an error snapshot and assert the error is exposed while `initialize()` / `ensureShapePreloaded()` remain available for explicit recovery.
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 2: Verify RED**
 
 ```bash
 cd apps/desktop && npm test -- --run src/lib/useRuntimeStartup.test.tsx src/AppRuntimeStartup.test.tsx
 ```
 
-Expected: FAIL because the hook still calls `initialize()` on mount.
+Expected: FAIL because the hook still starts health/preload itself on mount.
 
-- [ ] **Step 3: Replace mount initialize with hydration**
+- [ ] **Step 3: Implement hydration**
 
-On first mount call only `getRuntimeStartupState()`, then copy returned fields into React state. Remove:
+Add `getRuntimeStartupState()` to `tauri.ts`. On initial hook mount, call only that command and copy snapshot fields into React state. Remove the automatic `void initialize()` mount path.
 
-```ts
-useEffect(() => {
-  void initialize();
-}, [initialize]);
-```
+Keep `initialize()` for explicit Retry/Restart after main is visible.
 
-from the first-startup path.
+- [ ] **Step 4: Preserve post-Texture re-preload**
 
-Keep `initialize()` as an explicit retry/restart function; it may still perform health + preload after the main window is already visible.
+Keep `markShapeEvicted()` and `ensureShapePreloaded()`. Returning to Shape after Paint evicts Shape may preload again; this is independent from first startup.
 
-- [ ] **Step 4: Preserve post-Texture eviction behavior**
-
-`markShapeEvicted()` continues to set `shapeCacheReady=false`. Returning to Shape may call `ensureShapePreloaded()` exactly as today. This is separate from the initial Rust preload.
-
-- [ ] **Step 5: Run GREEN**
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
 cd apps/desktop && npm test -- --run && npm run build
 ```
 
-Expected: PASS; startup tests assert one initial preload total (Rust), not Rust + React.
+Expected: PASS; tests prove the first preload happens only in Rust.
 
 - [ ] **Step 6: Commit**
 
@@ -358,13 +358,9 @@ git commit -m "fix: hydrate frontend from rust startup state"
 
 ---
 
-### Task 4: Full CI and Windows startup acceptance
+### Task 4: Full CI and RX 6950 XT startup acceptance
 
-**Files:**
-- Modify only after a new failing test if verification reveals a defect.
-
-**Interfaces:**
-- Expected startup timing on current RX 6950 XT: splash immediate, Shape preload roughly the existing ~20-23s, then main window appears ready.
+**Files:** no production edits during acceptance; a discovered defect starts a RED regression test in the owning task before any fix.
 
 - [ ] **Step 1: Run complete automated verification**
 
@@ -375,13 +371,11 @@ cd apps/desktop && npm test -- --run && npm run build
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
 ```
 
-Expected: all PASS.
+- [ ] **Step 2: Require CI 4/4 GREEN**
 
-- [ ] **Step 2: Require all CI jobs GREEN on one HEAD**
+Require `frontend`, `python-worker`, `rust-core`, `desktop-windows` on one HEAD.
 
-Require `frontend`, `python-worker`, `rust-core`, and `desktop-windows` success.
-
-- [ ] **Step 3: Sync runtime and launch on Windows**
+- [ ] **Step 3: Sync and launch on Windows**
 
 ```powershell
 git pull
@@ -389,32 +383,29 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup\windows-native-rocm.ps1
 npm run tauri -- dev
 ```
 
-- [ ] **Step 4: Verify startup UX manually**
+- [ ] **Step 4: Verify startup UX**
 
 Acceptance:
 
 ```text
 0-1s: splash visible and responsive
-status: Starting ROCm worker...
-status: Loading Hunyuan3D 2 Mini...
-terminal success: splash closes, main appears
-main header/runtime: Hunyuan3D ready
-first Shape: cache hit, Load ~0
+Starting ROCm worker... / Checking ROCm runtime...
+Loading Hunyuan3D 2 Mini...
+splash closes
+main appears with Hunyuan3D ready
+first Shape: cache hit and Load approximately 0
 ```
 
-No blank/frozen main window should be shown during preload.
+The blank/frozen main window must not appear during preload.
 
 - [ ] **Step 5: Verify failure escape path**
 
-Temporarily point `IMG2MODEL_WORKER` to an invalid path or otherwise use the existing test seam to force startup failure. Acceptance: splash closes, main opens with Runtime error and Restart worker available; Mesh mode remains reachable.
+Use the existing runtime-path test seam or temporarily set `IMG2MODEL_WORKER` to a nonexistent path before launch. Acceptance: splash terminates, main appears with Runtime error and Restart worker; Mesh mode remains reachable.
 
 - [ ] **Step 6: Verify Paint remains lazy**
 
-Startup Activity/worker logs must not show Paint pipeline loading or Shape-cache eviction before the user requests Texture.
+Startup logs/activity must not contain Hunyuan Paint loading or Shape-cache eviction before Texture is requested.
 
-- [ ] **Step 7: Commit only test-backed follow-up fixes**
+- [ ] **Step 7: Acceptance conclusion**
 
-```bash
-git add <verified-files-only>
-git commit -m "test: validate splash preload lifecycle"
-```
+If all checks pass, do not create a validation-only commit. If any check fails, return to the owning task, add a RED regression test, implement one fix, rerun that task, then repeat this acceptance task.
