@@ -23,7 +23,7 @@ export interface CleanupAdvancedOverrides {
   taubin_nu?: number;
   recompute_normals?: boolean;
   triangle_budget_mode?: 'auto' | 'manual';
-  target_triangles?: number;
+  target_triangles?: number | null;
 }
 
 export interface MeshCleanupReport {
