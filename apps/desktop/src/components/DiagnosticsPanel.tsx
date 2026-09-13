@@ -1,76 +1,89 @@
-import type { SystemDiagnostics, WorkerHealth } from '../domain/types';
+import type { SystemDiagnostics, TextureHealth, WorkerHealth } from '../domain/types';
+import type { RuntimePhase } from '../lib/useRuntimeStartup';
 
 interface DiagnosticsPanelProps {
   diagnostics: SystemDiagnostics | null;
   health: WorkerHealth | null;
+  textureHealth: TextureHealth | null;
+  runtimePhase: RuntimePhase;
   loading: boolean;
-  healthLoading: boolean;
   onRefresh: () => void;
-  onHealthCheck: () => void;
 }
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'off'}`} aria-hidden="true" />;
 }
 
+function phaseLabel(phase: RuntimePhase): string {
+  if (phase === 'ready') return 'Ready';
+  if (phase === 'preloading') return 'Loading Shape';
+  if (phase === 'checking') return 'Checking';
+  if (phase === 'error') return 'Error';
+  return 'Starting';
+}
+
 export function DiagnosticsPanel({
   diagnostics,
   health,
+  textureHealth,
+  runtimePhase,
   loading,
-  healthLoading,
   onRefresh,
-  onHealthCheck,
 }: DiagnosticsPanelProps) {
   return (
     <section className="panel diagnostics-panel" aria-labelledby="diagnostics-heading">
       <div className="panel-heading compact">
         <div>
           <h2 id="diagnostics-heading">Runtime</h2>
-          <p>Host and Hunyuan health</p>
+          <p>Automatic worker and model startup</p>
         </div>
         <button type="button" className="icon-button" onClick={onRefresh} disabled={loading} title="Refresh diagnostics">
           ↻
         </button>
       </div>
 
-      <dl className="diagnostics-list">
-        <div>
-          <dt>GPU</dt>
-          <dd>{diagnostics?.amdGpus.length ? diagnostics.amdGpus.join(', ') : 'No AMD GPU reported yet'}</dd>
-        </div>
-        <div>
-          <dt>OS</dt>
-          <dd>{diagnostics ? `${diagnostics.os} · ${diagnostics.arch}` : '—'}</dd>
-        </div>
-        <div>
-          <dt>WSL2</dt>
-          <dd><StatusDot ok={Boolean(diagnostics?.wslAvailable)} />{diagnostics?.wslAvailable ? 'Detected' : 'Not detected'}</dd>
-        </div>
-        <div>
-          <dt>Python</dt>
-          <dd>{diagnostics?.python ?? 'Not resolved'}</dd>
-        </div>
-      </dl>
-
       <div className="runtime-health">
         <div className="health-title">
-          <strong>Hunyuan worker</strong>
-          <span className={health?.ok ? 'health-ok' : 'health-off'}>{health?.ok ? 'Ready' : 'Not ready'}</span>
+          <strong>{health?.device_name ?? diagnostics?.amdGpus[0] ?? 'AMD runtime'}</strong>
+          <span className={runtimePhase === 'ready' ? 'health-ok' : 'health-off'}>{phaseLabel(runtimePhase)}</span>
         </div>
-        {health ? (
-          <div className="health-details">
-            <span>PyTorch {health.torch_available ? health.torch_version ?? 'found' : 'missing'}</span>
-            <span>HIP {health.hip_version ?? 'not detected'}</span>
-            <span>{health.device_name ?? 'No ROCm device reported'}</span>
-            {health.error && <span className="error-copy">{health.error}</span>}
-          </div>
-        ) : (
-          <p className="muted-copy">Run a health check against the configured AMD Python environment.</p>
-        )}
-        <button type="button" className="secondary-button full" onClick={onHealthCheck} disabled={healthLoading}>
-          {healthLoading ? 'Checking…' : 'Check Hunyuan runtime'}
-        </button>
+        <div className="health-details runtime-summary">
+          <span><StatusDot ok={Boolean(health?.ok)} />ROCm / Hunyuan Shape</span>
+          <span><StatusDot ok={Boolean(textureHealth?.ok)} />Hunyuan Paint {textureHealth?.ok ? 'ready' : 'lazy / unavailable'}</span>
+        </div>
       </div>
+
+      <details className="runtime-details">
+        <summary>Runtime details</summary>
+        <dl className="diagnostics-list">
+          <div>
+            <dt>GPU</dt>
+            <dd>{diagnostics?.amdGpus.length ? diagnostics.amdGpus.join(', ') : health?.device_name ?? 'No AMD GPU reported yet'}</dd>
+          </div>
+          <div>
+            <dt>OS</dt>
+            <dd>{diagnostics ? `${diagnostics.os} · ${diagnostics.arch}` : '—'}</dd>
+          </div>
+          <div>
+            <dt>WSL2</dt>
+            <dd><StatusDot ok={Boolean(diagnostics?.wslAvailable)} />{diagnostics?.wslAvailable ? 'Detected' : 'Not detected'}</dd>
+          </div>
+          <div>
+            <dt>Python</dt>
+            <dd>{health?.python ?? diagnostics?.python ?? 'Not resolved'}</dd>
+          </div>
+          <div>
+            <dt>PyTorch</dt>
+            <dd>{health?.torch_available ? health.torch_version ?? 'found' : 'Not reported'}</dd>
+          </div>
+          <div>
+            <dt>HIP</dt>
+            <dd>{health?.hip_version ?? 'Not detected'}</dd>
+          </div>
+        </dl>
+        {health?.error && <p className="error-copy">{health.error}</p>}
+        {textureHealth?.error && <p className="error-copy">{textureHealth.error}</p>}
+      </details>
     </section>
   );
 }
