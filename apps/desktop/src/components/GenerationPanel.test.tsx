@@ -45,6 +45,13 @@ describe('GenerationPanel', () => {
     expect(screen.getByRole('tab', { name: 'Mesh' })).toBeTruthy();
   });
 
+  it('uses the compact four-option cleanup control', () => {
+    render(<GenerationPanel {...(commonProps as any)} />);
+    const control = screen.getByLabelText('Mesh cleanup preset');
+    expect(control.className).toContain('cleanup-presets');
+    expect(control.querySelectorAll('button')).toHaveLength(4);
+  });
+
   it('shows Model only and Model + texture choices in Shape mode', () => {
     render(<GenerationPanel {...(commonProps as any)} />);
     expect(screen.getByRole('button', { name: 'Model only' })).toBeTruthy();
@@ -57,8 +64,11 @@ describe('GenerationPanel', () => {
     expect(screen.getByRole('button', { name: 'Light' }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('shows all four texture profiles when Model + texture is selected', () => {
+  it('shows all four texture profiles in one compact control when Model + texture is selected', () => {
     render(<GenerationPanel {...(commonProps as any)} outputMode="model-and-texture" />);
+    const control = screen.getByLabelText('Texture profile');
+    expect(control.className).toContain('texture-profile-control');
+    expect(control.querySelectorAll('button')).toHaveLength(4);
     for (const profile of ['Auto', 'Safe', 'Balanced', 'Quality']) {
       expect(screen.getByRole('button', { name: new RegExp(profile, 'i') })).toBeTruthy();
     }
