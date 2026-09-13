@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SETUP = ROOT / "scripts" / "setup" / "windows-native-rocm.ps1"
 TEXTURE_SETUP = ROOT / "scripts" / "setup" / "windows-hunyuan-texture.ps1"
 SMOKE = ROOT / "scripts" / "smoke" / "windows-native-rocm.ps1"
+BASE_REQUIREMENTS = ROOT / "backends" / "hunyuan" / "requirements-base.txt"
 
 
 class WindowsScriptRegressionTests(unittest.TestCase):
@@ -25,6 +26,17 @@ class WindowsScriptRegressionTests(unittest.TestCase):
             text,
             "Hunyuan imports torchvision, so the Windows ROCm setup must install the matching gfx1030 wheel",
         )
+
+    def test_game_ready_mesh_dependencies_are_pinned_and_verified(self) -> None:
+        requirements = BASE_REQUIREMENTS.read_text(encoding="utf-8")
+        self.assertIn("pymeshlab==2025.7.post1", requirements)
+        self.assertIn("manifold3d==3.5.3", requirements)
+
+        script = SETUP.read_text(encoding="utf-8")
+        self.assertIn("import pymeshlab", script)
+        self.assertIn("import manifold3d", script)
+        self.assertIn("PyMeshLab", script)
+        self.assertIn("Manifold3D", script)
 
     def test_texture_setup_reuses_existing_rocm_runtime_and_builds_native_extensions(self) -> None:
         text = TEXTURE_SETUP.read_text(encoding="utf-8")
@@ -73,7 +85,7 @@ class WindowsScriptRegressionTests(unittest.TestCase):
 
     def test_texture_setup_points_hipcc_at_therock_device_bitcode(self) -> None:
         text = TEXTURE_SETUP.read_text(encoding="utf-8")
-        self.assertIn('lib\\llvm\\amdgcn\\bitcode', text)
+        self.assertIn('lib\\\\llvm\\\\amdgcn\\\\bitcode', text)
         self.assertIn('$env:HIP_DEVICE_LIB_PATH', text)
         self.assertIn('$env:ROCM_DEVICE_LIB_PATH', text)
         self.assertIn('$env:HIP_PATH', text)
@@ -94,7 +106,7 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn('rocm-sdk.exe', text)
         self.assertIn('Initializing TheRock development tree', text)
         self.assertIn('path --root', text)
-        self.assertIn('thrust\\complex.h', text)
+        self.assertIn('thrust\\\\complex.h', text)
         self.assertIn('$RocmDevelRoot', text)
         self.assertIn('$env:ROCM_HOME = $RocmDevelRoot', text)
         self.assertIn('$env:CPATH', text)
