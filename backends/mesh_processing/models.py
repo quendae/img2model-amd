@@ -23,6 +23,29 @@ class CleanupSettings:
 
 
 @dataclass(frozen=True)
+class RepairPolicy:
+    close_holes_max_edges: int
+    remove_component_faces_below: int
+    isotropic_iterations: int
+    isotropic_target_pct: float
+    manifold_finalize: bool
+
+
+@dataclass
+class RepairStats:
+    watertight_before: bool
+    watertight_after: bool
+    boundary_edges_before: int | None
+    boundary_edges_after: int | None
+    holes_closed: int | None
+    non_manifold_edges_fixed: int | None
+    components_removed: int
+    remeshed: bool
+    repair_backend: str
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ResolvedCleanupConfig:
     preset: CleanupPreset
     label: str
