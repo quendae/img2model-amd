@@ -646,19 +646,17 @@ def run_generate(args: argparse.Namespace, cache: PipelineCache | None = None) -
             )
         model_load_ms = (time.perf_counter() - load_started) * 1000.0
 
-        generator = None
-        if hasattr(torch, "Generator") and torch.cuda.is_available():
-            generator = torch.Generator(device="cuda").manual_seed(args.seed)
-        else:
-            torch.manual_seed(args.seed)
+        # Match the official Hunyuan3D examples: keep the seeded generator on
+        # PyTorch's default device instead of constructing a device-specific
+        # CUDA generator. The latter can fail on native Windows ROCm/TheRock.
+        generator = torch.manual_seed(args.seed)
 
         generate_kwargs: dict[str, Any] = {
             "image": image,
             "num_inference_steps": args.steps,
             "output_type": "trimesh",
+            "generator": generator,
         }
-        if generator is not None:
-            generate_kwargs["generator"] = generator
 
         emit("progress", ok=True, stage="running_shape", progress=0.3, cache_hit=cache_hit, cache_kind="shape")
         inference_started = time.perf_counter()
