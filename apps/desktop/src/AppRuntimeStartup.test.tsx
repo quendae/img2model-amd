@@ -124,4 +124,14 @@ describe('App runtime startup integration', () => {
     expect(screen.getByTestId('manual-health-prop').textContent).toBe('false');
     expect(screen.getByTestId('runtime-phase-prop').textContent).toBe('ready');
   });
+
+  it('renders the desktop controls as a dedicated two-column control rail', () => {
+    render(<App />);
+
+    const rail = screen.getByTestId('control-rail');
+    expect(rail.className).toContain('control-rail');
+    expect(rail.querySelectorAll('.control-column')).toHaveLength(2);
+    expect(rail.querySelector('[data-testid="input-panel"]')).toBeTruthy();
+    expect(rail.querySelector('[data-testid="generation-panel"]')).toBeTruthy();
+  });
 });
