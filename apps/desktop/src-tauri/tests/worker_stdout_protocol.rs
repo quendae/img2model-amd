@@ -1,4 +1,4 @@
-use img2model_amd::worker_session::parse_worker_stdout_line;
+use img2model_amd_lib::worker_session::parse_worker_stdout_line;
 
 #[test]
 fn plain_worker_stdout_is_log_noise_not_protocol_error() {
