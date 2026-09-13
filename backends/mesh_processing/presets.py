@@ -2,13 +2,13 @@ from dataclasses import asdict
 
 from .models import CleanupSettings, ResolvedCleanupConfig
 
-ALGORITHM_VERSION = "mesh-cleanup-v1"
+ALGORITHM_VERSION = "mesh-cleanup-v2"
 
 PRESET_SETTINGS = {
     "off": CleanupSettings(False, False, 0.0, False, 0.0, False, 0.0, 0.0, 0.0, False, 0, 0.0, 0.0, False),
     "light": CleanupSettings(True, True, 1e-7, True, 1e-4, False, 0.0, 0.0, 0.0, False, 0, 0.0, 0.0, True),
-    "game-ready": CleanupSettings(True, True, 1e-6, True, 5e-4, True, 4.0, 2e-2, 55.0, True, 2, 0.25, -0.26, True),
-    "aggressive": CleanupSettings(True, True, 5e-6, True, 2e-3, True, 2.75, 5e-2, 40.0, True, 4, 0.35, -0.36, True),
+    "game-ready": CleanupSettings(True, True, 1e-6, True, 5e-4, False, 0.0, 0.0, 0.0, False, 0, 0.0, 0.0, True),
+    "aggressive": CleanupSettings(True, True, 5e-6, True, 2e-3, False, 0.0, 0.0, 0.0, False, 0, 0.0, 0.0, True),
 }
 
 _LABELS = {
@@ -39,6 +39,16 @@ def resolve_cleanup_config(preset: str, overrides: dict[str, object] | None) -> 
         raise ValueError("min_component_area_ratio must be between 0 and 0.25")
     if not 0.0 <= settings.spike_max_area_ratio <= 0.25:
         raise ValueError("spike_max_area_ratio must be between 0 and 0.25")
+    if settings.triangle_budget_mode not in {"auto", "manual"}:
+        raise ValueError("triangle_budget_mode must be 'auto' or 'manual'")
+    if settings.target_triangles is not None:
+        if isinstance(settings.target_triangles, bool) or not isinstance(settings.target_triangles, int):
+            raise ValueError("target_triangles must be an integer")
+        if not 500 <= settings.target_triangles <= 500000:
+            raise ValueError("target_triangles must be between 500 and 500000")
+    if settings.triangle_budget_mode == "manual" and settings.target_triangles is None:
+        raise ValueError("target_triangles is required when triangle_budget_mode is manual")
+
     label = _LABELS[preset]
     changed = any(values[key] != getattr(base, key) for key in overrides)
     if changed:
