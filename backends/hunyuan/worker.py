@@ -2,8 +2,8 @@
 """Img2Model AMD worker entry point with reusable mesh-cleanup orchestration.
 
 The legacy Hunyuan shape/texture implementation lives in ``worker_base``.
-This entry point keeps that behavior intact while adding the CPU-side mesh
-cleanup command without embedding geometry algorithms into Hunyuan code.
+This entry point keeps that behavior intact while adding CPU-side mesh cleanup
+and persistent Shape preloading without embedding those concerns into Hunyuan.
 """
 
 from __future__ import annotations
@@ -64,6 +64,51 @@ class PipelineCache(_BasePipelineCache):
     def clear(self) -> None:
         self.cleanup_mesh_cache.clear()
         super().clear()
+
+
+def _preload_shape_namespace(request: dict[str, Any]) -> argparse.Namespace:
+    return argparse.Namespace(
+        model=request.get("model") or "tencent/Hunyuan3D-2mini",
+        subfolder=request.get("subfolder") or "hunyuan3d-dit-v2-mini",
+        variant=request.get("variant") or "fp16",
+    )
+
+
+def run_preload_shape(args: argparse.Namespace, cache: PipelineCache) -> int:
+    started = time.perf_counter()
+    cache_hit = False
+    try:
+        emit("progress", ok=True, stage="preloading_shape", progress=0.25)
+        pipeline, cache_hit = cache.get_shape_pipeline(
+            lambda: _base.build_shape_pipeline(args),
+            (args.model, args.subfolder, args.variant),
+        )
+        _ = pipeline
+        model_load_ms = (time.perf_counter() - started) * 1000.0
+        emit(
+            "completed",
+            ok=True,
+            stage="shape_preloaded",
+            progress=1.0,
+            cache_hit=cache_hit,
+            cache_kind="shape",
+            model=args.model,
+            subfolder=args.subfolder,
+            model_load_ms=round(model_load_ms, 3),
+        )
+        return 0
+    except Exception as exc:
+        emit(
+            "error",
+            ok=False,
+            stage="preloading_shape",
+            error_kind=classify_generation_error(exc),
+            error=f"{type(exc).__name__}: {exc}",
+            cache_hit=cache_hit,
+            cache_kind="shape",
+            model_load_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        )
+        return 1
 
 
 def run_mesh_cleanup(args: argparse.Namespace, cache: PipelineCache | None = None) -> int:
@@ -162,7 +207,8 @@ def dispatch_serve_command(
     cache: PipelineCache,
     emit_fn: Callable[[dict[str, Any]], None] | None = None,
 ) -> bool:
-    if message.get("command") != "mesh_cleanup":
+    command = message.get("command")
+    if command not in {"mesh_cleanup", "preload_shape"}:
         return _original_dispatch_serve_command(message, cache=cache, emit_fn=emit_fn)
 
     job_id = message.get("job_id")
@@ -185,8 +231,11 @@ def dispatch_serve_command(
     try:
         request = message.get("request")
         if not isinstance(request, dict):
-            raise ValueError("mesh_cleanup command requires a request object")
-        run_mesh_cleanup(_mesh_cleanup_namespace(request), cache=cache)
+            raise ValueError(f"{command} command requires a request object")
+        if command == "preload_shape":
+            run_preload_shape(_preload_shape_namespace(request), cache)
+        else:
+            run_mesh_cleanup(_mesh_cleanup_namespace(request), cache=cache)
         return True
     except Exception as exc:
         emit(
@@ -238,7 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
     # Base parser points serve at worker_base.run_serve; redirect it to this
-    # entry point so mesh_cleanup is understood in persistent mode.
+    # entry point so protocol-v2 commands are understood in persistent mode.
     subparsers_action.choices["serve"].set_defaults(func=run_serve)
 
     mesh_cleanup = subparsers_action.add_parser(
