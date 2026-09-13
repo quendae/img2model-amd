@@ -137,6 +137,9 @@ export function GenerationPanel({
   const progressValue = Math.min(100, Math.max(0, progress ?? 0));
   const textureRequested = workflowMode === 'texture' || (workflowMode === 'shape' && outputMode === 'model-and-texture');
   const cleanupVisible = workflowMode === 'shape' || workflowMode === 'mesh';
+  const heavyCleanup = cleanupPreset === 'game-ready' || cleanupPreset === 'aggressive';
+  const triangleBudgetMode = cleanupOverrides.triangle_budget_mode ?? 'auto';
+  const targetTriangles = cleanupOverrides.target_triangles ?? 5000;
   const missingTextureRuntime = textureRequested && !textureAvailable;
   const missingMesh = workflowMode === 'texture'
     ? !textureMeshPath
@@ -162,6 +165,19 @@ export function GenerationPanel({
   ) ?? selectedDefaults[key];
   const setCleanupOverride = <K extends keyof CleanupAdvancedOverrides>(key: K, value: CleanupAdvancedOverrides[K]) => {
     onCleanupOverridesChange({ ...cleanupOverrides, [key]: value });
+  };
+  const selectAutoTriangleBudget = () => {
+    const nextOverrides = { ...cleanupOverrides };
+    delete nextOverrides.triangle_budget_mode;
+    delete nextOverrides.target_triangles;
+    onCleanupOverridesChange(nextOverrides);
+  };
+  const selectManualTriangleBudget = () => {
+    onCleanupOverridesChange({
+      ...cleanupOverrides,
+      triangle_budget_mode: 'manual',
+      target_triangles: targetTriangles,
+    });
   };
 
   return (
@@ -327,6 +343,50 @@ export function GenerationPanel({
           {workflowMode === 'mesh' && (
             <details className="cleanup-advanced">
               <summary>Advanced</summary>
+              {heavyCleanup && (
+                <div className="field compact-field">
+                  <span>Triangle budget</span>
+                  <div className="segmented-control" aria-label="Triangle budget">
+                    <button
+                      type="button"
+                      aria-label="Auto triangle budget"
+                      aria-pressed={triangleBudgetMode === 'auto'}
+                      className={triangleBudgetMode === 'auto' ? 'active' : ''}
+                      disabled={busy}
+                      onClick={selectAutoTriangleBudget}
+                    >
+                      Auto
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Manual triangle budget"
+                      aria-pressed={triangleBudgetMode === 'manual'}
+                      className={triangleBudgetMode === 'manual' ? 'active' : ''}
+                      disabled={busy}
+                      onClick={selectManualTriangleBudget}
+                    >
+                      Manual
+                    </button>
+                  </div>
+                  {triangleBudgetMode === 'manual' && (
+                    <label className="field compact-field">
+                      <span>Target triangles</span>
+                      <input
+                        aria-label="Target triangles"
+                        type="number"
+                        min={100}
+                        step={100}
+                        value={targetTriangles}
+                        onChange={(event) => onCleanupOverridesChange({
+                          ...cleanupOverrides,
+                          triangle_budget_mode: 'manual',
+                          target_triangles: Math.max(100, Number(event.target.value) || 100),
+                        })}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
               <label className="toggle-row">
                 <input
                   type="checkbox"
