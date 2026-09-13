@@ -305,7 +305,7 @@ export function GenerationPanel({
       {cleanupVisible && (
         <div className="field compact-field">
           <span>Mesh cleanup</span>
-          <div className="segmented-control cleanup-preset-control" aria-label="Mesh cleanup preset">
+          <div className="segmented-control cleanup-presets" aria-label="Mesh cleanup preset">
             {cleanupPresets.map((value) => (
               <button
                 key={value}
@@ -396,7 +396,7 @@ export function GenerationPanel({
       {textureRequested && (
         <div className="field compact-field">
           <span>Texture profile</span>
-          <div className="texture-profile-grid compact-texture-profiles">
+          <div className="segmented-control texture-profile-control" aria-label="Texture profile">
             {textureProfiles.map((value) => (
               <button
                 key={value}
@@ -405,11 +405,11 @@ export function GenerationPanel({
                 className={textureProfile === value ? 'active' : ''}
                 onClick={() => onTextureProfileChange(value)}
               >
-                <strong>{textureProfileLabels[value]}</strong>
-                <small>{textureProfileDescriptions[value]}</small>
+                {textureProfileLabels[value]}
               </button>
             ))}
           </div>
+          <small className="profile-description">{textureProfileDescriptions[textureProfile]}</small>
           {!textureAvailable && (
             <div className="backend-note warning">Texture runtime is not ready. Install the AMD texture extensions first.</div>
           )}
