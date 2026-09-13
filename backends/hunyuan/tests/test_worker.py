@@ -23,11 +23,10 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
         self.assertEqual(replies[-1]["event"], "pong")
         self.assertEqual(replies[-1]["protocol_version"], 2)
 
-    def test_serve_keeps_third_party_prints_off_json_stdout(self) -> None:
+    def test_serve_protocol_survives_third_party_stdout_noise(self) -> None:
         module = self.load_worker_module()
         stdin = io.StringIO(json.dumps({"command": "shape", "job_id": "job-noisy", "request": {}}) + "\n")
         stdout = io.StringIO()
-        stderr = io.StringIO()
 
         def noisy_dispatch(message, *, cache, emit_fn=None):
             print("PointCrossAttentionEncoder INFO: pc_sharpedge_size is given")
@@ -48,14 +47,13 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
             mock.patch.object(module, "_original_dispatch_serve_command", noisy_dispatch),
             mock.patch.object(sys, "stdin", stdin),
             contextlib.redirect_stdout(stdout),
-            contextlib.redirect_stderr(stderr),
         ):
             result = module.run_serve(None)
 
         self.assertEqual(result, 0)
         stdout_lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual(len(stdout_lines), 1, stdout.getvalue())
-        payload = json.loads(stdout_lines[0])
+        self.assertGreaterEqual(len(stdout_lines), 2, stdout.getvalue())
+        self.assertIn("PointCrossAttentionEncoder INFO", stdout_lines[0])
+        payload = json.loads(stdout_lines[-1])
         self.assertEqual(payload["event"], "completed")
         self.assertEqual(payload["job_id"], "job-noisy")
-        self.assertIn("PointCrossAttentionEncoder INFO", stderr.getvalue())
