@@ -22,6 +22,8 @@ export interface CleanupAdvancedOverrides {
   taubin_lambda?: number;
   taubin_nu?: number;
   recompute_normals?: boolean;
+  triangle_budget_mode?: 'auto' | 'manual';
+  target_triangles?: number;
 }
 
 export interface MeshCleanupReport {
@@ -38,6 +40,19 @@ export interface MeshCleanupReport {
   vertices_welded?: number;
   spikes_adjusted?: number;
   cleanup_ms: number;
+  watertight_before?: boolean;
+  watertight_after?: boolean;
+  manifold_before?: boolean;
+  manifold_after?: boolean;
+  boundary_edges_before?: number;
+  boundary_edges_after?: number;
+  holes_closed?: number;
+  non_manifold_edges_fixed?: number;
+  reduction_ratio?: number;
+  remeshed?: boolean;
+  repair_backend?: string;
+  normalized_error?: number;
+  target_triangles?: number;
   warnings: string[];
 }
 
