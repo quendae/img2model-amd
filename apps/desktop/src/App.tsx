@@ -11,9 +11,7 @@ import type {
   ShapeOutputMode,
   SystemDiagnostics,
   TextureEngineId,
-  TextureHealth,
   TextureProfile,
-  WorkerHealth,
   WorkflowMode,
 } from './domain/types';
 import {
@@ -21,13 +19,12 @@ import {
   chooseInputMesh,
   chooseOutputModel,
   clearHunyuanWorkerCache,
-  getHunyuanHealth,
-  getHunyuanTextureHealth,
   getSystemDiagnostics,
   localAssetUrl,
   restartHunyuanWorker,
 } from './lib/tauri';
 import { useGenerationJob } from './lib/useGenerationJob';
+import { useRuntimeStartup } from './lib/useRuntimeStartup';
 
 const profileSteps: Record<GenerationOptions['profile'], number> = {
   fast: 20,
@@ -80,12 +77,12 @@ export function App() {
   const [steps, setSteps] = useState(profileSteps.balanced);
   const [removeBackground, setRemoveBackground] = useState(true);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
-  const [healthLoading, setHealthLoading] = useState(false);
   const [diagnostics, setDiagnostics] = useState<SystemDiagnostics | null>(null);
-  const [health, setHealth] = useState<WorkerHealth | null>(null);
-  const [textureHealth, setTextureHealth] = useState<TextureHealth | null>(null);
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const job = useGenerationJob();
+  const runtime = useRuntimeStartup();
+  const health = runtime.health;
+  const textureHealth = runtime.textureHealth;
 
   const previewUrl = useMemo(() => (inputPath ? localAssetUrl(inputPath) : null), [inputPath]);
   const modelUrl = useMemo(() => (modelPath ? localAssetUrl(modelPath) : null), [modelPath]);
@@ -118,41 +115,24 @@ export function App() {
     void refreshDiagnostics();
   }, [refreshDiagnostics]);
 
-  const checkHealth = async () => {
-    setHealthLoading(true);
-    setDiagnosticError(null);
-    try {
-      const result = await getHunyuanHealth();
-      setHealth(result);
-
-      try {
-        const textureResult = await getHunyuanTextureHealth();
-        setTextureHealth(textureResult);
-        job.setStatusMessage(
-          result.ok
-            ? textureResult.ok
-              ? 'Hunyuan shape and texture runtimes are ready.'
-              : 'Hunyuan shape is ready; texture extensions still need setup.'
-            : 'Hunyuan runtime needs setup or repair.',
-        );
-      } catch (textureReason) {
-        setTextureHealth(null);
-        job.setStatusMessage(
-          result.ok
-            ? 'Hunyuan shape is ready; texture runtime is not available.'
-            : 'Hunyuan runtime needs setup or repair.',
-        );
-        if (!result.ok) setDiagnosticError(String(textureReason));
-      }
-    } catch (reason) {
-      setHealth(null);
-      setTextureHealth(null);
-      setDiagnosticError(String(reason));
-      job.setStatusMessage('Hunyuan runtime needs setup or repair.');
-    } finally {
-      setHealthLoading(false);
+  useEffect(() => {
+    if (
+      workflowMode === 'shape'
+      && !job.busy
+      && health?.ok
+      && !runtime.shapeCacheReady
+      && runtime.phase === 'ready'
+    ) {
+      void runtime.ensureShapePreloaded();
     }
-  };
+  }, [
+    workflowMode,
+    job.busy,
+    health?.ok,
+    runtime.shapeCacheReady,
+    runtime.phase,
+    runtime.ensureShapePreloaded,
+  ]);
 
   const restartWorker = async () => {
     if (job.busy) return;
@@ -160,7 +140,8 @@ export function App() {
     try {
       await restartHunyuanWorker();
       job.markWorkerRestarted();
-      job.setStatusMessage('Worker restarted. The next job will load a fresh pipeline.');
+      await runtime.initialize();
+      job.setStatusMessage('Worker restarted. Hunyuan startup and Shape preload restarted.');
     } catch (reason) {
       setDiagnosticError(`Worker restart failed: ${String(reason)}`);
     }
@@ -171,7 +152,8 @@ export function App() {
     setDiagnosticError(null);
     try {
       await clearHunyuanWorkerCache();
-      job.setStatusMessage('Worker cache cleared. The next job will reload its pipeline.');
+      runtime.markShapeEvicted();
+      job.setStatusMessage('Worker cache cleared. Shape will be preloaded again when needed.');
     } catch (reason) {
       setDiagnosticError(`Worker cache clear failed: ${String(reason)}`);
     }
@@ -258,9 +240,13 @@ export function App() {
         cleanupPreset: shapeCleanupPreset,
         cleanupOverrides: shapeCleanupOverrides,
       });
+      if (shapeOutputMode === 'model-and-texture') {
+        runtime.markShapeEvicted();
+      }
       return;
     }
 
+    runtime.markShapeEvicted();
     await job.runTextureWorkflow({
       backend,
       engine: textureEngine,
@@ -296,7 +282,7 @@ export function App() {
     ? Math.round(job.progress.value * 100)
     : null;
   const progressLabelText = job.busy ? job.progress?.label ?? null : null;
-  const displayError = job.error ?? diagnosticError;
+  const displayError = job.error ?? runtime.error ?? diagnosticError;
   const timing = job.timingSummary;
   const inferenceMs = timing?.inferenceMs ?? timing?.textureStages?.running_texture;
   const hasSplitPreprocessTiming = timing?.imagePreprocessMs !== undefined || timing?.meshPreprocessMs !== undefined;
@@ -315,6 +301,15 @@ export function App() {
         afterTriangles: timing?.cleanupReport?.triangles_after,
       }
     : null;
+  const runtimeLabel = runtime.phase === 'preloading'
+    ? 'Loading Hunyuan3D…'
+    : runtime.phase === 'ready'
+      ? 'Hunyuan3D ready'
+      : runtime.phase === 'error'
+        ? 'Runtime error'
+        : runtime.phase === 'checking'
+          ? 'Checking runtime…'
+          : 'Starting worker…';
 
   return (
     <div className="app-shell">
@@ -327,8 +322,8 @@ export function App() {
           </div>
         </div>
         <div className="header-runtime">
-          <span className={`header-status ${health?.ok ? 'online' : ''}`} />
-          {health?.ok ? 'ROCm worker ready' : 'Runtime not verified'}
+          <span className={`header-status ${runtime.phase === 'ready' ? 'online' : ''}`} />
+          {runtimeLabel}
         </div>
       </header>
 
@@ -393,10 +388,10 @@ export function App() {
           <DiagnosticsPanel
             diagnostics={diagnostics}
             health={health}
+            textureHealth={textureHealth}
+            runtimePhase={runtime.phase}
             loading={diagnosticsLoading}
-            healthLoading={healthLoading}
             onRefresh={refreshDiagnostics}
-            onHealthCheck={checkHealth}
           />
 
           <section className="panel activity-panel" aria-labelledby="activity-heading">
@@ -463,6 +458,7 @@ export function App() {
               <span>Model</span><strong>Hunyuan3D 2 Mini</strong>
               <span>Output</span><strong>GLB / OBJ</strong>
               <span>Texture</span><strong>{textureHealth?.ok ? 'Hunyuan Paint ready' : 'Optional · runtime not ready'}</strong>
+              {runtime.shapePreloadMs !== undefined && <><span>Shape preload</span><strong>{formatDuration(runtime.shapePreloadMs)}</strong></>}
               {timing?.shapeMs !== undefined && <><span>Shape</span><strong>{formatDuration(timing.shapeMs)}</strong></>}
               {timing?.meshCleanupMs !== undefined && <><span>Mesh cleanup</span><strong>{formatDuration(timing.meshCleanupMs)}</strong></>}
               {timing?.textureMs !== undefined && <><span>Texture</span><strong>{formatDuration(timing.textureMs)}</strong></>}
