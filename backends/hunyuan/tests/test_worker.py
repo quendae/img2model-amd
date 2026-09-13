@@ -203,5 +203,6 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
         error = replies[-1]
         self.assertEqual(error["event"], "error")
         self.assertEqual(error["debug_stage"], "pipeline_call")
+        self.assertIn("worker_base.py", str(error["traceback"]))
+        self.assertIn("mesh = pipeline(**generate_kwargs)[0]", str(error["traceback"]))
         self.assertIn("OSError: [Errno 22] Invalid argument", str(error["traceback"]))
-        self.assertIn("FailingPipeline", str(error["traceback"]))
