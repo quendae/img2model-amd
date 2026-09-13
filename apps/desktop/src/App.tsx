@@ -58,6 +58,10 @@ function cleanedOutputSuggestion(path: string): string {
   return `${path.slice(0, dot)}-clean${path.slice(dot)}`;
 }
 
+function yesNo(value: boolean | undefined): string {
+  return value === undefined ? '—' : value ? 'Yes' : 'No';
+}
+
 export function App() {
   const [inputPath, setInputPath] = useState<string | null>(null);
   const [modelPath, setModelPath] = useState<string | null>(null);
@@ -284,6 +288,8 @@ export function App() {
   const progressLabelText = job.busy ? job.progress?.label ?? null : null;
   const displayError = job.error ?? runtime.error ?? diagnosticError;
   const timing = job.timingSummary;
+  const cleanupReport = timing?.cleanupReport;
+  const cleanupReportV2 = cleanupReport?.algorithm_version === 'mesh-cleanup-v2';
   const inferenceMs = timing?.inferenceMs ?? timing?.textureStages?.running_texture;
   const hasSplitPreprocessTiming = timing?.imagePreprocessMs !== undefined || timing?.meshPreprocessMs !== undefined;
   const canTextureCurrentModel = Boolean(
@@ -297,8 +303,8 @@ export function App() {
     ? {
         beforeUrl: localAssetUrl(meshInputPath),
         afterUrl: localAssetUrl(job.cleanedShapePath),
-        beforeTriangles: timing?.cleanupReport?.triangles_before,
-        afterTriangles: timing?.cleanupReport?.triangles_after,
+        beforeTriangles: cleanupReport?.triangles_before,
+        afterTriangles: cleanupReport?.triangles_after,
       }
     : null;
   const runtimeLabel = runtime.phase === 'preloading'
@@ -503,24 +509,58 @@ export function App() {
                   <strong>{timing.trianglesBefore.toLocaleString()} → {timing.trianglesAfter.toLocaleString()} triangles</strong>
                 </>
               )}
-              {timing?.cleanupReport && (
+              {cleanupReport && (
                 <>
                   <span>Cleanup preset</span>
-                  <strong>{timing.cleanupReport.config_label}</strong>
+                  <strong>{cleanupReport.config_label}</strong>
                   <span>Triangles</span>
-                  <strong>{timing.cleanupReport.triangles_before.toLocaleString()} → {timing.cleanupReport.triangles_after.toLocaleString()}</strong>
+                  <strong>{cleanupReport.triangles_before.toLocaleString()} → {cleanupReport.triangles_after.toLocaleString()}</strong>
+                  {cleanupReport.reduction_ratio !== undefined && (
+                    <><span>Reduction</span><strong>{(cleanupReport.reduction_ratio * 100).toFixed(1)}%</strong></>
+                  )}
                   <span>Vertices</span>
-                  <strong>{timing.cleanupReport.vertices_before.toLocaleString()} → {timing.cleanupReport.vertices_after.toLocaleString()}</strong>
+                  <strong>{cleanupReport.vertices_before.toLocaleString()} → {cleanupReport.vertices_after.toLocaleString()}</strong>
                   <span>Components</span>
-                  <strong>{timing.cleanupReport.components_before.toLocaleString()} → {timing.cleanupReport.components_after.toLocaleString()}</strong>
+                  <strong>{cleanupReport.components_before.toLocaleString()} → {cleanupReport.components_after.toLocaleString()}</strong>
                   <span>Components removed</span>
-                  <strong>{(timing.cleanupReport.components_removed ?? 0).toLocaleString()}</strong>
+                  <strong>{(cleanupReport.components_removed ?? 0).toLocaleString()}</strong>
                   <span>Vertices welded</span>
-                  <strong>{(timing.cleanupReport.vertices_welded ?? 0).toLocaleString()}</strong>
-                  <span>Spikes adjusted</span>
-                  <strong>{(timing.cleanupReport.spikes_adjusted ?? 0).toLocaleString()}</strong>
+                  <strong>{(cleanupReport.vertices_welded ?? 0).toLocaleString()}</strong>
+                  {cleanupReportV2 && (cleanupReport.watertight_before !== undefined || cleanupReport.watertight_after !== undefined) && (
+                    <><span>Watertight</span><strong>{yesNo(cleanupReport.watertight_before)} → {yesNo(cleanupReport.watertight_after)}</strong></>
+                  )}
+                  {cleanupReportV2 && (cleanupReport.manifold_before !== undefined || cleanupReport.manifold_after !== undefined) && (
+                    <><span>Manifold</span><strong>{yesNo(cleanupReport.manifold_before)} → {yesNo(cleanupReport.manifold_after)}</strong></>
+                  )}
+                  {cleanupReportV2 && cleanupReport.boundary_edges_after !== undefined && (
+                    <>
+                      <span>Boundary edges</span>
+                      <strong>{cleanupReport.boundary_edges_before?.toLocaleString() ?? '—'} → {cleanupReport.boundary_edges_after.toLocaleString()}</strong>
+                    </>
+                  )}
+                  {cleanupReportV2 && cleanupReport.holes_closed !== undefined && (
+                    <><span>Holes closed</span><strong>{cleanupReport.holes_closed.toLocaleString()}</strong></>
+                  )}
+                  {cleanupReportV2 && cleanupReport.non_manifold_edges_fixed !== undefined && (
+                    <><span>Non-manifold edges fixed</span><strong>{cleanupReport.non_manifold_edges_fixed.toLocaleString()}</strong></>
+                  )}
+                  {cleanupReportV2 && cleanupReport.repair_backend && (
+                    <><span>Repair backend</span><strong>{cleanupReport.repair_backend}</strong></>
+                  )}
+                  {cleanupReportV2 && cleanupReport.normalized_error !== undefined && (
+                    <><span>Geometry error</span><strong>{(cleanupReport.normalized_error * 100).toFixed(3)}%</strong></>
+                  )}
+                  {cleanupReportV2 && cleanupReport.target_triangles !== undefined && (
+                    <><span>Target triangles</span><strong>{cleanupReport.target_triangles.toLocaleString()}</strong></>
+                  )}
+                  {cleanupReportV2 && cleanupReport.remeshed !== undefined && (
+                    <><span>Remeshed</span><strong>{yesNo(cleanupReport.remeshed)}</strong></>
+                  )}
+                  {!cleanupReportV2 && (
+                    <><span>Spikes adjusted</span><strong>{(cleanupReport.spikes_adjusted ?? 0).toLocaleString()}</strong></>
+                  )}
                   <span>Algorithm</span>
-                  <strong>{timing.cleanupReport.algorithm_version}</strong>
+                  <strong>{cleanupReport.algorithm_version}</strong>
                 </>
               )}
               {timing?.resolvedTextureProfile && (
@@ -528,7 +568,7 @@ export function App() {
               )}
             </div>
 
-            {timing?.cleanupReport?.warnings?.map((warning) => (
+            {cleanupReport?.warnings?.map((warning) => (
               <div key={warning} className="backend-note warning">{warning}</div>
             ))}
           </section>
