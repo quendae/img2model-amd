@@ -120,6 +120,7 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
         class FakePipeline:
             def __call__(self, **kwargs):
                 calls["generator"] = kwargs.get("generator")
+                calls["enable_pbar"] = kwargs.get("enable_pbar")
                 return [FakeMesh()]
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -155,6 +156,7 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
             self.assertEqual(result, 0, replies)
             self.assertEqual(calls["seed"], 1234)
             self.assertEqual(calls["generator"], ("default-generator", 1234))
+            self.assertIs(calls["enable_pbar"], False)
             self.assertTrue(output_path.is_file())
 
     def test_shape_failure_reports_debug_stage_and_traceback(self) -> None:
