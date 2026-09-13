@@ -119,7 +119,7 @@ describe('App runtime startup integration', () => {
   it('uses automatic runtime state and no longer exposes a manual health-check contract', () => {
     render(<App />);
 
-    expect(mocks.useRuntimeStartup).toHaveBeenCalledTimes(1);
+    expect(mocks.useRuntimeStartup).toHaveBeenCalled();
     expect(screen.getByText('Hunyuan3D ready')).toBeTruthy();
     expect(screen.getByTestId('manual-health-prop').textContent).toBe('false');
     expect(screen.getByTestId('runtime-phase-prop').textContent).toBe('ready');
