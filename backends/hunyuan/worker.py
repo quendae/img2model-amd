@@ -53,6 +53,7 @@ _base.PROTOCOL_VERSION = PROTOCOL_VERSION
 _BasePipelineCache = _base.PipelineCache
 _original_dispatch_serve_command = _base.dispatch_serve_command
 _original_build_parser = _base.build_parser
+_original_run_generate = _base.run_generate
 _original_emit = _base.emit
 _shape_debug_stage: str | None = None
 
@@ -118,20 +119,43 @@ class _ShapePipelineNoProgress:
         return getattr(self._pipeline, name)
 
 
-class PipelineCache(_BasePipelineCache):
-    """Existing Hunyuan caches plus a distinct one-entry cleanup cache."""
+class _ShapeInvocationCache:
+    """Wrap Shape only at invocation time without changing cache identity semantics."""
 
-    def __init__(self, event_sink: Callable[[dict[str, Any]], None] | None = None) -> None:
-        super().__init__(event_sink=event_sink)
-        self.cleanup_mesh_cache = CleanupMeshCache()
+    def __init__(self, cache: Any) -> None:
+        self._cache = cache
 
     def get_shape_pipeline(
         self,
         loader: Callable[[], Any],
         key: tuple[Any, ...] = (),
     ) -> tuple[Any, bool]:
-        pipeline, cache_hit = super().get_shape_pipeline(loader, key)
+        pipeline, cache_hit = self._cache.get_shape_pipeline(loader, key)
         return _ShapePipelineNoProgress(pipeline), cache_hit
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cache, name)
+
+
+def run_generate(args: argparse.Namespace, cache: Any | None = None) -> int:
+    """Run Shape with Hunyuan's terminal progress bar disabled in persistent mode."""
+
+    if cache is None:
+        return _original_run_generate(args, cache=None)
+    return _original_run_generate(args, cache=_ShapeInvocationCache(cache))
+
+
+# worker_base.dispatch_serve_command resolves run_generate from its module globals,
+# so replace that symbol while preserving the rest of the validated implementation.
+_base.run_generate = run_generate
+
+
+class PipelineCache(_BasePipelineCache):
+    """Existing Hunyuan caches plus a distinct one-entry cleanup cache."""
+
+    def __init__(self, event_sink: Callable[[dict[str, Any]], None] | None = None) -> None:
+        super().__init__(event_sink=event_sink)
+        self.cleanup_mesh_cache = CleanupMeshCache()
 
     def clear(self) -> None:
         self.cleanup_mesh_cache.clear()
