@@ -156,3 +156,52 @@ class WorkerProtocolTests(base_worker_tests.WorkerProtocolTests):
             self.assertEqual(calls["seed"], 1234)
             self.assertEqual(calls["generator"], ("default-generator", 1234))
             self.assertTrue(output_path.is_file())
+
+    def test_shape_failure_reports_debug_stage_and_traceback(self) -> None:
+        module = self.load_worker_module()
+        replies: list[dict[str, object]] = []
+
+        fake_torch = ModuleType("torch")
+        fake_torch.cuda = SimpleNamespace(is_available=lambda: True)
+        fake_torch.manual_seed = lambda seed: ("default-generator", seed)
+
+        class FailingPipeline:
+            def __call__(self, **kwargs):
+                raise OSError(22, "Invalid argument")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "input.png"
+            output_path = Path(tmp) / "output.glb"
+            Image.new("RGBA", (2, 2), (255, 0, 0, 255)).save(input_path)
+
+            args = SimpleNamespace(
+                input=str(input_path),
+                output=str(output_path),
+                model="tencent/Hunyuan3D-2mini",
+                subfolder="hunyuan3d-dit-v2-mini",
+                variant="fp16",
+                steps=30,
+                seed=1234,
+                remove_background=False,
+            )
+            cache = module.PipelineCache(event_sink=replies.append)
+            cache.shape_pipeline = FailingPipeline()
+            cache.shape_key = (args.model, args.subfolder, args.variant)
+
+            previous_sink = module._base._EVENT_SINK
+            previous_job_id = module._base._CURRENT_JOB_ID
+            module._base._EVENT_SINK = replies.append
+            module._base._CURRENT_JOB_ID = "job-shape-traceback"
+            try:
+                with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+                    result = module.run_generate(args, cache=cache)
+            finally:
+                module._base._EVENT_SINK = previous_sink
+                module._base._CURRENT_JOB_ID = previous_job_id
+
+        self.assertEqual(result, 1, replies)
+        error = replies[-1]
+        self.assertEqual(error["event"], "error")
+        self.assertEqual(error["debug_stage"], "pipeline_call")
+        self.assertIn("OSError: [Errno 22] Invalid argument", str(error["traceback"]))
+        self.assertIn("FailingPipeline", str(error["traceback"]))
