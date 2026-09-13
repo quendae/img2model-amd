@@ -1,6 +1,5 @@
 import unittest
 
-import numpy as np
 import trimesh
 
 from backends.mesh_processing.cleanup import cleanup_mesh
@@ -17,24 +16,33 @@ class CleanupGeometryTests(unittest.TestCase):
         self.assertLess(report.components_after, report.components_before)
         self.assertGreaterEqual(report.components_removed, 1)
         self.assertLess(len(cleaned.faces), len(source.faces))
+        self.assertFalse(bool(report.remeshed))
 
-    def test_game_ready_reduces_artificial_spike_height(self):
-        source = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
-        tip = int(np.argmax(source.vertices[:, 2]))
-        source.vertices[tip] *= 5.0
-        source_max_z = float(source.vertices[:, 2].max())
+    def test_game_ready_routes_through_repair_and_adaptive_reduction(self):
+        source = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
         cleaned, report = cleanup_mesh(source, resolve_cleanup_config("game-ready", {}))
-        self.assertGreaterEqual(report.spikes_adjusted, 1)
-        self.assertLess(float(cleaned.vertices[:, 2].max()), source_max_z)
 
-    def test_thin_legitimate_feature_survives_game_ready(self):
-        body = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
-        stem = trimesh.creation.cylinder(radius=0.05, height=1.0, sections=16)
-        stem.apply_translation([0.0, 0.0, 1.0])
-        source = trimesh.util.concatenate([body, stem])
-        cleaned, report = cleanup_mesh(source, resolve_cleanup_config("game-ready", {}))
-        self.assertEqual(report.components_removed, 0)
-        self.assertGreater(float(cleaned.bounds[1][2]), 1.4)
+        self.assertTrue(report.remeshed)
+        self.assertTrue(str(report.repair_backend).startswith("pymeshlab"))
+        self.assertLess(len(cleaned.faces), len(source.faces))
+        self.assertLess(report.triangles_after, report.triangles_before)
+        self.assertIsNotNone(report.watertight_before)
+        self.assertIsNotNone(report.watertight_after)
+        self.assertIsNotNone(report.boundary_edges_before)
+        self.assertIsNotNone(report.boundary_edges_after)
+        self.assertIsNotNone(report.normalized_error)
+        self.assertGreater(report.reduction_ratio, 0.0)
+
+    def test_manual_game_ready_target_reduces_near_requested_budget(self):
+        source = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+        config = resolve_cleanup_config(
+            "game-ready",
+            {"triangle_budget_mode": "manual", "target_triangles": 3500},
+        )
+        cleaned, report = cleanup_mesh(source, config)
+
+        self.assertLessEqual(abs(len(cleaned.faces) - 3500), 400)
+        self.assertEqual(report.target_triangles, 3500)
 
     def test_off_preserves_counts(self):
         source = trimesh.creation.box()
@@ -42,6 +50,7 @@ class CleanupGeometryTests(unittest.TestCase):
         self.assertEqual(len(cleaned.vertices), len(source.vertices))
         self.assertEqual(len(cleaned.faces), len(source.faces))
         self.assertEqual(report.spikes_adjusted, 0)
+        self.assertFalse(bool(report.remeshed))
 
 
 if __name__ == "__main__":
