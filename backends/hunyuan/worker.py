@@ -242,6 +242,13 @@ def run_mesh_cleanup(args: argparse.Namespace, cache: PipelineCache | None = Non
     started = time.perf_counter()
     cleanup_cache_hit = False
     try:
+        # Mesh cleanup is CPU-only. Keeping Hunyuan Shape/Paint resident wastes
+        # most of the Radeon VRAM and can starve the Tauri/WebView GPU context.
+        # Preserve the cleanup cache, but evict only heavyweight ML pipelines.
+        if cache is not None:
+            cache.clear_shape(evicted=True)
+            cache.clear_texture(evicted=True)
+
         config = resolve_cleanup_config(args.preset, args.overrides)
         emit("progress", ok=True, stage="cleaning_mesh", progress=0.20)
 
