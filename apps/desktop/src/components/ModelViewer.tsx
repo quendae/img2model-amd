@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { writeDiagnosticLog } from '../lib/diagnosticLog';
 import { modelFormatFromUrl } from './modelPreview';
 
 export interface ModelComparison {
@@ -37,13 +38,15 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return undefined;
+    if (!host || busy) return undefined;
 
     let renderer: THREE.WebGLRenderer;
     try {
       renderer = new THREE.WebGLRenderer({ antialias: true });
     } catch (error) {
-      setLoadError(`3D preview unavailable: ${String(error)}`);
+      const message = `3D preview unavailable: ${String(error)}`;
+      setLoadError(message);
+      void writeDiagnosticLog('error', 'webgl', message, { activeModelUrl });
       return undefined;
     }
 
@@ -95,7 +98,9 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     const onContextLost = (event: Event) => {
       event.preventDefault();
       if (!disposed) {
-        setLoadError('3D preview unavailable: WebGL context was lost. The job can continue without the preview.');
+        const message = '3D preview unavailable: WebGL context was lost. The job can continue without the preview.';
+        setLoadError(message);
+        void writeDiagnosticLog('error', 'webgl', message, { activeModelUrl });
       }
     };
     renderer.domElement.addEventListener('webglcontextlost', onContextLost);
@@ -122,7 +127,11 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       try {
         const format = modelFormatFromUrl(activeModelUrl);
         const onError = (error: unknown) => {
-          if (!disposed) setLoadError(`Could not load generated ${format.toUpperCase()}: ${String(error)}`);
+          if (!disposed) {
+            const message = `Could not load generated ${format.toUpperCase()}: ${String(error)}`;
+            setLoadError(message);
+            void writeDiagnosticLog('error', 'viewer', message, { activeModelUrl });
+          }
         };
 
         if (format === 'obj') {
@@ -131,7 +140,9 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
           new GLTFLoader().load(activeModelUrl, (gltf) => attachModel(gltf.scene), undefined, onError);
         }
       } catch (error) {
-        setLoadError(String(error));
+        const message = String(error);
+        setLoadError(message);
+        void writeDiagnosticLog('error', 'viewer', message, { activeModelUrl });
       }
     }
 
@@ -142,7 +153,9 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         renderer.render(scene, camera);
       } catch (error) {
         renderFailed = true;
-        setLoadError(`3D preview unavailable: ${String(error)}. The job can continue without the preview.`);
+        const message = `3D preview unavailable: ${String(error)}. The job can continue without the preview.`;
+        setLoadError(message);
+        void writeDiagnosticLog('error', 'webgl', message, { activeModelUrl });
         return;
       }
       frame = requestAnimationFrame(animate);
@@ -164,10 +177,14 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
           }
         });
       }
-      renderer.dispose();
-      renderer.domElement.remove();
+      try {
+        renderer.dispose();
+        renderer.domElement.remove();
+      } catch (error) {
+        void writeDiagnosticLog('warn', 'webgl', 'Failed to dispose 3D preview cleanly.', error);
+      }
     };
-  }, [activeModelUrl]);
+  }, [activeModelUrl, busy]);
 
   return (
     <section className="viewer-shell" aria-label="3D model preview">

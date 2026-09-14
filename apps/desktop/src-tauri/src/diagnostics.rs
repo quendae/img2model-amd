@@ -1,7 +1,12 @@
 use serde::Serialize;
 use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,6 +16,97 @@ pub struct SystemDiagnostics {
     pub wsl_available: bool,
     pub python: Option<String>,
     pub amd_gpus: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct DiagnosticLogRecord<'a> {
+    timestamp_ms: u64,
+    pid: u32,
+    level: &'a str,
+    source: &'a str,
+    message: &'a str,
+    details: Option<&'a str>,
+}
+
+fn diagnostic_log_path_from_base(base: &Path) -> PathBuf {
+    base.join("Img2ModelAMD")
+        .join("logs")
+        .join("img2model-amd.log")
+}
+
+pub fn diagnostic_log_path() -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    diagnostic_log_path_from_base(&base)
+}
+
+fn rotate_diagnostic_log(path: &Path) -> Result<(), String> {
+    let Ok(metadata) = fs::metadata(path) else {
+        return Ok(());
+    };
+    if metadata.len() < MAX_DIAGNOSTIC_LOG_BYTES {
+        return Ok(());
+    }
+
+    let rotated = path.with_file_name("img2model-amd.1.log");
+    if rotated.exists() {
+        fs::remove_file(&rotated)
+            .map_err(|error| format!("Could not remove old diagnostic log {}: {error}", rotated.display()))?;
+    }
+    fs::rename(path, &rotated)
+        .map_err(|error| format!("Could not rotate diagnostic log {}: {error}", path.display()))?;
+    Ok(())
+}
+
+fn append_diagnostic_log_to_path(
+    path: &Path,
+    level: &str,
+    source: &str,
+    message: &str,
+    details: Option<&str>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not create diagnostic log directory {}: {error}", parent.display()))?;
+    }
+    rotate_diagnostic_log(path)?;
+
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let record = DiagnosticLogRecord {
+        timestamp_ms,
+        pid: std::process::id(),
+        level,
+        source,
+        message,
+        details,
+    };
+    let encoded = serde_json::to_string(&record)
+        .map_err(|error| format!("Could not serialize diagnostic log record: {error}"))?;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("Could not open diagnostic log {}: {error}", path.display()))?;
+    writeln!(file, "{encoded}")
+        .map_err(|error| format!("Could not write diagnostic log {}: {error}", path.display()))?;
+    Ok(())
+}
+
+pub fn append_diagnostic_log(
+    level: &str,
+    source: &str,
+    message: &str,
+    details: Option<&str>,
+) -> Result<PathBuf, String> {
+    let path = diagnostic_log_path();
+    append_diagnostic_log_to_path(&path, level, source, message, details)?;
+    Ok(path)
 }
 
 pub fn parse_gpu_names(output: &str) -> Vec<String> {
@@ -136,8 +232,44 @@ pub fn collect_system_diagnostics() -> SystemDiagnostics {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_gpu_names, python_executable_from_override, python_from_runtime_dir};
+    use super::{
+        append_diagnostic_log_to_path, diagnostic_log_path_from_base, parse_gpu_names,
+        python_executable_from_override, python_from_runtime_dir,
+    };
     use std::fs;
+
+    #[test]
+    fn diagnostic_log_uses_app_local_log_directory() {
+        let base = std::path::Path::new("C:/Users/test/AppData/Local");
+        assert_eq!(
+            diagnostic_log_path_from_base(base),
+            base.join("Img2ModelAMD").join("logs").join("img2model-amd.log")
+        );
+    }
+
+    #[test]
+    fn diagnostic_log_is_jsonl_and_keeps_details() {
+        let root = std::env::temp_dir().join(format!("img2model-log-test-{}", std::process::id()));
+        let path = root.join("diagnostic.log");
+        append_diagnostic_log_to_path(
+            &path,
+            "error",
+            "react",
+            "preview render failed",
+            Some("{\"component\":\"ModelViewer\"}"),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let line = content.lines().next().unwrap();
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(value["level"], "error");
+        assert_eq!(value["source"], "react");
+        assert_eq!(value["message"], "preview render failed");
+        assert_eq!(value["details"], "{\"component\":\"ModelViewer\"}");
+
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn parses_and_deduplicates_amd_gpu_names() {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { App } from './App';
+import { Root } from './Root';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -135,7 +135,7 @@ afterEach(() => {
 
 describe('App crash recovery', () => {
   it('shows a diagnostic fallback instead of leaving a blank window when React crashes', async () => {
-    render(<App />);
+    render(<Root />);
 
     expect(await screen.findByRole('heading', { name: /Interface error/i })).toBeTruthy();
     expect(screen.getByText(/preview render failed/i)).toBeTruthy();
