@@ -1,12 +1,15 @@
 import math
 import time
 from collections import defaultdict
+from typing import Callable
 
 import numpy as np
 import trimesh
 
 from .models import CleanupReport, ReductionPolicy, RepairPolicy
 from .pymeshlab_backend import adaptive_qem_reduce, repair_with_pymeshlab
+
+ProgressCallback = Callable[[str, float], None]
 
 
 def _mesh_scale(mesh: trimesh.Trimesh) -> float:
@@ -338,10 +341,34 @@ def _heavy_policies(config) -> tuple[RepairPolicy, ReductionPolicy]:
     raise ValueError(f"Heavy cleanup policy is not defined for preset: {config.preset}")
 
 
-def _cleanup_heavy(mesh: trimesh.Trimesh, config, report: CleanupReport) -> trimesh.Trimesh:
+def _cleanup_heavy(
+    mesh: trimesh.Trimesh,
+    config,
+    report: CleanupReport,
+    progress: ProgressCallback | None = None,
+) -> trimesh.Trimesh:
     repair_policy, reduction_policy = _heavy_policies(config)
+    if progress is not None:
+        progress("repairing_mesh", 0.25)
     repaired, repair_stats = repair_with_pymeshlab(mesh, repair_policy)
-    reduced, reduction_stats = adaptive_qem_reduce(repaired, reduction_policy)
+
+    if progress is not None:
+        progress("reducing_mesh", 0.45)
+
+    def reduction_progress(attempt: int, total: int, _target: int) -> None:
+        if progress is None:
+            return
+        fraction = (attempt - 1) / max(total, 1)
+        progress("reducing_mesh", min(0.78, 0.45 + 0.30 * fraction))
+
+    reduced, reduction_stats = adaptive_qem_reduce(
+        repaired,
+        reduction_policy,
+        progress=reduction_progress,
+    )
+
+    if progress is not None:
+        progress("validating_mesh", 0.80)
 
     report.components_removed = repair_stats.components_removed
     report.watertight_before = repair_stats.watertight_before
@@ -365,7 +392,11 @@ def _cleanup_heavy(mesh: trimesh.Trimesh, config, report: CleanupReport) -> trim
     return reduced
 
 
-def cleanup_mesh(mesh: trimesh.Trimesh, config):
+def cleanup_mesh(
+    mesh: trimesh.Trimesh,
+    config,
+    progress: ProgressCallback | None = None,
+):
     working = mesh.copy()
     started = time.perf_counter()
     before_components = len(_face_components(working))
@@ -383,7 +414,7 @@ def cleanup_mesh(mesh: trimesh.Trimesh, config):
     settings = config.settings
 
     if config.preset in {"game-ready", "aggressive"}:
-        working = _cleanup_heavy(working, config, report)
+        working = _cleanup_heavy(working, config, report, progress=progress)
     else:
         if settings.remove_degenerate:
             _remove_degenerate_faces(working)
