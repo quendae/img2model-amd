@@ -316,7 +316,7 @@ def _heavy_policies(config) -> tuple[RepairPolicy, ReductionPolicy]:
                 manifold_finalize=True,
             ),
             ReductionPolicy(
-                min_faces=3000,
+                min_faces=6000,
                 start_faces=48000,
                 error_tolerance=0.006,
                 manual_target_faces=manual_target,
