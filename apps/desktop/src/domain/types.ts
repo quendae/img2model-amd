@@ -103,6 +103,7 @@ export interface GenerationTimingSummary {
   textureMs?: number;
   totalMs: number;
   textureStages?: Record<string, number>;
+  textureTargetTriangles?: number;
   trianglesBefore?: number;
   trianglesAfter?: number;
   resolvedTextureProfile?: Exclude<TextureProfile, 'auto'>;
@@ -127,6 +128,7 @@ export interface TextureRetryContext {
   backend: BackendId;
   engine: TextureEngineId;
   profile: TextureProfile;
+  maxFaces?: number;
   removeBackground: boolean;
 }
 
