@@ -27,6 +27,7 @@ export interface TextureMeshRequest {
   backend: BackendId;
   engine: TextureEngineId;
   profile: TextureProfile;
+  maxFaces?: number;
   mesh: string;
   image: string;
   output: string;
