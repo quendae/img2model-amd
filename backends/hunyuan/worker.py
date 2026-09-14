@@ -56,39 +56,62 @@ _original_build_parser = _base.build_parser
 _original_run_generate = _base.run_generate
 _original_emit = _base.emit
 _shape_debug_stage: str | None = None
+_texture_debug_stage: str | None = None
+
+_SHAPE_DEBUG_STAGES = {
+    "starting_backend": "opening_input",
+    "preparing_input": "background_removal",
+    "loading_model": "model_cache",
+    "running_shape": "pipeline_call",
+    "postprocessing": "export",
+}
+
+_TEXTURE_DEBUG_STAGES = {
+    "starting_backend": "runtime_setup",
+    "preparing_input": "image_preprocess",
+    "preparing_mesh": "mesh_preprocess",
+    "mesh_ready": "mesh_ready",
+    "loading_model": "model_load",
+    "running_texture": "paint_inference",
+    "postprocessing": "texture_export",
+}
+
+
+def _enrich_failure(values: dict[str, Any], debug_stage: str, fallback_message: str) -> None:
+    formatted_traceback = traceback.format_exc()
+    if formatted_traceback.strip() == "NoneType: None":
+        formatted_traceback = ""
+    values.setdefault("debug_stage", debug_stage)
+    if formatted_traceback:
+        values.setdefault("traceback", formatted_traceback)
+    error_text = str(values.get("error") or fallback_message)
+    technical_parts = [error_text, f"Debug stage: {debug_stage}"]
+    if formatted_traceback:
+        technical_parts.append(formatted_traceback.rstrip())
+    values["error"] = "\n\n".join(technical_parts)
 
 
 def _diagnostic_emit(event: str, **values: Any) -> None:
-    """Keep normal worker events while enriching Shape failures with traceback context."""
+    """Keep normal events while enriching Shape and Texture failures with context."""
 
-    global _shape_debug_stage
+    global _shape_debug_stage, _texture_debug_stage
     stage = values.get("stage")
-    if event == "progress":
-        stage_map = {
-            "starting_backend": "opening_input",
-            "preparing_input": "background_removal",
-            "loading_model": "model_cache",
-            "running_shape": "pipeline_call",
-            "postprocessing": "export",
-        }
-        if isinstance(stage, str) and stage in stage_map:
-            _shape_debug_stage = stage_map[stage]
+    if event == "progress" and isinstance(stage, str):
+        if stage in _SHAPE_DEBUG_STAGES:
+            _shape_debug_stage = _SHAPE_DEBUG_STAGES[stage]
+        if stage in _TEXTURE_DEBUG_STAGES:
+            _texture_debug_stage = _TEXTURE_DEBUG_STAGES[stage]
     elif event == "completed" and stage == "completed":
         _shape_debug_stage = None
+        _texture_debug_stage = None
     elif event == "error" and stage == "shape":
         debug_stage = _shape_debug_stage or "shape"
-        formatted_traceback = traceback.format_exc()
-        if formatted_traceback.strip() == "NoneType: None":
-            formatted_traceback = ""
-        values.setdefault("debug_stage", debug_stage)
-        if formatted_traceback:
-            values.setdefault("traceback", formatted_traceback)
-        error_text = str(values.get("error") or "Shape generation failed")
-        technical_parts = [error_text, f"Debug stage: {debug_stage}"]
-        if formatted_traceback:
-            technical_parts.append(formatted_traceback.rstrip())
-        values["error"] = "\n\n".join(technical_parts)
+        _enrich_failure(values, debug_stage, "Shape generation failed")
         _shape_debug_stage = None
+    elif event == "error" and stage == "texture":
+        debug_stage = _texture_debug_stage or "texture"
+        _enrich_failure(values, debug_stage, "Texture generation failed")
+        _texture_debug_stage = None
 
     _original_emit(event, **values)
 
