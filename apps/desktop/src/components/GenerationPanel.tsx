@@ -491,33 +491,35 @@ export function GenerationPanel({
         </label>
       )}
 
-      <button
-        type="button"
-        className="primary-button compact-primary-action"
-        disabled={actionDisabled}
-        onClick={onGenerate}
-      >
-        {busy ? 'Generating…' : actionLabel}
-      </button>
+      <div className="generation-action-dock">
+        <button
+          type="button"
+          className="primary-button compact-primary-action"
+          disabled={actionDisabled}
+          onClick={onGenerate}
+        >
+          {busy ? 'Generating…' : actionLabel}
+        </button>
 
-      {busy && (
-        <div className="generation-progress" aria-live="polite">
-          <div className="generation-progress-copy">
-            <span>{progressLabel ?? 'Working…'}</span>
-            <strong>{Math.round(progressValue)}%</strong>
+        {busy && (
+          <div className="generation-progress" aria-live="polite">
+            <div className="generation-progress-copy">
+              <span>{progressLabel ?? 'Working…'}</span>
+              <strong>{Math.round(progressValue)}%</strong>
+            </div>
+            <div
+              className="generation-progress-track"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(progressValue)}
+              aria-label="Generation progress"
+            >
+              <span style={{ width: `${progressValue}%` }} />
+            </div>
           </div>
-          <div
-            className="generation-progress-track"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(progressValue)}
-            aria-label="Generation progress"
-          >
-            <span style={{ width: `${progressValue}%` }} />
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </section>
   );
 }
