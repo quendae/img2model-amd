@@ -29,7 +29,7 @@ describe('mesh cleanup progress', () => {
     });
 
     const { result } = renderHook(() => useGenerationJob());
-    let job!: Promise<void>;
+    let job!: Promise<string | null>;
     act(() => {
       job = result.current.runMeshWorkflow({
         input: 'C:/raw.glb',
