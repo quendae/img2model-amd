@@ -246,6 +246,14 @@ def _directional_hausdorff(
     return _hausdorff_max_distance(result)
 
 
+def _hausdorff_sample_count(reference_faces: int, candidate_faces: int) -> int:
+    """Bound quality sampling so interactive Auto cleanup has predictable cost."""
+
+    largest = max(1, int(reference_faces), int(candidate_faces))
+    scaled = int(round(np.sqrt(float(largest)) * 16.0))
+    return min(12_000, max(4_000, scaled))
+
+
 def _normalized_symmetric_hausdorff(reference: trimesh.Trimesh, candidate: trimesh.Trimesh) -> float:
     if len(reference.faces) == 0 or len(candidate.faces) == 0:
         raise ValueError("Hausdorff comparison requires non-empty meshes")
@@ -256,7 +264,7 @@ def _normalized_symmetric_hausdorff(reference: trimesh.Trimesh, candidate: trime
     mesh_set.add_mesh(_to_pymeshlab_mesh(candidate), "candidate")
     candidate_id = int(mesh_set.current_mesh_id())
 
-    sample_count = min(50000, max(5000, len(reference.faces), len(candidate.faces)))
+    sample_count = _hausdorff_sample_count(len(reference.faces), len(candidate.faces))
     forward = _directional_hausdorff(mesh_set, reference_id, candidate_id, sample_count)
     backward = _directional_hausdorff(mesh_set, candidate_id, reference_id, sample_count)
     bbox_diag = max(float(np.linalg.norm(np.asarray(reference.extents, dtype=np.float64))), 1e-9)
@@ -271,7 +279,7 @@ def _auto_targets(face_count: int, policy: ReductionPolicy) -> list[int]:
     targets: list[int] = []
     while target > policy.min_faces:
         targets.append(target)
-        next_target = max(policy.min_faces, int(round(target * 0.70)))
+        next_target = max(policy.min_faces, int(round(target * 0.50)))
         if next_target >= target:
             break
         target = next_target
@@ -323,15 +331,19 @@ def adaptive_qem_reduce(
 
     accepted = reference.copy()
     accepted_error = 0.0
+    candidate_source = reference
     attempts = 0
     for target in targets:
-        candidate = _qem_candidate(reference, target)
+        candidate = _qem_candidate(candidate_source, target)
+        # Always score against the repaired reference so progressive reduction
+        # does not accumulate unbounded geometric drift.
         error = _normalized_symmetric_hausdorff(reference, candidate)
         attempts += 1
         if error > policy.error_tolerance:
             break
         accepted = candidate
         accepted_error = error
+        candidate_source = candidate
 
     return accepted, ReductionStats(
         requested_target_faces=None,
