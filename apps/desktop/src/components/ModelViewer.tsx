@@ -13,6 +13,8 @@ export interface ModelComparison {
   afterTriangles?: number;
 }
 
+type InspectionMode = 'solid' | 'wireframe' | 'solid-wire';
+
 interface ModelViewerProps {
   modelUrl: string | null;
   comparison?: ModelComparison | null;
@@ -21,14 +23,90 @@ interface ModelViewerProps {
   progressLabel?: string | null;
 }
 
+const WIRE_OVERLAY_KEY = 'img2modelWireOverlay';
+
+function setMaterialWireframe(material: THREE.Material, enabled: boolean) {
+  const candidate = material as THREE.Material & { wireframe?: boolean };
+  if (typeof candidate.wireframe === 'boolean') {
+    candidate.wireframe = enabled;
+    candidate.needsUpdate = true;
+  }
+}
+
+function wireOverlayFor(mesh: THREE.Mesh): THREE.LineSegments | null {
+  return (mesh.children.find((child) => child.userData?.[WIRE_OVERLAY_KEY] === true) as THREE.LineSegments | undefined) ?? null;
+}
+
+function ensureWireOverlay(mesh: THREE.Mesh): THREE.LineSegments {
+  const existing = wireOverlayFor(mesh);
+  if (existing) return existing;
+
+  const geometry = new THREE.WireframeGeometry(mesh.geometry);
+  const material = new THREE.LineBasicMaterial({
+    color: 0xf1f3f5,
+    transparent: true,
+    opacity: 0.72,
+    depthTest: true,
+    depthWrite: false,
+  });
+  const overlay = new THREE.LineSegments(geometry, material);
+  overlay.userData[WIRE_OVERLAY_KEY] = true;
+  overlay.renderOrder = 2;
+  overlay.visible = false;
+  mesh.add(overlay);
+  return overlay;
+}
+
+function applyInspectionMode(root: THREE.Object3D, mode: InspectionMode) {
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    materials.forEach((material) => setMaterialWireframe(material, mode === 'wireframe'));
+
+    const existingOverlay = wireOverlayFor(object);
+    if (mode === 'solid-wire') {
+      ensureWireOverlay(object).visible = true;
+    } else if (existingOverlay) {
+      existingOverlay.visible = false;
+    }
+  });
+}
+
+function disposeLoadedRoot(root: THREE.Object3D) {
+  root.traverse((object) => {
+    if (object instanceof THREE.Mesh) {
+      object.geometry?.dispose();
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => material?.dispose());
+      return;
+    }
+
+    if (object instanceof THREE.LineSegments && object.userData?.[WIRE_OVERLAY_KEY] === true) {
+      object.geometry?.dispose();
+      if (Array.isArray(object.material)) {
+        object.material.forEach((material) => material?.dispose());
+      } else {
+        object.material?.dispose();
+      }
+    }
+  });
+}
+
 export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabel }: ModelViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const loadedRootRef = useRef<THREE.Object3D | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comparisonSide, setComparisonSide] = useState<'before' | 'after'>('after');
+  const [inspectionMode, setInspectionMode] = useState<InspectionMode>('solid');
 
   useEffect(() => {
     setComparisonSide('after');
   }, [comparison?.beforeUrl, comparison?.afterUrl]);
+
+  useEffect(() => {
+    if (loadedRootRef.current) applyInspectionMode(loadedRootRef.current, inspectionMode);
+  }, [inspectionMode]);
 
   const activeModelUrl = comparison
     ? comparisonSide === 'before'
@@ -108,6 +186,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     const attachModel = (root: THREE.Object3D) => {
       if (disposed) return;
       loadedRoot = root;
+      loadedRootRef.current = root;
       scene.add(root);
 
       const box = new THREE.Box3().setFromObject(root);
@@ -119,6 +198,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       root.position.sub(center.multiplyScalar(scale));
       root.position.y += size.y * scale * 0.5;
       controls.target.set(0, Math.min(size.y * scale * 0.4, 0.8), 0);
+      applyInspectionMode(root, inspectionMode);
       controls.update();
     };
 
@@ -168,15 +248,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       observer.disconnect();
       controls.dispose();
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
-      if (loadedRoot) {
-        loadedRoot.traverse((object) => {
-          if (object instanceof THREE.Mesh) {
-            object.geometry?.dispose();
-            const materials = Array.isArray(object.material) ? object.material : [object.material];
-            materials.forEach((material) => material?.dispose());
-          }
-        });
-      }
+      if (loadedRoot) disposeLoadedRoot(loadedRoot);
+      if (loadedRootRef.current === loadedRoot) loadedRootRef.current = null;
       try {
         renderer.dispose();
         renderer.domElement.remove();
@@ -189,6 +262,36 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   return (
     <section className="viewer-shell" aria-label="3D model preview">
       <div ref={hostRef} className="viewer-canvas" />
+
+      {activeModelUrl && !busy && (
+        <div className="viewer-inspection" aria-label="Viewer display mode">
+          <button
+            type="button"
+            aria-pressed={inspectionMode === 'solid'}
+            className={inspectionMode === 'solid' ? 'active' : ''}
+            onClick={() => setInspectionMode('solid')}
+          >
+            Solid
+          </button>
+          <button
+            type="button"
+            aria-pressed={inspectionMode === 'wireframe'}
+            className={inspectionMode === 'wireframe' ? 'active' : ''}
+            onClick={() => setInspectionMode('wireframe')}
+          >
+            Wireframe
+          </button>
+          <button
+            type="button"
+            aria-pressed={inspectionMode === 'solid-wire'}
+            className={inspectionMode === 'solid-wire' ? 'active' : ''}
+            onClick={() => setInspectionMode('solid-wire')}
+          >
+            Solid + Wire
+          </button>
+        </div>
+      )}
+
       {comparison && (
         <div className="viewer-comparison" aria-label="Mesh comparison">
           <button
