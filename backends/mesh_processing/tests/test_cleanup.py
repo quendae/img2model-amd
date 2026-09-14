@@ -33,6 +33,24 @@ class CleanupGeometryTests(unittest.TestCase):
         self.assertIsNotNone(report.normalized_error)
         self.assertGreater(report.reduction_ratio, 0.0)
 
+    def test_game_ready_reports_repair_reduction_and_validation_progress(self):
+        source = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+        events: list[tuple[str, float]] = []
+
+        cleanup_mesh(
+            source,
+            resolve_cleanup_config("game-ready", {}),
+            progress=lambda stage, value: events.append((stage, value)),
+        )
+
+        stages = [stage for stage, _value in events]
+        self.assertIn("repairing_mesh", stages)
+        self.assertIn("reducing_mesh", stages)
+        self.assertIn("validating_mesh", stages)
+        values = [value for _stage, value in events]
+        self.assertEqual(values, sorted(values))
+        self.assertGreater(values[-1], values[0])
+
     def test_manual_game_ready_target_reduces_near_requested_budget(self):
         source = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
         config = resolve_cleanup_config(
