@@ -87,17 +87,12 @@ def _diagnostic_emit(event: str, **values: Any) -> None:
         technical_parts = [error_text, f"Debug stage: {debug_stage}"]
         if formatted_traceback:
             technical_parts.append(formatted_traceback.rstrip())
-        # GenerateResult currently transports the error field end-to-end, so keep
-        # the full diagnostic there until structured debug fields are added to the UI.
         values["error"] = "\n\n".join(technical_parts)
         _shape_debug_stage = None
 
     _original_emit(event, **values)
 
 
-# worker_base catches generation exceptions internally. Replacing its emitter lets
-# us capture traceback.format_exc() while the original exception context is alive,
-# without changing the validated Hunyuan inference implementation.
 _base.emit = _diagnostic_emit
 emit = _diagnostic_emit
 
@@ -109,9 +104,6 @@ class _ShapePipelineNoProgress:
         self._pipeline = pipeline
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        # The desktop owns progress reporting over JSONL. Hunyuan's tqdm writes
-        # directly to a terminal stream, which is not a valid console handle for
-        # the persistent Windows/Tauri worker and can raise OSError(22).
         kwargs["enable_pbar"] = False
         return self._pipeline(*args, **kwargs)
 
@@ -145,8 +137,6 @@ def run_generate(args: argparse.Namespace, cache: Any | None = None) -> int:
     return _original_run_generate(args, cache=_ShapeInvocationCache(cache))
 
 
-# worker_base.dispatch_serve_command resolves run_generate from its module globals,
-# so replace that symbol while preserving the rest of the validated implementation.
 _base.run_generate = run_generate
 
 
@@ -253,7 +243,16 @@ def run_mesh_cleanup(args: argparse.Namespace, cache: PipelineCache | None = Non
         emit("progress", ok=True, stage="cleaning_mesh", progress=0.20)
 
         def build_cleaned():
-            return cleanup_mesh(load_mesh(input_path), config)
+            return cleanup_mesh(
+                load_mesh(input_path),
+                config,
+                progress=lambda stage, value: emit(
+                    "progress",
+                    ok=True,
+                    stage=stage,
+                    progress=value,
+                ),
+            )
 
         if cache is None:
             cleaned, report = build_cleaned()
@@ -389,8 +388,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers_action = next(
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
-    # Base parser points serve at worker_base.run_serve; redirect it to this
-    # entry point so protocol-v2 commands are understood in persistent mode.
     subparsers_action.choices["serve"].set_defaults(func=run_serve)
 
     mesh_cleanup = subparsers_action.add_parser(
