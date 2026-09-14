@@ -19,7 +19,9 @@ class CleanupGeometryTests(unittest.TestCase):
         self.assertFalse(bool(report.remeshed))
 
     def test_game_ready_routes_through_repair_and_adaptive_reduction(self):
-        source = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+        # Keep the regression mesh above the Game-ready auto floor so this
+        # test verifies actual reduction rather than remeshing a tiny source.
+        source = trimesh.creation.icosphere(subdivisions=5, radius=1.0)
         cleaned, report = cleanup_mesh(source, resolve_cleanup_config("game-ready", {}))
 
         self.assertTrue(report.remeshed)
