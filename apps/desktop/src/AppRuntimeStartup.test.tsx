@@ -26,6 +26,11 @@ vi.mock('./components/DiagnosticsPanel', () => ({
     <div data-testid="diagnostics-panel">
       <span data-testid="manual-health-prop">{String(Boolean(props.onHealthCheck))}</span>
       <span data-testid="runtime-phase-prop">{props.runtimePhase ?? 'none'}</span>
+      {!props.health && (props.runtimePhase === 'starting' || props.runtimePhase === 'checking') && (
+        <div role="status" aria-label="Preparing AMD runtime">
+          Checking Radeon and Python runtime…
+        </div>
+      )}
     </div>
   ),
 }));
