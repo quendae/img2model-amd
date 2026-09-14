@@ -18,20 +18,21 @@ class CleanupGeometryTests(unittest.TestCase):
         self.assertLess(len(cleaned.faces), len(source.faces))
         self.assertFalse(bool(report.remeshed))
 
-    def test_game_ready_routes_through_repair_and_adaptive_reduction(self):
-        # Keep the regression mesh above the Game-ready auto floor so this
-        # test verifies actual reduction rather than remeshing a tiny source.
+    def test_game_ready_clean_watertight_mesh_skips_invasive_remesh_before_qem(self):
+        # A healthy dense mesh should be simplified directly. Running isotropic
+        # remeshing first can visibly facet otherwise smooth silhouettes before
+        # the QEM error metric is even evaluated.
         source = trimesh.creation.icosphere(subdivisions=5, radius=1.0)
         cleaned, report = cleanup_mesh(source, resolve_cleanup_config("game-ready", {}))
 
-        self.assertTrue(report.remeshed)
-        self.assertTrue(str(report.repair_backend).startswith("pymeshlab"))
+        self.assertFalse(bool(report.remeshed))
+        self.assertEqual(report.repair_backend, "validation-only")
         self.assertLess(len(cleaned.faces), len(source.faces))
         self.assertLess(report.triangles_after, report.triangles_before)
-        self.assertIsNotNone(report.watertight_before)
-        self.assertIsNotNone(report.watertight_after)
-        self.assertIsNotNone(report.boundary_edges_before)
-        self.assertIsNotNone(report.boundary_edges_after)
+        self.assertTrue(report.watertight_before)
+        self.assertTrue(report.watertight_after)
+        self.assertEqual(report.boundary_edges_before, 0)
+        self.assertEqual(report.boundary_edges_after, 0)
         self.assertIsNotNone(report.normalized_error)
         self.assertGreater(report.reduction_ratio, 0.0)
 
