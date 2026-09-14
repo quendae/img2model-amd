@@ -1,4 +1,14 @@
 import { textureProfileDescriptions, textureProfileLabels } from '../domain/textureProfiles';
+import {
+  DEFAULT_TEXTURE_TARGET_TRIANGLES,
+  MAX_TEXTURE_TARGET_TRIANGLES,
+  MIN_TEXTURE_TARGET_TRIANGLES,
+  TEXTURE_TRIANGLE_PRESETS,
+  clampTextureTargetTriangles,
+  texturePresetForTarget,
+  textureSliderToTarget,
+  textureTargetToSlider,
+} from '../domain/texturePolycount';
 import type {
   BackendId,
   CleanupAdvancedOverrides,
@@ -18,6 +28,7 @@ interface GenerationPanelProps {
   textureProfile: TextureProfile;
   textureEngine: TextureEngineId;
   textureMeshPath: string | null;
+  textureTargetTriangles?: number;
   meshInputPath?: string | null;
   cleanupPreset?: CleanupPreset;
   cleanupConfigLabel?: string;
@@ -35,6 +46,7 @@ interface GenerationPanelProps {
   onShapeOutputModeChange: (mode: ShapeOutputMode) => void;
   onProfileChange: (profile: GenerationOptions['profile']) => void;
   onTextureProfileChange: (profile: TextureProfile) => void;
+  onTextureTargetTrianglesChange?: (triangles: number) => void;
   onCleanupPresetChange?: (preset: CleanupPreset) => void;
   onCleanupOverridesChange?: (overrides: CleanupAdvancedOverrides) => void;
   onSeedChange: (seed: number) => void;
@@ -100,6 +112,14 @@ const cleanupDefaults: Record<CleanupPreset, Required<Pick<CleanupAdvancedOverri
   },
 };
 
+function compactTriangleCount(value: number): string {
+  if (value >= 1000) {
+    const thousands = value / 1000;
+    return `${Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}k`;
+  }
+  return value.toLocaleString();
+}
+
 export function GenerationPanel({
   backend,
   workflowMode,
@@ -108,6 +128,7 @@ export function GenerationPanel({
   textureProfile,
   textureEngine,
   textureMeshPath,
+  textureTargetTriangles = DEFAULT_TEXTURE_TARGET_TRIANGLES,
   meshInputPath = null,
   cleanupPreset = 'light',
   cleanupConfigLabel = 'Light',
@@ -125,6 +146,7 @@ export function GenerationPanel({
   onShapeOutputModeChange,
   onProfileChange,
   onTextureProfileChange,
+  onTextureTargetTrianglesChange = () => {},
   onCleanupPresetChange = () => {},
   onCleanupOverridesChange = () => {},
   onSeedChange,
@@ -140,6 +162,8 @@ export function GenerationPanel({
   const heavyCleanup = cleanupPreset === 'game-ready' || cleanupPreset === 'aggressive';
   const triangleBudgetMode = cleanupOverrides.triangle_budget_mode ?? 'auto';
   const targetTriangles = cleanupOverrides.target_triangles ?? 5000;
+  const resolvedTextureTarget = clampTextureTargetTriangles(textureTargetTriangles);
+  const textureTargetPreset = texturePresetForTarget(resolvedTextureTarget);
   const missingTextureRuntime = textureRequested && !textureAvailable;
   const missingMesh = workflowMode === 'texture'
     ? !textureMeshPath
@@ -178,6 +202,13 @@ export function GenerationPanel({
       triangle_budget_mode: 'manual',
       target_triangles: targetTriangles,
     });
+  };
+  const selectCustomTextureTarget = () => {
+    if (textureTargetPreset === 'custom') return;
+    const customValue = resolvedTextureTarget === DEFAULT_TEXTURE_TARGET_TRIANGLES
+      ? 7_500
+      : clampTextureTargetTriangles(resolvedTextureTarget + 100);
+    onTextureTargetTrianglesChange(customValue);
   };
 
   return (
@@ -455,26 +486,84 @@ export function GenerationPanel({
       )}
 
       {textureRequested && (
-        <div className="field compact-field">
-          <span>Texture profile</span>
-          <div className="segmented-control texture-profile-control" aria-label="Texture profile">
-            {textureProfiles.map((value) => (
+        <>
+          <div className="field compact-field texture-polycount-field">
+            <span>Texture target</span>
+            <div className="texture-target-presets" aria-label="Texture target triangles">
+              {TEXTURE_TRIANGLE_PRESETS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={textureTargetPreset === option.id}
+                  className={textureTargetPreset === option.id ? 'active' : ''}
+                  disabled={busy}
+                  onClick={() => onTextureTargetTrianglesChange(option.triangles)}
+                >
+                  <strong>{option.label}</strong>
+                  <small>{compactTriangleCount(option.triangles)}</small>
+                </button>
+              ))}
               <button
-                key={value}
                 type="button"
-                aria-pressed={textureProfile === value}
-                className={textureProfile === value ? 'active' : ''}
-                onClick={() => onTextureProfileChange(value)}
+                aria-pressed={textureTargetPreset === 'custom'}
+                className={textureTargetPreset === 'custom' ? 'active' : ''}
+                disabled={busy}
+                onClick={selectCustomTextureTarget}
               >
-                {textureProfileLabels[value]}
+                <strong>Custom</strong>
+                <small>{textureTargetPreset === 'custom' ? compactTriangleCount(resolvedTextureTarget) : '300–40k'}</small>
               </button>
-            ))}
+            </div>
+            <small className="texture-target-summary">
+              {resolvedTextureTarget.toLocaleString()} triangles · lower targets make lighter game assets; 40k is the Hunyuan working maximum.
+            </small>
+            {textureTargetPreset === 'custom' && (
+              <div className="texture-custom-target">
+                <input
+                  type="range"
+                  aria-label="Custom texture triangle slider"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={textureTargetToSlider(resolvedTextureTarget)}
+                  disabled={busy}
+                  onChange={(event) => onTextureTargetTrianglesChange(textureSliderToTarget(Number(event.target.value)))}
+                />
+                <input
+                  type="number"
+                  aria-label="Custom texture triangles"
+                  min={MIN_TEXTURE_TARGET_TRIANGLES}
+                  max={MAX_TEXTURE_TARGET_TRIANGLES}
+                  step={100}
+                  value={resolvedTextureTarget}
+                  disabled={busy}
+                  onChange={(event) => onTextureTargetTrianglesChange(clampTextureTargetTriangles(Number(event.target.value)))}
+                />
+              </div>
+            )}
           </div>
-          <small className="profile-description">{textureProfileDescriptions[textureProfile]}</small>
-          {!textureAvailable && (
-            <div className="backend-note warning">Texture runtime is not ready. Install the AMD texture extensions first.</div>
-          )}
-        </div>
+
+          <div className="field compact-field">
+            <span>Texture profile</span>
+            <div className="segmented-control texture-profile-control" aria-label="Texture profile">
+              {textureProfiles.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={textureProfile === value}
+                  className={textureProfile === value ? 'active' : ''}
+                  onClick={() => onTextureProfileChange(value)}
+                >
+                  {textureProfileLabels[value]}
+                </button>
+              ))}
+            </div>
+            <small className="profile-description">{textureProfileDescriptions[textureProfile]}</small>
+            {!textureAvailable && (
+              <div className="backend-note warning">Texture runtime is not ready. Install the AMD texture extensions first.</div>
+            )}
+          </div>
+        </>
       )}
 
       {workflowMode !== 'mesh' && (
