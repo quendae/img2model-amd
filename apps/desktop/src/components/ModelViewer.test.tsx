@@ -7,16 +7,41 @@ const mocks = vi.hoisted(() => ({
   loadedUrls: [] as string[],
   rendererShouldThrow: false,
   rendererInstances: 0,
+  materials: [] as Array<{ wireframe: boolean; needsUpdate: boolean }>,
+  overlays: [] as Array<{ visible: boolean }>,
 }));
 
 vi.mock('three', () => {
-  class Scene {
+  class Object3D {
+    children: any[] = [];
+    position = { y: 0, sub() { return this; } };
+    scale = { setScalar() {} };
+    add(child: any) { this.children.push(child); }
+    traverse(callback: (object: any) => void) {
+      callback(this);
+      for (const child of this.children) child.traverse?.(callback) ?? callback(child);
+    }
+  }
+
+  class Scene extends Object3D {
     background: unknown;
-    add() {}
   }
 
   class Color {
     constructor(_value: number) {}
+  }
+
+  class Vector3 {
+    x = 1;
+    y = 1;
+    z = 1;
+    multiplyScalar() { return this; }
+  }
+
+  class Box3 {
+    setFromObject() { return this; }
+    getSize(target: Vector3) { target.x = 1; target.y = 1; target.z = 1; return target; }
+    getCenter(target: Vector3) { target.x = 0; target.y = 0; target.z = 0; return target; }
   }
 
   class PerspectiveCamera {
@@ -37,9 +62,7 @@ vi.mock('three', () => {
     dispose() {}
     constructor(_options: unknown) {
       mocks.rendererInstances += 1;
-      if (mocks.rendererShouldThrow) {
-        throw new Error('WebGL context unavailable');
-      }
+      if (mocks.rendererShouldThrow) throw new Error('WebGL context unavailable');
     }
   }
 
@@ -57,21 +80,71 @@ vi.mock('three', () => {
     constructor(_size: number, _divisions: number, _color1: number, _color2: number) {}
   }
 
-  class Mesh {}
+  class Geometry {
+    dispose() {}
+  }
+
+  class Material {
+    wireframe = false;
+    needsUpdate = false;
+    dispose() {}
+    constructor() { mocks.materials.push(this); }
+  }
+
+  class Mesh extends Object3D {
+    isMesh = true;
+    geometry = new Geometry();
+    material: Material | Material[] = new Material();
+  }
+
+  class WireframeGeometry extends Geometry {
+    constructor(_geometry: unknown) { super(); }
+  }
+
+  class LineBasicMaterial {
+    dispose() {}
+    constructor(_options: unknown) {}
+  }
+
+  class LineSegments extends Object3D {
+    visible = false;
+    geometry: WireframeGeometry;
+    material: LineBasicMaterial;
+    userData: Record<string, unknown> = {};
+    constructor(geometry: WireframeGeometry, material: LineBasicMaterial) {
+      super();
+      this.geometry = geometry;
+      this.material = material;
+      mocks.overlays.push(this);
+    }
+  }
 
   return {
+    Object3D,
     Scene,
     Color,
+    Vector3,
+    Box3,
     PerspectiveCamera,
     WebGLRenderer,
     HemisphereLight,
     DirectionalLight,
     GridHelper,
     Mesh,
+    WireframeGeometry,
+    LineBasicMaterial,
+    LineSegments,
     SRGBColorSpace: 'srgb',
     ACESFilmicToneMapping: 'aces',
   };
 });
+
+function makeLoadedRoot() {
+  const THREE = require('three');
+  const root = new THREE.Object3D();
+  root.add(new THREE.Mesh());
+  return root;
+}
 
 vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
   OrbitControls: class {
@@ -85,22 +158,26 @@ vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
 
 vi.mock('three/examples/jsm/loaders/GLTFLoader.js', () => ({
   GLTFLoader: class {
-    load(url: string) {
+    load(url: string, onLoad?: (gltf: { scene: unknown }) => void) {
       mocks.loadedUrls.push(url);
+      onLoad?.({ scene: makeLoadedRoot() });
     }
   },
 }));
 
 vi.mock('three/examples/jsm/loaders/OBJLoader.js', () => ({
   OBJLoader: class {
-    load(url: string) {
+    load(url: string, onLoad?: (root: unknown) => void) {
       mocks.loadedUrls.push(url);
+      onLoad?.(makeLoadedRoot());
     }
   },
 }));
 
 beforeEach(() => {
   mocks.loadedUrls.length = 0;
+  mocks.materials.length = 0;
+  mocks.overlays.length = 0;
   mocks.rendererShouldThrow = false;
   mocks.rendererInstances = 0;
   Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
@@ -144,6 +221,48 @@ describe('ModelViewer mesh comparison', () => {
 
     fireEvent.click(after);
     await waitFor(() => expect(mocks.loadedUrls.at(-1)).toBe('after.glb'));
+  });
+
+  it('offers Solid, Wireframe and Solid + Wire inspection modes', () => {
+    render(<ModelViewer modelUrl="model.glb" busy={false} />);
+
+    expect(screen.getByRole('button', { name: 'Solid' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Wireframe' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Solid + Wire' })).toBeTruthy();
+  });
+
+  it('switches materials to wireframe and can overlay wire edges over the solid model', async () => {
+    render(<ModelViewer modelUrl="model.glb" busy={false} />);
+
+    await waitFor(() => expect(mocks.materials.length).toBeGreaterThan(0));
+    const meshMaterial = mocks.materials[0];
+    expect(meshMaterial.wireframe).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Wireframe' }));
+    await waitFor(() => expect(meshMaterial.wireframe).toBe(true));
+    expect(mocks.overlays.every((overlay) => overlay.visible === false)).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Solid + Wire' }));
+    await waitFor(() => expect(meshMaterial.wireframe).toBe(false));
+    expect(mocks.overlays.some((overlay) => overlay.visible === true)).toBe(true);
+  });
+
+  it('keeps the selected inspection mode while switching Before and After', async () => {
+    render(
+      <ModelViewer
+        modelUrl="after.glb"
+        comparison={{ beforeUrl: 'before.glb', afterUrl: 'after.glb' }}
+        busy={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Wireframe' }));
+    const before = screen.getByRole('button', { name: 'Before' });
+    fireEvent.click(before);
+
+    await waitFor(() => expect(mocks.loadedUrls.at(-1)).toBe('before.glb'));
+    expect(screen.getByRole('button', { name: 'Wireframe' }).getAttribute('aria-pressed')).toBe('true');
+    expect(mocks.materials.at(-1)?.wireframe).toBe(true);
   });
 
   it('shows a viewer error instead of tearing down the app when WebGL initialization fails', async () => {
