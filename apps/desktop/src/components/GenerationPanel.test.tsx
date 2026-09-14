@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GenerationPanel } from './GenerationPanel';
 
@@ -67,10 +67,11 @@ describe('GenerationPanel', () => {
   it('shows all four texture profiles in one compact control when Model + texture is selected', () => {
     render(<GenerationPanel {...(commonProps as any)} outputMode="model-and-texture" />);
     const control = screen.getByLabelText('Texture profile');
+    const scoped = within(control);
     expect(control.className).toContain('texture-profile-control');
     expect(control.querySelectorAll('button')).toHaveLength(4);
     for (const profile of ['Auto', 'Safe', 'Balanced', 'Quality']) {
-      expect(screen.getByRole('button', { name: new RegExp(profile, 'i') })).toBeTruthy();
+      expect(scoped.getByRole('button', { name: new RegExp(profile, 'i') })).toBeTruthy();
     }
     expect(screen.getByRole('button', { name: 'Generate model + texture' })).toBeTruthy();
   });
