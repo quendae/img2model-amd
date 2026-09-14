@@ -102,6 +102,26 @@
   margin-top: 9px;
 }
 
+/* The action must remain reachable even when Advanced consumes the remaining height. */
+.generation-panel {
+  position: relative;
+}
+
+.generation-action-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 8;
+  margin-top: 10px;
+  padding: 9px 0 2px;
+  border-top: 1px solid #252a31;
+  background: linear-gradient(to bottom, rgba(21, 24, 29, 0.94), #15181d 9px);
+  box-shadow: 0 -8px 16px rgba(12, 14, 17, 0.22);
+}
+
+.generation-action-dock .compact-primary-action {
+  margin-top: 0;
+}
+
 .left-rail,
 .right-rail,
 .cleanup-advanced {
