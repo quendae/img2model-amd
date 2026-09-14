@@ -32,6 +32,7 @@ export interface ShapeWorkflowRequest {
   removeBackground: boolean;
   textureEngine: TextureEngineId;
   textureProfile: TextureProfile;
+  textureMaxFaces?: number;
   cleanupPreset?: CleanupPreset;
   cleanupOverrides?: CleanupAdvancedOverrides;
 }
@@ -151,6 +152,7 @@ function finishStages(tracker: StageTracker, at: number): Record<string, number>
 function resultMetadata(result: GenerateResult): Partial<GenerationTimingSummary> {
   const resolved = result.resolved_profile;
   return {
+    textureTargetTriangles: result.max_faces ?? undefined,
     trianglesBefore: result.faces_before ?? undefined,
     trianglesAfter: result.faces_after ?? undefined,
     resolvedTextureProfile:
@@ -347,6 +349,7 @@ export function useGenerationJob() {
           backend: request.backend,
           engine: request.engine,
           profile: request.profile,
+          maxFaces: request.maxFaces,
           mesh: request.mesh,
           image: request.image,
           output: request.output,
@@ -360,7 +363,11 @@ export function useGenerationJob() {
       const finishedAt = nowMs();
       const textureMs = finishedAt - textureStartedAt;
       const textureStages = finishStages(stageTracker, finishedAt);
-      const metadata = mergeMetadata(options?.priorMetadata, resultMetadata(result));
+      const metadata = mergeMetadata(
+        options?.priorMetadata,
+        { textureTargetTriangles: request.maxFaces },
+        resultMetadata(result),
+      );
 
       if (!result.ok) {
         setTechnicalError(result.error ?? null);
@@ -412,6 +419,7 @@ export function useGenerationJob() {
         totalMs: finishedAt - totalStartedAt,
         textureStages: finishStages(stageTracker, finishedAt),
         ...options?.priorMetadata,
+        textureTargetTriangles: request.maxFaces,
       });
       return null;
     } finally {
@@ -516,6 +524,7 @@ export function useGenerationJob() {
         backend: request.backend,
         engine: request.textureEngine,
         profile: request.textureProfile,
+        maxFaces: request.textureMaxFaces,
         mesh: nextMesh,
         image: request.image,
         output: paths.final,
