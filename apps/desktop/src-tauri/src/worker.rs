@@ -106,6 +106,8 @@ pub struct TextureRequest {
     pub backend: String,
     pub engine: String,
     pub profile: String,
+    #[serde(default)]
+    pub max_faces: Option<u64>,
     pub mesh: String,
     pub image: String,
     pub output: String,
@@ -396,6 +398,13 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
     if !matches!(request.profile.as_str(), "auto" | "safe" | "balanced" | "quality") {
         return Err(format!("Texture profile '{}' is not implemented.", request.profile));
     }
+    if let Some(max_faces) = request.max_faces {
+        if !(300..=40_000).contains(&max_faces) {
+            return Err(format!(
+                "Texture maxFaces must be between 300 and 40000 triangles; got {max_faces}."
+            ));
+        }
+    }
 
     let model = request
         .model
@@ -421,6 +430,11 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
         "--profile".to_string(),
         request.profile.clone(),
     ];
+
+    if let Some(max_faces) = request.max_faces {
+        arguments.push("--max-faces".to_string());
+        arguments.push(max_faces.to_string());
+    }
 
     if request.remove_background {
         arguments.push("--remove-background".to_string());
@@ -563,6 +577,7 @@ mod tests {
             backend: "native-rocm".to_string(),
             engine: "hunyuan-paint".to_string(),
             profile: "safe".to_string(),
+            max_faces: None,
             mesh: "C:\\input folder\\shape.glb".to_string(),
             image: "C:\\input folder\\source.png".to_string(),
             output: "C:\\output folder\\textured.glb".to_string(),
@@ -587,6 +602,7 @@ mod tests {
             backend: "native-rocm".to_string(),
             engine: "future-engine".to_string(),
             profile: "auto".to_string(),
+            max_faces: None,
             mesh: "shape.glb".to_string(),
             image: "source.png".to_string(),
             output: "textured.glb".to_string(),
