@@ -39,13 +39,20 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     const host = hostRef.current;
     if (!host) return undefined;
 
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch (error) {
+      setLoadError(`3D preview unavailable: ${String(error)}`);
+      return undefined;
+    }
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x171a1f);
 
     const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
     camera.position.set(2.6, 1.8, 3.4);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -83,6 +90,15 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     let frame = 0;
     let loadedRoot: THREE.Object3D | null = null;
     let disposed = false;
+    let renderFailed = false;
+
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      if (!disposed) {
+        setLoadError('3D preview unavailable: WebGL context was lost. The job can continue without the preview.');
+      }
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
 
     const attachModel = (root: THREE.Object3D) => {
       if (disposed) return;
@@ -120,8 +136,15 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     }
 
     const animate = () => {
-      controls.update();
-      renderer.render(scene, camera);
+      if (disposed || renderFailed) return;
+      try {
+        controls.update();
+        renderer.render(scene, camera);
+      } catch (error) {
+        renderFailed = true;
+        setLoadError(`3D preview unavailable: ${String(error)}. The job can continue without the preview.`);
+        return;
+      }
       frame = requestAnimationFrame(animate);
     };
     animate();
@@ -131,6 +154,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       cancelAnimationFrame(frame);
       observer.disconnect();
       controls.dispose();
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       if (loadedRoot) {
         loadedRoot.traverse((object) => {
           if (object instanceof THREE.Mesh) {
