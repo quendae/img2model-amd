@@ -44,8 +44,10 @@ fn log_worker_result(operation: &str, result: &Result<worker::GenerateResult, St
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn get_system_diagnostics() -> diagnostics::SystemDiagnostics {
-    diagnostics::collect_system_diagnostics()
+async fn get_system_diagnostics() -> Result<diagnostics::SystemDiagnostics, String> {
+    tauri::async_runtime::spawn_blocking(diagnostics::collect_system_diagnostics)
+        .await
+        .map_err(|error| format!("System diagnostics task failed: {error}"))
 }
 
 #[cfg(feature = "desktop")]
@@ -73,14 +75,18 @@ fn append_diagnostic_log(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn hunyuan_health() -> Result<worker::WorkerHealth, String> {
-    worker::worker_health()
+async fn hunyuan_health() -> Result<worker::WorkerHealth, String> {
+    tauri::async_runtime::spawn_blocking(worker::worker_health)
+        .await
+        .map_err(|error| format!("Runtime health task failed: {error}"))?
 }
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn hunyuan_texture_health() -> Result<worker::TextureHealth, String> {
-    worker::worker_texture_health()
+async fn hunyuan_texture_health() -> Result<worker::TextureHealth, String> {
+    tauri::async_runtime::spawn_blocking(worker::worker_texture_health)
+        .await
+        .map_err(|error| format!("Texture health task failed: {error}"))?
 }
 
 #[cfg(feature = "desktop")]
