@@ -6,7 +6,7 @@ from typing import Callable
 import numpy as np
 import trimesh
 
-from .models import CleanupReport, ReductionPolicy, RepairPolicy
+from .models import CleanupReport, ReductionPolicy, RepairPolicy, RepairStats
 from .pymeshlab_backend import adaptive_qem_reduce, repair_with_pymeshlab
 
 ProgressCallback = Callable[[str, float], None]
@@ -117,6 +117,17 @@ def _is_edge_manifold(mesh: trimesh.Trimesh) -> bool:
         np.asarray(mesh.faces), len(mesh.vertices)
     )
     return all(len(occurrences) <= 2 for occurrences in edges.values())
+
+
+def _game_ready_mesh_is_healthy(mesh: trimesh.Trimesh) -> bool:
+    """Avoid geometry-changing repair when the source already has sound topology."""
+
+    return (
+        bool(mesh.is_watertight)
+        and _is_edge_manifold(mesh)
+        and _boundary_edge_count(mesh) == 0
+        and len(_face_components(mesh)) == 1
+    )
 
 
 def _remove_small_components(mesh: trimesh.Trimesh, min_area_ratio: float) -> int:
@@ -350,7 +361,22 @@ def _cleanup_heavy(
     repair_policy, reduction_policy = _heavy_policies(config)
     if progress is not None:
         progress("repairing_mesh", 0.25)
-    repaired, repair_stats = repair_with_pymeshlab(mesh, repair_policy)
+
+    if config.preset == "game-ready" and _game_ready_mesh_is_healthy(mesh):
+        repaired = mesh.copy()
+        repair_stats = RepairStats(
+            watertight_before=True,
+            watertight_after=True,
+            boundary_edges_before=0,
+            boundary_edges_after=0,
+            holes_closed=0,
+            non_manifold_edges_fixed=0,
+            components_removed=0,
+            remeshed=False,
+            repair_backend="validation-only",
+        )
+    else:
+        repaired, repair_stats = repair_with_pymeshlab(mesh, repair_policy)
 
     if progress is not None:
         progress("reducing_mesh", 0.45)
