@@ -3,6 +3,7 @@ import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { GenerationPanel } from './components/GenerationPanel';
 import { InputPanel } from './components/InputPanel';
 import { ModelViewer } from './components/ModelViewer';
+import { DEFAULT_TEXTURE_TARGET_TRIANGLES } from './domain/texturePolycount';
 import type {
   BackendId,
   CleanupAdvancedOverrides,
@@ -72,6 +73,7 @@ export function App() {
   const [shapeOutputMode, setShapeOutputMode] = useState<ShapeOutputMode>('model-only');
   const [profile, setProfile] = useState<GenerationOptions['profile']>('balanced');
   const [textureProfile, setTextureProfile] = useState<TextureProfile>('auto');
+  const [textureTargetTriangles, setTextureTargetTriangles] = useState(DEFAULT_TEXTURE_TARGET_TRIANGLES);
   const [textureEngine] = useState<TextureEngineId>('hunyuan-paint');
   const [shapeCleanupPreset, setShapeCleanupPreset] = useState<CleanupPreset>('light');
   const [shapeCleanupOverrides, setShapeCleanupOverrides] = useState<CleanupAdvancedOverrides>({});
@@ -241,6 +243,7 @@ export function App() {
         removeBackground,
         textureEngine,
         textureProfile,
+        textureMaxFaces: textureTargetTriangles,
         cleanupPreset: shapeCleanupPreset,
         cleanupOverrides: shapeCleanupOverrides,
       });
@@ -255,6 +258,7 @@ export function App() {
       backend,
       engine: textureEngine,
       profile: textureProfile,
+      maxFaces: textureTargetTriangles,
       mesh: textureMeshPath!,
       image: inputPath,
       output,
@@ -277,6 +281,7 @@ export function App() {
     setTextureMeshPath(context.mesh);
     setBackend(context.backend);
     setTextureProfile(context.profile);
+    if (context.maxFaces !== undefined) setTextureTargetTriangles(context.maxFaces);
     setWorkflowMode('texture');
     setModelPath(context.mesh);
     job.setStatusMessage('Failed texture job loaded in Texture mode. Adjust settings or retry.');
@@ -289,7 +294,8 @@ export function App() {
   const displayError = job.error ?? runtime.error ?? diagnosticError;
   const timing = job.timingSummary;
   const cleanupReport = timing?.cleanupReport;
-  const cleanupReportV2 = cleanupReport?.algorithm_version === 'mesh-cleanup-v2';
+  const cleanupReportDetailed = cleanupReport?.algorithm_version === 'mesh-cleanup-v2'
+    || cleanupReport?.algorithm_version === 'mesh-cleanup-v3';
   const inferenceMs = timing?.inferenceMs ?? timing?.textureStages?.running_texture;
   const hasSplitPreprocessTiming = timing?.imagePreprocessMs !== undefined || timing?.meshPreprocessMs !== undefined;
   const canTextureCurrentModel = Boolean(
@@ -358,6 +364,7 @@ export function App() {
               textureProfile={textureProfile}
               textureEngine={textureEngine}
               textureMeshPath={textureMeshPath}
+              textureTargetTriangles={textureTargetTriangles}
               meshInputPath={meshInputPath}
               cleanupPreset={activeCleanupPreset}
               cleanupConfigLabel={activeCleanupLabel}
@@ -375,6 +382,7 @@ export function App() {
               onShapeOutputModeChange={setShapeOutputMode}
               onProfileChange={changeProfile}
               onTextureProfileChange={setTextureProfile}
+              onTextureTargetTrianglesChange={setTextureTargetTriangles}
               onCleanupPresetChange={changeCleanupPreset}
               onCleanupOverridesChange={changeCleanupOverrides}
               onSeedChange={setSeed}
@@ -473,6 +481,9 @@ export function App() {
               {timing?.meshCleanupMs !== undefined && <><span>Mesh cleanup</span><strong>{formatDuration(timing.meshCleanupMs)}</strong></>}
               {timing?.textureMs !== undefined && <><span>Texture</span><strong>{formatDuration(timing.textureMs)}</strong></>}
               {timing && <><span>Total</span><strong>{formatDuration(timing.totalMs)}</strong></>}
+              {timing?.textureTargetTriangles !== undefined && (
+                <><span>Texture target</span><strong>{timing.textureTargetTriangles.toLocaleString()} triangles</strong></>
+              )}
               {timing?.cacheHit !== undefined && (
                 <>
                   <span>Cache</span>
@@ -526,37 +537,37 @@ export function App() {
                   <strong>{(cleanupReport.components_removed ?? 0).toLocaleString()}</strong>
                   <span>Vertices welded</span>
                   <strong>{(cleanupReport.vertices_welded ?? 0).toLocaleString()}</strong>
-                  {cleanupReportV2 && (cleanupReport.watertight_before != null || cleanupReport.watertight_after != null) && (
+                  {cleanupReportDetailed && (cleanupReport.watertight_before != null || cleanupReport.watertight_after != null) && (
                     <><span>Watertight</span><strong>{yesNo(cleanupReport.watertight_before)} → {yesNo(cleanupReport.watertight_after)}</strong></>
                   )}
-                  {cleanupReportV2 && (cleanupReport.manifold_before != null || cleanupReport.manifold_after != null) && (
+                  {cleanupReportDetailed && (cleanupReport.manifold_before != null || cleanupReport.manifold_after != null) && (
                     <><span>Manifold</span><strong>{yesNo(cleanupReport.manifold_before)} → {yesNo(cleanupReport.manifold_after)}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.boundary_edges_after != null && (
+                  {cleanupReportDetailed && cleanupReport.boundary_edges_after != null && (
                     <>
                       <span>Boundary edges</span>
                       <strong>{cleanupReport.boundary_edges_before?.toLocaleString() ?? '—'} → {cleanupReport.boundary_edges_after.toLocaleString()}</strong>
                     </>
                   )}
-                  {cleanupReportV2 && cleanupReport.holes_closed != null && (
+                  {cleanupReportDetailed && cleanupReport.holes_closed != null && (
                     <><span>Holes closed</span><strong>{cleanupReport.holes_closed.toLocaleString()}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.non_manifold_edges_fixed != null && (
+                  {cleanupReportDetailed && cleanupReport.non_manifold_edges_fixed != null && (
                     <><span>Non-manifold edges fixed</span><strong>{cleanupReport.non_manifold_edges_fixed.toLocaleString()}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.repair_backend && (
+                  {cleanupReportDetailed && cleanupReport.repair_backend && (
                     <><span>Repair backend</span><strong>{cleanupReport.repair_backend}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.normalized_error != null && (
+                  {cleanupReportDetailed && cleanupReport.normalized_error != null && (
                     <><span>Geometry error</span><strong>{(cleanupReport.normalized_error * 100).toFixed(3)}%</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.target_triangles != null && (
+                  {cleanupReportDetailed && cleanupReport.target_triangles != null && (
                     <><span>Target triangles</span><strong>{cleanupReport.target_triangles.toLocaleString()}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.remeshed != null && (
+                  {cleanupReportDetailed && cleanupReport.remeshed != null && (
                     <><span>Remeshed</span><strong>{yesNo(cleanupReport.remeshed)}</strong></>
                   )}
-                  {!cleanupReportV2 && (
+                  {!cleanupReportDetailed && (
                     <><span>Spikes adjusted</span><strong>{(cleanupReport.spikes_adjusted ?? 0).toLocaleString()}</strong></>
                   )}
                   <span>Algorithm</span>
