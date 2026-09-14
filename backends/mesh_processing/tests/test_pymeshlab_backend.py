@@ -1,8 +1,10 @@
 import unittest
+from unittest import mock
 
 import numpy as np
 import trimesh
 
+from backends.mesh_processing import pymeshlab_backend as backend
 from backends.mesh_processing.pymeshlab_backend import (
     ReductionPolicy,
     RepairPolicy,
@@ -32,6 +34,15 @@ def _thin_feature_prop() -> trimesh.Trimesh:
     stem = trimesh.creation.cylinder(radius=0.05, height=2.0, sections=32)
     stem.apply_translation([0.0, 0.0, 2.0])
     return trimesh.util.concatenate([body, stem])
+
+
+class _FakeMesh:
+    def __init__(self, face_count: int) -> None:
+        self.faces = [None] * face_count
+        self.vertices = [None]
+
+    def copy(self):
+        return _FakeMesh(len(self.faces))
 
 
 class PyMeshLabRepairBackendTests(unittest.TestCase):
@@ -113,6 +124,35 @@ class PyMeshLabRepairBackendTests(unittest.TestCase):
         self.assertGreaterEqual(float(reduced.bounds[1][2]), source_max_z - 0.10)
         self.assertIsNotNone(stats.normalized_error)
         self.assertLessEqual(float(stats.normalized_error), policy.error_tolerance)
+
+    def test_large_auto_budget_uses_at_most_five_progressive_qem_attempts(self) -> None:
+        source = _FakeMesh(534_364)
+        policy = ReductionPolicy(
+            min_faces=3000,
+            start_faces=48_000,
+            error_tolerance=0.006,
+        )
+        sources: list[int] = []
+
+        def fake_qem(candidate_source, target_faces: int):
+            sources.append(len(candidate_source.faces))
+            return _FakeMesh(target_faces)
+
+        with mock.patch.object(backend, "_qem_candidate", side_effect=fake_qem), mock.patch.object(
+            backend,
+            "_normalized_symmetric_hausdorff",
+            return_value=0.0,
+        ):
+            reduced, stats = adaptive_qem_reduce(source, policy)
+
+        self.assertLessEqual(stats.attempts, 5)
+        self.assertEqual(len(reduced.faces), 3000)
+        self.assertEqual(sources[0], 534_364)
+        self.assertEqual(sources[1:], [48_000, 24_000, 12_000, 6000])
+
+    def test_large_mesh_hausdorff_sampling_is_capped_for_interactive_cleanup(self) -> None:
+        self.assertLessEqual(backend._hausdorff_sample_count(534_364, 48_000), 12_000)
+        self.assertGreaterEqual(backend._hausdorff_sample_count(534_364, 48_000), 4_000)
 
 
 if __name__ == "__main__":
