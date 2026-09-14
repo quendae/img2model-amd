@@ -6,6 +6,7 @@ import { ModelViewer } from './ModelViewer';
 const mocks = vi.hoisted(() => ({
   loadedUrls: [] as string[],
   rendererShouldThrow: false,
+  rendererInstances: 0,
 }));
 
 vi.mock('three', () => {
@@ -35,6 +36,7 @@ vi.mock('three', () => {
     render() {}
     dispose() {}
     constructor(_options: unknown) {
+      mocks.rendererInstances += 1;
       if (mocks.rendererShouldThrow) {
         throw new Error('WebGL context unavailable');
       }
@@ -100,6 +102,7 @@ vi.mock('three/examples/jsm/loaders/OBJLoader.js', () => ({
 beforeEach(() => {
   mocks.loadedUrls.length = 0;
   mocks.rendererShouldThrow = false;
+  mocks.rendererInstances = 0;
   Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
@@ -146,9 +149,16 @@ describe('ModelViewer mesh comparison', () => {
   it('shows a viewer error instead of tearing down the app when WebGL initialization fails', async () => {
     mocks.rendererShouldThrow = true;
 
-    render(<ModelViewer modelUrl="model.glb" busy={true} progress={20} progressLabel="Cleaning mesh…" />);
+    render(<ModelViewer modelUrl="model.glb" busy={false} />);
 
     expect(await screen.findByText(/3D preview unavailable.*WebGL context unavailable/i)).toBeTruthy();
+  });
+
+  it('does not keep a WebGL context alive while a generation or cleanup job is busy', () => {
+    render(<ModelViewer modelUrl="model.glb" busy={true} progress={20} progressLabel="Cleaning mesh…" />);
+
     expect(screen.getByText('Cleaning mesh…')).toBeTruthy();
+    expect(mocks.rendererInstances).toBe(0);
+    expect(mocks.loadedUrls).toEqual([]);
   });
 });
