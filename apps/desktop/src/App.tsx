@@ -58,8 +58,8 @@ function cleanedOutputSuggestion(path: string): string {
   return `${path.slice(0, dot)}-clean${path.slice(dot)}`;
 }
 
-function yesNo(value: boolean | undefined): string {
-  return value === undefined ? '—' : value ? 'Yes' : 'No';
+function yesNo(value: boolean | null | undefined): string {
+  return value == null ? '—' : value ? 'Yes' : 'No';
 }
 
 export function App() {
@@ -515,7 +515,7 @@ export function App() {
                   <strong>{cleanupReport.config_label}</strong>
                   <span>Triangles</span>
                   <strong>{cleanupReport.triangles_before.toLocaleString()} → {cleanupReport.triangles_after.toLocaleString()}</strong>
-                  {cleanupReport.reduction_ratio !== undefined && (
+                  {cleanupReport.reduction_ratio != null && (
                     <><span>Reduction</span><strong>{(cleanupReport.reduction_ratio * 100).toFixed(1)}%</strong></>
                   )}
                   <span>Vertices</span>
@@ -526,34 +526,34 @@ export function App() {
                   <strong>{(cleanupReport.components_removed ?? 0).toLocaleString()}</strong>
                   <span>Vertices welded</span>
                   <strong>{(cleanupReport.vertices_welded ?? 0).toLocaleString()}</strong>
-                  {cleanupReportV2 && (cleanupReport.watertight_before !== undefined || cleanupReport.watertight_after !== undefined) && (
+                  {cleanupReportV2 && (cleanupReport.watertight_before != null || cleanupReport.watertight_after != null) && (
                     <><span>Watertight</span><strong>{yesNo(cleanupReport.watertight_before)} → {yesNo(cleanupReport.watertight_after)}</strong></>
                   )}
-                  {cleanupReportV2 && (cleanupReport.manifold_before !== undefined || cleanupReport.manifold_after !== undefined) && (
+                  {cleanupReportV2 && (cleanupReport.manifold_before != null || cleanupReport.manifold_after != null) && (
                     <><span>Manifold</span><strong>{yesNo(cleanupReport.manifold_before)} → {yesNo(cleanupReport.manifold_after)}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.boundary_edges_after !== undefined && (
+                  {cleanupReportV2 && cleanupReport.boundary_edges_after != null && (
                     <>
                       <span>Boundary edges</span>
                       <strong>{cleanupReport.boundary_edges_before?.toLocaleString() ?? '—'} → {cleanupReport.boundary_edges_after.toLocaleString()}</strong>
                     </>
                   )}
-                  {cleanupReportV2 && cleanupReport.holes_closed !== undefined && (
+                  {cleanupReportV2 && cleanupReport.holes_closed != null && (
                     <><span>Holes closed</span><strong>{cleanupReport.holes_closed.toLocaleString()}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.non_manifold_edges_fixed !== undefined && (
+                  {cleanupReportV2 && cleanupReport.non_manifold_edges_fixed != null && (
                     <><span>Non-manifold edges fixed</span><strong>{cleanupReport.non_manifold_edges_fixed.toLocaleString()}</strong></>
                   )}
                   {cleanupReportV2 && cleanupReport.repair_backend && (
                     <><span>Repair backend</span><strong>{cleanupReport.repair_backend}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.normalized_error !== undefined && (
+                  {cleanupReportV2 && cleanupReport.normalized_error != null && (
                     <><span>Geometry error</span><strong>{(cleanupReport.normalized_error * 100).toFixed(3)}%</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.target_triangles !== undefined && (
+                  {cleanupReportV2 && cleanupReport.target_triangles != null && (
                     <><span>Target triangles</span><strong>{cleanupReport.target_triangles.toLocaleString()}</strong></>
                   )}
-                  {cleanupReportV2 && cleanupReport.remeshed !== undefined && (
+                  {cleanupReportV2 && cleanupReport.remeshed != null && (
                     <><span>Remeshed</span><strong>{yesNo(cleanupReport.remeshed)}</strong></>
                   )}
                   {!cleanupReportV2 && (
