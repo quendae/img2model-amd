@@ -29,6 +29,92 @@
   margin-top: 4px;
 }
 
+.texture-target-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.texture-target-presets button {
+  min-width: 0;
+  min-height: 39px;
+  display: grid;
+  place-content: center;
+  gap: 1px;
+  padding: 4px;
+  border: 1px solid #303640;
+  border-radius: 7px;
+  background: #111318;
+  color: #89929d;
+  cursor: pointer;
+}
+
+.texture-target-presets button:hover:not(:disabled) {
+  border-color: #4b535f;
+  background: #171a1f;
+}
+
+.texture-target-presets button.active {
+  border-color: #4b535f;
+  background: #252a31;
+  color: #f0f2f5;
+  box-shadow: inset 0 0 0 1px #353c45;
+}
+
+.texture-target-presets button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.texture-target-presets strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 8.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.texture-target-presets small {
+  color: #707985;
+  font-size: 7.5px;
+  line-height: 1.2;
+}
+
+.texture-target-summary {
+  display: block;
+  margin-top: 5px;
+  color: #707985;
+  font-size: 8.5px;
+  line-height: 1.3;
+}
+
+.texture-custom-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 82px;
+  align-items: center;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.texture-custom-target input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: #d95449;
+}
+
+.texture-custom-target input[type="number"] {
+  width: 100%;
+  height: 30px;
+  border: 1px solid #313740;
+  border-radius: 7px;
+  background: #101216;
+  color: #dce0e5;
+  padding: 0 7px;
+  outline: none;
+  font-size: 9px;
+}
+
 .compact-field {
   margin-top: 8px;
   gap: 4px;
