@@ -75,6 +75,36 @@ function jobState() {
   };
 }
 
+function readyRuntime() {
+  return {
+    phase: 'ready',
+    health: {
+      ok: true,
+      python: 'python.exe',
+      torch_available: true,
+      hunyuan_available: true,
+      torch_version: '2.13.0',
+      hip_version: '7.15',
+      device_name: 'AMD Radeon RX 6950 XT',
+      error: null,
+    },
+    textureHealth: {
+      ok: true,
+      texgen_available: true,
+      custom_rasterizer_available: true,
+      mesh_processor_available: true,
+      texture_import_ok: true,
+      error: null,
+    },
+    shapeCacheReady: true,
+    shapePreloadMs: 17000,
+    error: null,
+    initialize: vi.fn(),
+    ensureShapePreloaded: vi.fn(),
+    markShapeEvicted: vi.fn(),
+  };
+}
+
 describe('App runtime startup integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -85,33 +115,7 @@ describe('App runtime startup integration', () => {
       amdGpus: ['AMD Radeon RX 6950 XT'],
     });
     mocks.useGenerationJob.mockReturnValue(jobState());
-    mocks.useRuntimeStartup.mockReturnValue({
-      phase: 'ready',
-      health: {
-        ok: true,
-        python: 'python.exe',
-        torch_available: true,
-        hunyuan_available: true,
-        torch_version: '2.13.0',
-        hip_version: '7.15',
-        device_name: 'AMD Radeon RX 6950 XT',
-        error: null,
-      },
-      textureHealth: {
-        ok: true,
-        texgen_available: true,
-        custom_rasterizer_available: true,
-        mesh_processor_available: true,
-        texture_import_ok: true,
-        error: null,
-      },
-      shapeCacheReady: true,
-      shapePreloadMs: 17000,
-      error: null,
-      initialize: vi.fn(),
-      ensureShapePreloaded: vi.fn(),
-      markShapeEvicted: vi.fn(),
-    });
+    mocks.useRuntimeStartup.mockReturnValue(readyRuntime());
   });
 
   afterEach(() => cleanup());
@@ -133,5 +137,36 @@ describe('App runtime startup integration', () => {
     expect(rail.querySelectorAll('.control-column')).toHaveLength(2);
     expect(rail.querySelector('[data-testid="input-panel"]')).toBeTruthy();
     expect(rail.querySelector('[data-testid="generation-panel"]')).toBeTruthy();
+  });
+
+  it('shows an animated startup surface while the AMD runtime is still being checked', () => {
+    mocks.useRuntimeStartup.mockReturnValue({
+      ...readyRuntime(),
+      phase: 'checking',
+      health: null,
+      textureHealth: null,
+      shapeCacheReady: false,
+      shapePreloadMs: undefined,
+    });
+
+    render(<App />);
+
+    expect(screen.getByRole('status', { name: /Preparing AMD runtime/i })).toBeTruthy();
+    expect(screen.getByText(/Checking Radeon and Python runtime/i)).toBeTruthy();
+  });
+
+  it('keeps the workspace visible while Shape is preloading in the background', () => {
+    mocks.useRuntimeStartup.mockReturnValue({
+      ...readyRuntime(),
+      phase: 'preloading',
+      shapeCacheReady: false,
+      shapePreloadMs: undefined,
+    });
+
+    render(<App />);
+
+    expect(screen.queryByRole('status', { name: /Preparing AMD runtime/i })).toBeNull();
+    expect(screen.getByTestId('control-rail')).toBeTruthy();
+    expect(screen.getByText('Loading Hunyuan3D…')).toBeTruthy();
   });
 });
