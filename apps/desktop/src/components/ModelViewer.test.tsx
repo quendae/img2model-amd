@@ -9,11 +9,14 @@ const mocks = vi.hoisted(() => ({
   rendererInstances: 0,
   materials: [] as Array<{ wireframe: boolean; needsUpdate: boolean }>,
   overlays: [] as Array<{ visible: boolean }>,
+  makeLoadedRoot: null as null | (() => unknown),
 }));
 
 vi.mock('three', () => {
   class Object3D {
     children: any[] = [];
+    userData: Record<string, unknown> = {};
+    renderOrder = 0;
     position = { y: 0, sub() { return this; } };
     scale = { setScalar() {} };
     add(child: any) { this.children.push(child); }
@@ -110,7 +113,6 @@ vi.mock('three', () => {
     visible = false;
     geometry: WireframeGeometry;
     material: LineBasicMaterial;
-    userData: Record<string, unknown> = {};
     constructor(geometry: WireframeGeometry, material: LineBasicMaterial) {
       super();
       this.geometry = geometry;
@@ -118,6 +120,12 @@ vi.mock('three', () => {
       mocks.overlays.push(this);
     }
   }
+
+  mocks.makeLoadedRoot = () => {
+    const root = new Object3D();
+    root.add(new Mesh());
+    return root;
+  };
 
   return {
     Object3D,
@@ -139,13 +147,6 @@ vi.mock('three', () => {
   };
 });
 
-function makeLoadedRoot() {
-  const THREE = require('three');
-  const root = new THREE.Object3D();
-  root.add(new THREE.Mesh());
-  return root;
-}
-
 vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
   OrbitControls: class {
     enableDamping = false;
@@ -160,7 +161,7 @@ vi.mock('three/examples/jsm/loaders/GLTFLoader.js', () => ({
   GLTFLoader: class {
     load(url: string, onLoad?: (gltf: { scene: unknown }) => void) {
       mocks.loadedUrls.push(url);
-      onLoad?.({ scene: makeLoadedRoot() });
+      onLoad?.({ scene: mocks.makeLoadedRoot?.() });
     }
   },
 }));
@@ -169,7 +170,7 @@ vi.mock('three/examples/jsm/loaders/OBJLoader.js', () => ({
   OBJLoader: class {
     load(url: string, onLoad?: (root: unknown) => void) {
       mocks.loadedUrls.push(url);
-      onLoad?.(makeLoadedRoot());
+      onLoad?.(mocks.makeLoadedRoot?.());
     }
   },
 }));
