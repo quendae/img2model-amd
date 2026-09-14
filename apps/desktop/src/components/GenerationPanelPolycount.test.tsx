@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GenerationPanel } from './GenerationPanel';
 
@@ -47,11 +47,12 @@ describe('GenerationPanel texture polycount', () => {
     render(<GenerationPanel {...(props() as any)} />);
 
     const control = screen.getByLabelText('Texture target triangles');
+    const scoped = within(control);
     for (const label of ['Mobile', 'Low', 'Medium', 'High', 'Hero', 'Quality', 'Custom']) {
-      expect(screen.getByRole('button', { name: new RegExp(label, 'i') })).toBeTruthy();
+      expect(scoped.getByRole('button', { name: new RegExp(label, 'i') })).toBeTruthy();
     }
     expect(control.querySelectorAll('button')).toHaveLength(7);
-    expect(screen.getByRole('button', { name: /Hero/i }).getAttribute('aria-pressed')).toBe('true');
+    expect(scoped.getByRole('button', { name: /Hero/i }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText(/10,000 triangles/i)).toBeTruthy();
   });
 
@@ -59,7 +60,8 @@ describe('GenerationPanel texture polycount', () => {
     const onTextureTargetTrianglesChange = vi.fn();
     render(<GenerationPanel {...(props({ onTextureTargetTrianglesChange }) as any)} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /High/i }));
+    const control = screen.getByLabelText('Texture target triangles');
+    fireEvent.click(within(control).getByRole('button', { name: /High/i }));
     expect(onTextureTargetTrianglesChange).toHaveBeenCalledWith(5_000);
   });
 
@@ -71,7 +73,8 @@ describe('GenerationPanel texture polycount', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: /Custom/i }).getAttribute('aria-pressed')).toBe('true');
+    const control = screen.getByLabelText('Texture target triangles');
+    expect(within(control).getByRole('button', { name: /Custom/i }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByLabelText('Custom texture triangle slider')).toBeTruthy();
     const numeric = screen.getByLabelText('Custom texture triangles') as HTMLInputElement;
     expect(numeric.value).toBe('7500');
