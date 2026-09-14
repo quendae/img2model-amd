@@ -5,6 +5,7 @@ import { installGlobalDiagnostics } from './lib/diagnosticLog';
 import './styles.css';
 import './qhd.css';
 import './progress.css';
+import './runtime-ui.css';
 
 installGlobalDiagnostics();
 
