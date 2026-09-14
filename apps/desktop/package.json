@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sync-dev-runtime": "node ../../scripts/setup/sync-dev-worker.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
