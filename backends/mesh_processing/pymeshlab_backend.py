@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Callable
 
 import numpy as np
 import pymeshlab
 import trimesh
 
 from .models import ReductionPolicy, ReductionStats, RepairPolicy, RepairStats
+
+ReductionProgress = Callable[[int, int, int], None]
 
 
 def _edge_counts(faces: np.ndarray) -> dict[tuple[int, int], int]:
@@ -291,6 +294,7 @@ def _auto_targets(face_count: int, policy: ReductionPolicy) -> list[int]:
 def adaptive_qem_reduce(
     reference: trimesh.Trimesh,
     policy: ReductionPolicy,
+    progress: ReductionProgress | None = None,
 ) -> tuple[trimesh.Trimesh, ReductionStats]:
     if len(reference.vertices) == 0 or len(reference.faces) == 0:
         raise ValueError("Cannot reduce an empty mesh")
@@ -304,6 +308,8 @@ def adaptive_qem_reduce(
     if policy.manual_target_faces is not None:
         requested = int(policy.manual_target_faces)
         target = max(4, min(requested, len(reference.faces)))
+        if progress is not None:
+            progress(1, 1, target)
         candidate = _qem_candidate(reference, target)
         error = _normalized_symmetric_hausdorff(reference, candidate)
         if error > policy.error_tolerance:
@@ -333,7 +339,10 @@ def adaptive_qem_reduce(
     accepted_error = 0.0
     candidate_source = reference
     attempts = 0
+    total_attempts = len(targets)
     for target in targets:
+        if progress is not None:
+            progress(attempts + 1, total_attempts, target)
         candidate = _qem_candidate(candidate_source, target)
         # Always score against the repaired reference so progressive reduction
         # does not accumulate unbounded geometric drift.
