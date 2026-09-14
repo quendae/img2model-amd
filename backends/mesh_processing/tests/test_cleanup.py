@@ -2,7 +2,7 @@ import unittest
 
 import trimesh
 
-from backends.mesh_processing.cleanup import cleanup_mesh
+from backends.mesh_processing.cleanup import _heavy_policies, cleanup_mesh
 from backends.mesh_processing.presets import resolve_cleanup_config
 
 
@@ -50,6 +50,13 @@ class CleanupGeometryTests(unittest.TestCase):
         values = [value for _stage, value in events]
         self.assertEqual(values, sorted(values))
         self.assertGreater(values[-1], values[0])
+
+    def test_game_ready_auto_budget_has_a_less_aggressive_floor(self):
+        config = resolve_cleanup_config("game-ready", {})
+        _repair, reduction = _heavy_policies(config)
+
+        self.assertGreaterEqual(reduction.min_faces, 6000)
+        self.assertGreaterEqual(reduction.start_faces, 48000)
 
     def test_manual_game_ready_target_reduces_near_requested_budget(self):
         source = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
