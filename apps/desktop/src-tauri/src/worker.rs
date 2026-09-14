@@ -169,34 +169,59 @@ fn runtime_worker_path(runtime_dir: Option<&Path>) -> Option<PathBuf> {
     worker.is_file().then_some(worker)
 }
 
-pub fn configured_worker_path() -> Result<PathBuf, String> {
-    if let Ok(value) = std::env::var("IMG2MODEL_WORKER") {
-        let value = value.trim();
-        if !value.is_empty() {
-            let path = PathBuf::from(value);
-            if path.is_file() {
-                return Ok(path);
-            }
-            return Err(format!("IMG2MODEL_WORKER does not point to a file: {}", path.display()));
-        }
-    }
-
-    if let Some(path) = runtime_worker_path(native_rocm_runtime_dir().as_deref()) {
-        return Ok(path);
-    }
-
+fn repository_worker_path() -> Option<PathBuf> {
     if let Ok(current_dir) = std::env::current_dir() {
         if let Some(path) = resolve_worker_path(&current_dir) {
-            return Ok(path);
+            return Some(path);
         }
     }
 
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
             if let Some(path) = resolve_worker_path(parent) {
-                return Ok(path);
+                return Some(path);
             }
         }
+    }
+
+    None
+}
+
+fn configured_worker_override() -> Result<Option<PathBuf>, String> {
+    if let Ok(value) = std::env::var("IMG2MODEL_WORKER") {
+        let value = value.trim();
+        if !value.is_empty() {
+            let path = PathBuf::from(value);
+            if path.is_file() {
+                return Ok(Some(path));
+            }
+            return Err(format!("IMG2MODEL_WORKER does not point to a file: {}", path.display()));
+        }
+    }
+    Ok(None)
+}
+
+pub fn configured_worker_path() -> Result<PathBuf, String> {
+    // Development runs must execute the worker from the checked-out source tree.
+    // The setup script intentionally persists IMG2MODEL_WORKER for packaged runs,
+    // but preferring that copied file during `tauri dev` makes Python backend
+    // changes appear to be ignored until the runtime is reinstalled.
+    if cfg!(debug_assertions) {
+        if let Some(path) = repository_worker_path() {
+            return Ok(path);
+        }
+    }
+
+    if let Some(path) = configured_worker_override()? {
+        return Ok(path);
+    }
+
+    if let Some(path) = runtime_worker_path(native_rocm_runtime_dir().as_deref()) {
+        return Ok(path);
+    }
+
+    if let Some(path) = repository_worker_path() {
+        return Ok(path);
     }
 
     Err("Could not locate the installed runtime worker or backends/hunyuan/worker.py. Set IMG2MODEL_WORKER explicitly.".to_string())
