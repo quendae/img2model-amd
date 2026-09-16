@@ -29,8 +29,8 @@ class CleanupPresetTests(unittest.TestCase):
         self.assertEqual(config.settings.triangle_budget_mode, "manual")
         self.assertEqual(config.settings.target_triangles, 5000)
 
-    def test_algorithm_version_is_v3(self):
-        self.assertEqual(ALGORITHM_VERSION, "mesh-cleanup-v3")
+    def test_algorithm_version_is_v4_for_topology_repair_change(self):
+        self.assertEqual(ALGORITHM_VERSION, "mesh-cleanup-v4")
 
     def test_invalid_manual_triangle_budget_raises(self):
         with self.assertRaisesRegex(ValueError, "target_triangles"):
