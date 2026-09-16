@@ -119,6 +119,92 @@ def _is_edge_manifold(mesh: trimesh.Trimesh) -> bool:
     return all(len(occurrences) <= 2 for occurrences in edges.values())
 
 
+def _small_boundary_loops(mesh: trimesh.Trimesh, max_vertices: int = 4) -> list[list[int]]:
+    """Return isolated triangle/quad boundary loops safe enough for Light repair."""
+
+    vertex_faces, _vertex_neighbors, _face_neighbors, edges = _topology(
+        np.asarray(mesh.faces), len(mesh.vertices)
+    )
+    boundary_edges = [edge for edge, occurrences in edges.items() if len(occurrences) == 1]
+    if not boundary_edges:
+        return []
+
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for first, second in boundary_edges:
+        adjacency[first].add(second)
+        adjacency[second].add(first)
+
+    loops: list[list[int]] = []
+    seen: set[int] = set()
+    for start in sorted(adjacency):
+        if start in seen:
+            continue
+        stack = [start]
+        component: set[int] = set()
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            seen.add(current)
+            stack.extend(adjacency[current] - component)
+
+        if len(component) < 3 or len(component) > max_vertices:
+            continue
+        if any(len(adjacency[vertex]) != 2 for vertex in component):
+            continue
+        # Do not turn a tiny open sheet into a fake closed shell. A genuine
+        # small hole in a surrounding surface has at least two incident source
+        # faces at every boundary vertex.
+        if any(len(vertex_faces[vertex]) < 2 for vertex in component):
+            continue
+
+        first = min(component)
+        second = min(adjacency[first])
+        ordered = [first, second]
+        previous, current = first, second
+        valid = True
+        while True:
+            candidates = [neighbor for neighbor in adjacency[current] if neighbor != previous]
+            if len(candidates) != 1:
+                valid = False
+                break
+            next_vertex = candidates[0]
+            if next_vertex == first:
+                break
+            if next_vertex in ordered or len(ordered) >= len(component):
+                valid = False
+                break
+            ordered.append(next_vertex)
+            previous, current = current, next_vertex
+
+        if valid and len(ordered) == len(component):
+            loops.append(ordered)
+    return loops
+
+
+def _fill_small_boundary_holes(mesh: trimesh.Trimesh) -> int:
+    """Fill only isolated triangular or quad holes without remeshing."""
+
+    loops = _small_boundary_loops(mesh, max_vertices=4)
+    if not loops:
+        return 0
+
+    new_faces: list[list[int]] = []
+    for loop in loops:
+        if len(loop) == 3:
+            new_faces.append(loop)
+        elif len(loop) == 4:
+            new_faces.append([loop[0], loop[1], loop[2]])
+            new_faces.append([loop[0], loop[2], loop[3]])
+
+    if not new_faces:
+        return 0
+    mesh.faces = np.vstack((np.asarray(mesh.faces, dtype=int), np.asarray(new_faces, dtype=int)))
+    mesh.remove_unreferenced_vertices()
+    return len(loops)
+
+
 def _game_ready_mesh_is_healthy(mesh: trimesh.Trimesh) -> bool:
     """Avoid geometry-changing repair when the source already has sound topology."""
 
@@ -436,6 +522,9 @@ def cleanup_mesh(
         vertices_after=len(working.vertices),
         components_before=before_components,
         components_after=before_components,
+        watertight_before=bool(working.is_watertight),
+        manifold_before=_is_edge_manifold(working),
+        boundary_edges_before=_boundary_edge_count(working),
     )
     settings = config.settings
 
@@ -448,6 +537,10 @@ def cleanup_mesh(
             report.vertices_welded = _weld_near_vertices(working, settings.weld_relative_epsilon)
         if settings.remove_small_islands:
             report.components_removed = _remove_small_components(working, settings.min_component_area_ratio)
+        if config.preset == "light" and not working.is_watertight and _is_edge_manifold(working):
+            report.holes_closed = _fill_small_boundary_holes(working)
+            if report.holes_closed:
+                report.repair_backend = "native-small-hole-fill"
         if settings.spike_cleanup:
             report.spikes_adjusted = _relax_spike_vertices(
                 working,
@@ -469,6 +562,9 @@ def cleanup_mesh(
     report.triangles_after = len(working.faces)
     report.vertices_after = len(working.vertices)
     report.components_after = len(_face_components(working))
+    report.watertight_after = bool(working.is_watertight)
+    report.manifold_after = _is_edge_manifold(working)
+    report.boundary_edges_after = _boundary_edge_count(working)
     report.reduction_ratio = (
         0.0
         if report.triangles_before == 0
@@ -482,6 +578,22 @@ def cleanup_mesh(
         report.warnings.append("Light cleanup removed more geometry than expected.")
     if config.preset == "aggressive":
         report.warnings.append("Aggressive cleanup may alter silhouette and fine detail.")
-    if not working.is_watertight:
-        report.warnings.append("Mesh is still not watertight after cleanup.")
+    if not report.watertight_after:
+        if report.manifold_after is False:
+            report.warnings.append(
+                "Mesh remains non-manifold after cleanup; texture generation can continue, but stronger geometry repair may be needed."
+            )
+        elif (report.boundary_edges_after or 0) > 0:
+            next_step = (
+                "Try Game-ready or Aggressive cleanup for stronger hole repair."
+                if config.preset in {"off", "light"}
+                else "Try Aggressive cleanup or an external mesh-repair tool."
+                if config.preset == "game-ready"
+                else "External mesh repair may be required for a fully closed shell."
+            )
+            report.warnings.append(
+                f"Mesh still has {report.boundary_edges_after} open boundary edges after cleanup. {next_step}"
+            )
+        else:
+            report.warnings.append("Mesh is still not watertight after cleanup.")
     return working, report
