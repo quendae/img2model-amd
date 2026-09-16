@@ -32,7 +32,7 @@ function cleanupReport(overrides: Record<string, unknown> = {}) {
   return {
     preset: 'game-ready',
     config_label: 'Custom (from Game-ready)',
-    algorithm_version: 'mesh-cleanup-v2',
+    algorithm_version: 'mesh-cleanup-v4',
     triangles_before: 534364,
     triangles_after: 5000,
     vertices_before: 267184,
@@ -97,7 +97,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe('Activity cleanup v2 telemetry', () => {
+describe('Activity cleanup v4 telemetry', () => {
   it('shows reduction and topology instead of emphasizing legacy spike metrics', () => {
     render(<App />);
 
