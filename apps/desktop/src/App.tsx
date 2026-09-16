@@ -295,7 +295,8 @@ export function App() {
   const timing = job.timingSummary;
   const cleanupReport = timing?.cleanupReport;
   const cleanupReportDetailed = cleanupReport?.algorithm_version === 'mesh-cleanup-v2'
-    || cleanupReport?.algorithm_version === 'mesh-cleanup-v3';
+    || cleanupReport?.algorithm_version === 'mesh-cleanup-v3'
+    || cleanupReport?.algorithm_version === 'mesh-cleanup-v4';
   const inferenceMs = timing?.inferenceMs ?? timing?.textureStages?.running_texture;
   const hasSplitPreprocessTiming = timing?.imagePreprocessMs !== undefined || timing?.meshPreprocessMs !== undefined;
   const canTextureCurrentModel = Boolean(
