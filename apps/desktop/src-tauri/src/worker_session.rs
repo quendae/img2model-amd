@@ -116,6 +116,39 @@ fn failure_result(kind: &str, message: String) -> GenerateResult {
     }
 }
 
+pub fn capture_worker_stderr<R: std::io::Read>(
+    reader: R,
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+) {
+    let mut reader = BufReader::new(reader);
+    let mut buffer = Vec::new();
+
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                while buffer
+                    .last()
+                    .is_some_and(|byte| matches!(*byte, b'\n' | b'\r'))
+                {
+                    buffer.pop();
+                }
+                let line = String::from_utf8_lossy(&buffer).into_owned();
+                let Ok(mut tail) = stderr_tail.lock() else { break };
+                if tail.len() >= LOG_TAIL_LINES { tail.pop_front(); }
+                tail.push_back(line);
+            }
+            Err(error) => {
+                let Ok(mut tail) = stderr_tail.lock() else { break };
+                if tail.len() >= LOG_TAIL_LINES { tail.pop_front(); }
+                tail.push_back(format!("[stderr capture error] {error}"));
+                break;
+            }
+        }
+    }
+}
+
 struct WorkerSession {
     child: Child,
     stdin: ChildStdin,
@@ -148,14 +181,7 @@ impl WorkerSession {
 
         let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_TAIL_LINES)));
         let stderr_tail_for_thread = Arc::clone(&stderr_tail);
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let Ok(line) = line else { break };
-                let Ok(mut tail) = stderr_tail_for_thread.lock() else { break };
-                if tail.len() >= LOG_TAIL_LINES { tail.pop_front(); }
-                tail.push_back(line);
-            }
-        });
+        thread::spawn(move || capture_worker_stderr(stderr, stderr_tail_for_thread));
 
         let mut session = Self {
             child,
