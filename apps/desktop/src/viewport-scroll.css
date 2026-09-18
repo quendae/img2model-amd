@@ -1,0 +1,44 @@
+/* Keep the desktop shell fixed to the native window and let side rails scroll. */
+.app-shell {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.left-rail,
+.right-rail {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3a414b #101216;
+}
+
+.left-rail::-webkit-scrollbar,
+.right-rail::-webkit-scrollbar {
+  width: 10px;
+}
+
+.left-rail::-webkit-scrollbar-track,
+.right-rail::-webkit-scrollbar-track {
+  background: #101216;
+}
+
+.left-rail::-webkit-scrollbar-thumb,
+.right-rail::-webkit-scrollbar-thumb {
+  background: #3a414b;
+  border: 2px solid #101216;
+  border-radius: 999px;
+}
+
+.left-rail::-webkit-scrollbar-thumb:hover,
+.right-rail::-webkit-scrollbar-thumb:hover {
+  background: #4b535f;
+}
