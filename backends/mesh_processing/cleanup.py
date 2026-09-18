@@ -1,6 +1,7 @@
 import math
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
@@ -10,6 +11,18 @@ from .models import CleanupReport, ReductionPolicy, RepairPolicy, RepairStats
 from .pymeshlab_backend import adaptive_qem_reduce, repair_with_pymeshlab
 
 ProgressCallback = Callable[[str, float], None]
+
+
+@dataclass
+class _TopologySnapshot:
+    vertex_faces: list[list[int]]
+    vertex_neighbors: list[list[int]]
+    face_neighbors: list[list[int]]
+    edge_occurrences: dict[tuple[int, int], list[tuple[int, int]]]
+    components: list[np.ndarray]
+    manifold: bool
+    boundary_edges: int
+    watertight: bool
 
 
 def _mesh_scale(mesh: trimesh.Trimesh) -> float:
@@ -98,37 +111,47 @@ def _face_components_from_neighbors(face_neighbors: list[list[int]]) -> list[np.
     return components
 
 
-def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
-    _vertex_faces, _vertex_neighbors, face_neighbors, _edges = _topology(
+def _topology_snapshot(mesh: trimesh.Trimesh) -> _TopologySnapshot:
+    vertex_faces, vertex_neighbors, face_neighbors, edges = _topology(
         np.asarray(mesh.faces), len(mesh.vertices)
     )
-    return _face_components_from_neighbors(face_neighbors)
+    components = _face_components_from_neighbors(face_neighbors)
+    boundary_edges = sum(1 for occurrences in edges.values() if len(occurrences) == 1)
+    manifold = all(len(occurrences) <= 2 for occurrences in edges.values())
+    watertight = bool(len(mesh.faces)) and manifold and boundary_edges == 0
+    return _TopologySnapshot(
+        vertex_faces=vertex_faces,
+        vertex_neighbors=vertex_neighbors,
+        face_neighbors=face_neighbors,
+        edge_occurrences=edges,
+        components=components,
+        manifold=manifold,
+        boundary_edges=boundary_edges,
+        watertight=watertight,
+    )
+
+
+def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
+    return _topology_snapshot(mesh).components
 
 
 def _boundary_edge_count(mesh: trimesh.Trimesh) -> int:
-    _vertex_faces, _vertex_neighbors, _face_neighbors, edges = _topology(
-        np.asarray(mesh.faces), len(mesh.vertices)
-    )
-    return sum(1 for occurrences in edges.values() if len(occurrences) == 1)
+    return _topology_snapshot(mesh).boundary_edges
 
 
 def _is_edge_manifold(mesh: trimesh.Trimesh) -> bool:
-    _vertex_faces, _vertex_neighbors, _face_neighbors, edges = _topology(
-        np.asarray(mesh.faces), len(mesh.vertices)
-    )
-    return all(len(occurrences) <= 2 for occurrences in edges.values())
+    return _topology_snapshot(mesh).manifold
 
 
-def _small_boundary_loops(
-    mesh: trimesh.Trimesh,
+def _small_boundary_loops_from_snapshot(
+    topology: _TopologySnapshot,
     max_vertices: int = 4,
 ) -> tuple[list[list[int]], int]:
-    """Return isolated triangle/quad boundary loops and the boundary-edge count."""
+    """Return isolated triangle/quad boundary loops from an existing topology snapshot."""
 
-    vertex_faces, _vertex_neighbors, _face_neighbors, edges = _topology(
-        np.asarray(mesh.faces), len(mesh.vertices)
-    )
-    boundary_edges = [edge for edge, occurrences in edges.items() if len(occurrences) == 1]
+    boundary_edges = [
+        edge for edge, occurrences in topology.edge_occurrences.items() if len(occurrences) == 1
+    ]
     if not boundary_edges:
         return [], 0
 
@@ -156,10 +179,7 @@ def _small_boundary_loops(
             continue
         if any(len(adjacency[vertex]) != 2 for vertex in component):
             continue
-        # Do not turn a tiny open sheet into a fake closed shell. A genuine
-        # small hole in a surrounding surface has at least two incident source
-        # faces at every boundary vertex.
-        if any(len(vertex_faces[vertex]) < 2 for vertex in component):
+        if any(len(topology.vertex_faces[vertex]) < 2 for vertex in component):
             continue
 
         first = min(component)
@@ -186,10 +206,23 @@ def _small_boundary_loops(
     return loops, len(boundary_edges)
 
 
-def _fill_small_boundary_holes(mesh: trimesh.Trimesh) -> tuple[int, int]:
+def _small_boundary_loops(
+    mesh: trimesh.Trimesh,
+    max_vertices: int = 4,
+) -> tuple[list[list[int]], int]:
+    """Return isolated triangle/quad boundary loops and the boundary-edge count."""
+
+    return _small_boundary_loops_from_snapshot(_topology_snapshot(mesh), max_vertices=max_vertices)
+
+
+def _fill_small_boundary_holes(
+    mesh: trimesh.Trimesh,
+    topology: _TopologySnapshot | None = None,
+) -> tuple[int, int]:
     """Fill only isolated triangular or quad holes without remeshing."""
 
-    loops, boundary_edges_before = _small_boundary_loops(mesh, max_vertices=4)
+    topology = topology or _topology_snapshot(mesh)
+    loops, boundary_edges_before = _small_boundary_loops_from_snapshot(topology, max_vertices=4)
     if not loops:
         return 0, boundary_edges_before
 
@@ -211,11 +244,12 @@ def _fill_small_boundary_holes(mesh: trimesh.Trimesh) -> tuple[int, int]:
 def _game_ready_mesh_is_healthy(mesh: trimesh.Trimesh) -> bool:
     """Avoid geometry-changing repair when the source already has sound topology."""
 
+    topology = _topology_snapshot(mesh)
     return (
-        bool(mesh.is_watertight)
-        and _is_edge_manifold(mesh)
-        and _boundary_edge_count(mesh) == 0
-        and len(_face_components(mesh)) == 1
+        topology.watertight
+        and topology.manifold
+        and topology.boundary_edges == 0
+        and len(topology.components) == 1
     )
 
 
@@ -490,13 +524,15 @@ def _cleanup_heavy(
         progress("validating_mesh", 0.80)
 
     stage_started = time.perf_counter()
+    input_topology = _topology_snapshot(mesh)
+    reduced_topology = _topology_snapshot(reduced)
     report.components_removed = repair_stats.components_removed
     report.watertight_before = repair_stats.watertight_before
-    report.watertight_after = bool(reduced.is_watertight)
-    report.manifold_before = _is_edge_manifold(mesh)
-    report.manifold_after = _is_edge_manifold(reduced)
+    report.watertight_after = reduced_topology.watertight
+    report.manifold_before = input_topology.manifold
+    report.manifold_after = reduced_topology.manifold
     report.boundary_edges_before = repair_stats.boundary_edges_before
-    report.boundary_edges_after = _boundary_edge_count(reduced)
+    report.boundary_edges_after = reduced_topology.boundary_edges
     report.holes_closed = repair_stats.holes_closed
     report.non_manifold_edges_fixed = repair_stats.non_manifold_edges_fixed
     report.remeshed = repair_stats.remeshed
@@ -522,10 +558,11 @@ def cleanup_mesh(
     started = time.perf_counter()
 
     stage_started = time.perf_counter()
-    before_components = len(_face_components(working))
-    watertight_before = bool(working.is_watertight)
-    manifold_before = _is_edge_manifold(working)
-    boundary_edges_before = _boundary_edge_count(working)
+    input_topology = _topology_snapshot(working)
+    before_components = len(input_topology.components)
+    watertight_before = input_topology.watertight
+    manifold_before = input_topology.manifold
+    boundary_edges_before = input_topology.boundary_edges
     input_topology_ms = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
     report = CleanupReport(
@@ -565,12 +602,15 @@ def cleanup_mesh(
 
         stage_started = time.perf_counter()
         if config.preset == "light":
-            report.pre_repair_watertight = bool(working.is_watertight)
-            report.pre_repair_manifold = _is_edge_manifold(working)
-            if report.pre_repair_watertight:
-                report.pre_repair_boundary_edges = 0
-            elif report.pre_repair_manifold:
-                report.holes_closed, report.pre_repair_boundary_edges = _fill_small_boundary_holes(working)
+            pre_repair_topology = _topology_snapshot(working)
+            report.pre_repair_watertight = pre_repair_topology.watertight
+            report.pre_repair_manifold = pre_repair_topology.manifold
+            report.pre_repair_boundary_edges = pre_repair_topology.boundary_edges
+            if not pre_repair_topology.watertight and pre_repair_topology.manifold:
+                report.holes_closed, _boundary_edges = _fill_small_boundary_holes(
+                    working,
+                    topology=pre_repair_topology,
+                )
                 if report.holes_closed:
                     report.repair_backend = "native-small-hole-fill"
         report.stage_ms["small_hole_fill"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
@@ -602,12 +642,13 @@ def cleanup_mesh(
 
     stage_started = time.perf_counter()
     working.remove_unreferenced_vertices()
+    final_topology = _topology_snapshot(working)
     report.triangles_after = len(working.faces)
     report.vertices_after = len(working.vertices)
-    report.components_after = len(_face_components(working))
-    report.watertight_after = bool(working.is_watertight)
-    report.manifold_after = _is_edge_manifold(working)
-    report.boundary_edges_after = _boundary_edge_count(working)
+    report.components_after = len(final_topology.components)
+    report.watertight_after = final_topology.watertight
+    report.manifold_after = final_topology.manifold
+    report.boundary_edges_after = final_topology.boundary_edges
     report.reduction_ratio = (
         0.0
         if report.triangles_before == 0
