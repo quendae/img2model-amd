@@ -113,7 +113,16 @@ fn failure_result(kind: &str, message: String) -> GenerateResult {
         inference_ms: None,
         preprocess_ms: None,
         export_ms: None,
+        output_size_bytes: None,
     }
+}
+
+fn attach_output_size(mut result: GenerateResult, fallback_output: &str) -> GenerateResult {
+    if result.ok && result.output_size_bytes.is_none() {
+        let output = result.output.as_deref().unwrap_or(fallback_output);
+        result.output_size_bytes = std::fs::metadata(output).ok().map(|metadata| metadata.len());
+    }
+    result
 }
 
 pub fn capture_worker_stderr<R: std::io::Read>(
@@ -409,11 +418,12 @@ impl WorkerSessionManager {
     where F: FnMut(WorkerProgressEvent),
     {
         texture_arguments(&request)?;
+        let fallback_output = request.output.clone();
         let mut guard = self.inner.lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
         let result = self.get_or_spawn(&mut guard)?.run_texture(request, on_event);
         match result {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok(attach_output_size(result, &fallback_output)),
             Err(error) => { Self::invalidate(&mut guard); Ok(failure_result(error.kind, error.message)) }
         }
     }
@@ -451,9 +461,10 @@ impl WorkerSessionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{mesh_cleanup_command, preload_shape_command, shape_command, texture_command, validate_event_job_id};
-    use crate::worker::{GenerateRequest, MeshCleanupRequest, TextureRequest};
+    use super::{attach_output_size, mesh_cleanup_command, preload_shape_command, shape_command, texture_command, validate_event_job_id};
+    use crate::worker::{GenerateRequest, GenerateResult, MeshCleanupRequest, TextureRequest};
     use serde_json::json;
+    use std::fs;
 
     fn fixture_shape_request() -> GenerateRequest {
         GenerateRequest {
@@ -522,5 +533,21 @@ mod tests {
         let value = json!({"job_id":"job-other","event":"progress"});
         let error = validate_event_job_id(&value, "job-9").unwrap_err();
         assert_eq!(error.kind, "protocol_error");
+    }
+
+    #[test]
+    fn texture_result_gets_exported_file_size() {
+        let path = std::env::temp_dir().join(format!("img2model-output-size-{}.glb", std::process::id()));
+        fs::write(&path, vec![0_u8; 321]).unwrap();
+        let result: GenerateResult = serde_json::from_value(json!({
+            "ok": true,
+            "event": "completed",
+            "output": path.to_string_lossy(),
+        })).unwrap();
+
+        let result = attach_output_size(result, "unused.glb");
+        assert_eq!(result.output_size_bytes, Some(321));
+
+        let _ = fs::remove_file(path);
     }
 }
