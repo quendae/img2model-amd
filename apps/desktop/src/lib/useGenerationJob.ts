@@ -170,6 +170,7 @@ function resultMetadata(result: GenerateResult): Partial<GenerationTimingSummary
     inferenceMs: result.inference_ms ?? undefined,
     preprocessMs: result.preprocess_ms ?? undefined,
     exportMs: result.export_ms ?? undefined,
+    outputSizeBytes: result.output_size_bytes ?? undefined,
   };
 }
 
