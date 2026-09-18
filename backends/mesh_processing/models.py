@@ -92,6 +92,9 @@ class CleanupReport:
     manifold_after: bool | None = None
     boundary_edges_before: int | None = None
     boundary_edges_after: int | None = None
+    pre_repair_watertight: bool | None = None
+    pre_repair_manifold: bool | None = None
+    pre_repair_boundary_edges: int | None = None
     holes_closed: int | None = None
     non_manifold_edges_fixed: int | None = None
     reduction_ratio: float = 0.0
@@ -99,6 +102,7 @@ class CleanupReport:
     repair_backend: str | None = None
     normalized_error: float | None = None
     target_triangles: int | None = None
+    stage_ms: dict[str, float] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
