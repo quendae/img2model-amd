@@ -1,7 +1,9 @@
 import unittest
+from unittest.mock import patch
 
 import trimesh
 
+import backends.mesh_processing.cleanup as cleanup_module
 from backends.mesh_processing.cleanup import _heavy_policies, cleanup_mesh
 from backends.mesh_processing.presets import resolve_cleanup_config
 
@@ -57,6 +59,23 @@ class CleanupGeometryTests(unittest.TestCase):
         ):
             self.assertIn(stage, report.stage_ms)
             self.assertGreaterEqual(report.stage_ms[stage], 0.0)
+
+    def test_light_reuses_topology_snapshots_instead_of_rescanning_same_mesh(self):
+        source = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        source.update_faces([False] + [True] * (len(source.faces) - 1))
+        source.remove_unreferenced_vertices()
+
+        with patch.object(cleanup_module, "_topology", wraps=cleanup_module._topology) as topology:
+            cleaned, report = cleanup_mesh(source, resolve_cleanup_config("light", {}))
+
+        self.assertTrue(cleaned.is_watertight)
+        self.assertTrue(bool(report.manifold_after))
+        self.assertGreaterEqual(report.holes_closed or 0, 1)
+        self.assertLessEqual(
+            topology.call_count,
+            5,
+            "Light cleanup should build topology once per changed geometry snapshot, not once per metric.",
+        )
 
     def test_game_ready_clean_watertight_mesh_skips_invasive_remesh_before_qem(self):
         # A healthy dense mesh should be simplified directly. Running isotropic
