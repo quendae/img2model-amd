@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import trimesh
 
 import backends.mesh_processing.cleanup as cleanup_module
@@ -76,6 +77,44 @@ class CleanupGeometryTests(unittest.TestCase):
             2,
             "Light cleanup should reuse the input snapshot through no-op preprocessing and reuse the post-fill snapshot for final validation.",
         )
+
+    def test_light_removes_degenerate_faces_before_building_topology(self):
+        source = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        source.faces = np.vstack((np.asarray(source.faces), np.array([[0, 0, 0]], dtype=int)))
+        triangles_before = len(source.faces)
+
+        with patch.object(cleanup_module, "_topology", wraps=cleanup_module._topology) as topology:
+            cleaned, report = cleanup_mesh(source, resolve_cleanup_config("light", {}))
+
+        self.assertEqual(report.triangles_before, triangles_before)
+        self.assertEqual(len(cleaned.faces), triangles_before - 1)
+        self.assertLessEqual(
+            topology.call_count,
+            1,
+            "Degenerate removal should happen before the reusable Light topology snapshot.",
+        )
+
+    def test_chunked_signed_volume_matches_trimesh_without_large_triangle_gather(self):
+        source = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+        faces = np.asarray(source.faces, dtype=int)
+        vertices = np.asarray(source.vertices)
+        batch_sizes: list[int] = []
+        real_cross = cleanup_module.np.cross
+
+        def tracked_cross(first, second):
+            batch_sizes.append(len(first))
+            return real_cross(first, second)
+
+        with patch.object(cleanup_module.np, "cross", side_effect=tracked_cross):
+            signed_volume = cleanup_module._signed_mesh_volume(
+                vertices,
+                faces,
+                chunk_size=7,
+            )
+
+        self.assertAlmostEqual(signed_volume, float(source.volume), places=9)
+        self.assertGreater(len(batch_sizes), 1)
+        self.assertLessEqual(max(batch_sizes), 7)
 
     def test_consistent_single_component_winding_skips_orientation_graph(self):
         source = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
