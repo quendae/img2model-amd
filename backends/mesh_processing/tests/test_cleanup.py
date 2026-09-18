@@ -36,6 +36,28 @@ class CleanupGeometryTests(unittest.TestCase):
         self.assertTrue(cleaned.is_watertight)
         self.assertFalse(bool(report.remeshed))
 
+    def test_light_reports_pre_repair_topology_and_stage_timings(self):
+        source = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        source.update_faces([False] + [True] * (len(source.faces) - 1))
+        source.remove_unreferenced_vertices()
+
+        _cleaned, report = cleanup_mesh(source, resolve_cleanup_config("light", {}))
+
+        self.assertFalse(bool(report.pre_repair_watertight))
+        self.assertTrue(bool(report.pre_repair_manifold))
+        self.assertGreater(report.pre_repair_boundary_edges or 0, 0)
+        for stage in (
+            "input_topology",
+            "remove_degenerate",
+            "weld_vertices",
+            "remove_small_islands",
+            "small_hole_fill",
+            "repair_winding",
+            "final_validation",
+        ):
+            self.assertIn(stage, report.stage_ms)
+            self.assertGreaterEqual(report.stage_ms[stage], 0.0)
+
     def test_game_ready_clean_watertight_mesh_skips_invasive_remesh_before_qem(self):
         # A healthy dense mesh should be simplified directly. Running isotropic
         # remeshing first can visibly facet otherwise smooth silhouettes before
