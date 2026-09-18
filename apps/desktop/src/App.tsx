@@ -62,6 +62,13 @@ function formatDuration(ms: number): string {
   return minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${seconds}s`;
 }
 
+function formatBytes(bytes: number): string {
+  const safeBytes = Math.max(0, bytes);
+  if (safeBytes < 1024) return `${safeBytes.toLocaleString()} B`;
+  if (safeBytes < 1024 ** 2) return `${(safeBytes / 1024).toFixed(1)} KiB`;
+  return `${(safeBytes / (1024 ** 2)).toFixed(2)} MiB`;
+}
+
 function cleanupLabel(preset: CleanupPreset, overrides: CleanupAdvancedOverrides): string {
   const base = cleanupPresetLabels[preset];
   return Object.keys(overrides).length > 0 ? `Custom (from ${base})` : base;
@@ -533,6 +540,7 @@ export function App() {
               {!hasSplitPreprocessTiming && timing?.preprocessMs !== undefined && <><span>Prep</span><strong>{formatDuration(timing.preprocessMs)}</strong></>}
               {inferenceMs !== undefined && <><span>Inference</span><strong>{formatDuration(inferenceMs)}</strong></>}
               {timing?.exportMs !== undefined && <><span>Export</span><strong>{formatDuration(timing.exportMs)}</strong></>}
+              {timing?.outputSizeBytes !== undefined && <><span>Output size</span><strong>{formatBytes(timing.outputSizeBytes)}</strong></>}
               {timing?.trianglesBefore !== undefined && timing.trianglesAfter !== undefined && (
                 <>
                   <span>Mesh</span>
