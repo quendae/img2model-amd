@@ -56,3 +56,21 @@ fn rust_bridge_preserves_cleanup_stage_timings_and_pre_repair_topology() {
     assert_eq!(report["stage_ms"]["small_hole_fill"], json!(45000.0));
     assert_eq!(report["stage_ms"]["repair_winding"], json!(30000.0));
 }
+
+#[test]
+fn rust_bridge_preserves_texture_output_size() {
+    let payload = json!({
+        "event": "completed",
+        "ok": true,
+        "output": "C:/output.glb",
+        "output_size_bytes": 1500000,
+        "max_faces": 5000,
+        "faces_before": 100000,
+        "faces_after": 5000
+    });
+
+    let parsed: GenerateResult = serde_json::from_value(payload).unwrap();
+    let serialized: Value = serde_json::to_value(parsed).unwrap();
+
+    assert_eq!(serialized["output_size_bytes"], json!(1500000));
+}
