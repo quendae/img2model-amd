@@ -77,6 +77,22 @@ class CleanupGeometryTests(unittest.TestCase):
             "Light cleanup should reuse the input snapshot through no-op preprocessing and reuse the post-fill snapshot for final validation.",
         )
 
+    def test_consistent_single_component_winding_skips_orientation_graph(self):
+        source = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        topology = cleanup_module._topology_snapshot(source)
+
+        self.assertTrue(source.is_winding_consistent)
+        self.assertTrue(topology.watertight)
+        with patch.object(
+            cleanup_module.np,
+            "zeros",
+            side_effect=AssertionError("consistent winding should not allocate the orientation graph"),
+        ):
+            cleanup_module._repair_face_winding(source, topology=topology)
+
+        self.assertTrue(source.is_winding_consistent)
+        self.assertGreater(source.volume, 0.0)
+
     def test_game_ready_clean_watertight_mesh_skips_invasive_remesh_before_qem(self):
         # A healthy dense mesh should be simplified directly. Running isotropic
         # remeshing first can visibly facet otherwise smooth silhouettes before
