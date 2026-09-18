@@ -46,6 +46,9 @@ export interface MeshCleanupReport {
   manifold_after?: boolean | null;
   boundary_edges_before?: number | null;
   boundary_edges_after?: number | null;
+  pre_repair_watertight?: boolean | null;
+  pre_repair_manifold?: boolean | null;
+  pre_repair_boundary_edges?: number | null;
   holes_closed?: number | null;
   non_manifold_edges_fixed?: number | null;
   reduction_ratio?: number | null;
@@ -53,6 +56,7 @@ export interface MeshCleanupReport {
   repair_backend?: string | null;
   normalized_error?: number | null;
   target_triangles?: number | null;
+  stage_ms?: Record<string, number> | null;
   warnings: string[];
 }
 
