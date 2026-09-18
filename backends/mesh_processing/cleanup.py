@@ -119,15 +119,18 @@ def _is_edge_manifold(mesh: trimesh.Trimesh) -> bool:
     return all(len(occurrences) <= 2 for occurrences in edges.values())
 
 
-def _small_boundary_loops(mesh: trimesh.Trimesh, max_vertices: int = 4) -> list[list[int]]:
-    """Return isolated triangle/quad boundary loops safe enough for Light repair."""
+def _small_boundary_loops(
+    mesh: trimesh.Trimesh,
+    max_vertices: int = 4,
+) -> tuple[list[list[int]], int]:
+    """Return isolated triangle/quad boundary loops and the boundary-edge count."""
 
     vertex_faces, _vertex_neighbors, _face_neighbors, edges = _topology(
         np.asarray(mesh.faces), len(mesh.vertices)
     )
     boundary_edges = [edge for edge, occurrences in edges.items() if len(occurrences) == 1]
     if not boundary_edges:
-        return []
+        return [], 0
 
     adjacency: dict[int, set[int]] = defaultdict(set)
     for first, second in boundary_edges:
@@ -180,15 +183,15 @@ def _small_boundary_loops(mesh: trimesh.Trimesh, max_vertices: int = 4) -> list[
 
         if valid and len(ordered) == len(component):
             loops.append(ordered)
-    return loops
+    return loops, len(boundary_edges)
 
 
-def _fill_small_boundary_holes(mesh: trimesh.Trimesh) -> int:
+def _fill_small_boundary_holes(mesh: trimesh.Trimesh) -> tuple[int, int]:
     """Fill only isolated triangular or quad holes without remeshing."""
 
-    loops = _small_boundary_loops(mesh, max_vertices=4)
+    loops, boundary_edges_before = _small_boundary_loops(mesh, max_vertices=4)
     if not loops:
-        return 0
+        return 0, boundary_edges_before
 
     new_faces: list[list[int]] = []
     for loop in loops:
@@ -199,10 +202,10 @@ def _fill_small_boundary_holes(mesh: trimesh.Trimesh) -> int:
             new_faces.append([loop[0], loop[2], loop[3]])
 
     if not new_faces:
-        return 0
+        return 0, boundary_edges_before
     mesh.faces = np.vstack((np.asarray(mesh.faces, dtype=int), np.asarray(new_faces, dtype=int)))
     mesh.remove_unreferenced_vertices()
-    return len(loops)
+    return len(loops), boundary_edges_before
 
 
 def _game_ready_mesh_is_healthy(mesh: trimesh.Trimesh) -> bool:
@@ -448,6 +451,7 @@ def _cleanup_heavy(
     if progress is not None:
         progress("repairing_mesh", 0.25)
 
+    stage_started = time.perf_counter()
     if config.preset == "game-ready" and _game_ready_mesh_is_healthy(mesh):
         repaired = mesh.copy()
         repair_stats = RepairStats(
@@ -463,6 +467,7 @@ def _cleanup_heavy(
         )
     else:
         repaired, repair_stats = repair_with_pymeshlab(mesh, repair_policy)
+    report.stage_ms["heavy_repair"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
     if progress is not None:
         progress("reducing_mesh", 0.45)
@@ -473,15 +478,18 @@ def _cleanup_heavy(
         fraction = (attempt - 1) / max(total, 1)
         progress("reducing_mesh", min(0.78, 0.45 + 0.30 * fraction))
 
+    stage_started = time.perf_counter()
     reduced, reduction_stats = adaptive_qem_reduce(
         repaired,
         reduction_policy,
         progress=reduction_progress,
     )
+    report.stage_ms["adaptive_reduction"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
     if progress is not None:
         progress("validating_mesh", 0.80)
 
+    stage_started = time.perf_counter()
     report.components_removed = repair_stats.components_removed
     report.watertight_before = repair_stats.watertight_before
     report.watertight_after = bool(reduced.is_watertight)
@@ -496,6 +504,7 @@ def _cleanup_heavy(
     report.normalized_error = reduction_stats.normalized_error
     report.target_triangles = reduction_stats.requested_target_faces
     report.warnings.extend(repair_stats.warnings)
+    report.stage_ms["heavy_validation"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
     if len(repaired.faces) > reduction_policy.min_faces and len(reduced.faces) == len(repaired.faces):
         report.warnings.append(
@@ -511,7 +520,14 @@ def cleanup_mesh(
 ):
     working = mesh.copy()
     started = time.perf_counter()
+
+    stage_started = time.perf_counter()
     before_components = len(_face_components(working))
+    watertight_before = bool(working.is_watertight)
+    manifold_before = _is_edge_manifold(working)
+    boundary_edges_before = _boundary_edge_count(working)
+    input_topology_ms = round((time.perf_counter() - stage_started) * 1000.0, 3)
+
     report = CleanupReport(
         preset=config.preset,
         config_label=config.label,
@@ -522,25 +538,44 @@ def cleanup_mesh(
         vertices_after=len(working.vertices),
         components_before=before_components,
         components_after=before_components,
-        watertight_before=bool(working.is_watertight),
-        manifold_before=_is_edge_manifold(working),
-        boundary_edges_before=_boundary_edge_count(working),
+        watertight_before=watertight_before,
+        manifold_before=manifold_before,
+        boundary_edges_before=boundary_edges_before,
+        stage_ms={"input_topology": input_topology_ms},
     )
     settings = config.settings
 
     if config.preset in {"game-ready", "aggressive"}:
         working = _cleanup_heavy(working, config, report, progress=progress)
     else:
+        stage_started = time.perf_counter()
         if settings.remove_degenerate:
             _remove_degenerate_faces(working)
+        report.stage_ms["remove_degenerate"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+
+        stage_started = time.perf_counter()
         if settings.weld_vertices:
             report.vertices_welded = _weld_near_vertices(working, settings.weld_relative_epsilon)
+        report.stage_ms["weld_vertices"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+
+        stage_started = time.perf_counter()
         if settings.remove_small_islands:
             report.components_removed = _remove_small_components(working, settings.min_component_area_ratio)
-        if config.preset == "light" and not working.is_watertight and _is_edge_manifold(working):
-            report.holes_closed = _fill_small_boundary_holes(working)
-            if report.holes_closed:
-                report.repair_backend = "native-small-hole-fill"
+        report.stage_ms["remove_small_islands"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+
+        stage_started = time.perf_counter()
+        if config.preset == "light":
+            report.pre_repair_watertight = bool(working.is_watertight)
+            report.pre_repair_manifold = _is_edge_manifold(working)
+            if report.pre_repair_watertight:
+                report.pre_repair_boundary_edges = 0
+            elif report.pre_repair_manifold:
+                report.holes_closed, report.pre_repair_boundary_edges = _fill_small_boundary_holes(working)
+                if report.holes_closed:
+                    report.repair_backend = "native-small-hole-fill"
+        report.stage_ms["small_hole_fill"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+
+        stage_started = time.perf_counter()
         if settings.spike_cleanup:
             report.spikes_adjusted = _relax_spike_vertices(
                 working,
@@ -548,6 +583,9 @@ def cleanup_mesh(
                 settings.spike_max_area_ratio,
                 settings.spike_normal_angle_deg,
             )
+        report.stage_ms["spike_cleanup"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+
+        stage_started = time.perf_counter()
         if settings.smooth_surface and settings.smoothing_iterations > 0:
             _taubin_smooth(
                 working,
@@ -555,9 +593,14 @@ def cleanup_mesh(
                 settings.taubin_lambda,
                 settings.taubin_nu,
             )
+        report.stage_ms["smoothing"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+
+        stage_started = time.perf_counter()
         if settings.recompute_normals:
             _repair_face_winding(working)
+        report.stage_ms["repair_winding"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
+    stage_started = time.perf_counter()
     working.remove_unreferenced_vertices()
     report.triangles_after = len(working.faces)
     report.vertices_after = len(working.vertices)
@@ -570,6 +613,7 @@ def cleanup_mesh(
         if report.triangles_before == 0
         else max(0.0, 1.0 - report.triangles_after / report.triangles_before)
     )
+    report.stage_ms["final_validation"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
     report.cleanup_ms = round((time.perf_counter() - started) * 1000.0, 3)
 
     if report.components_before > 0 and report.components_removed > max(3, report.components_before // 4):
