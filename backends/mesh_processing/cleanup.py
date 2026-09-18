@@ -146,6 +146,80 @@ def _topology_snapshot(mesh: trimesh.Trimesh) -> _TopologySnapshot:
     )
 
 
+def _append_faces_to_topology(
+    topology: _TopologySnapshot,
+    new_faces: np.ndarray,
+    original_face_count: int,
+) -> None:
+    """Patch a topology snapshot after appending a small number of triangles."""
+
+    faces_array = np.asarray(new_faces, dtype=int)
+    if len(faces_array) == 0:
+        return
+
+    neighbor_additions: dict[int, set[int]] = defaultdict(set)
+    old_edge_counts: dict[tuple[int, int], int] = {}
+    touched_faces: set[int] = set()
+
+    for offset, raw_face in enumerate(faces_array):
+        face_index = original_face_count + offset
+        topology.face_neighbors.append([])
+        touched_faces.add(face_index)
+        a, b, c = (int(raw_face[0]), int(raw_face[1]), int(raw_face[2]))
+
+        for vertex in (a, b, c):
+            topology.vertex_faces[vertex].append(face_index)
+        neighbor_additions[a].update((b, c))
+        neighbor_additions[b].update((a, c))
+        neighbor_additions[c].update((a, b))
+
+        for first, second in ((a, b), (b, c), (c, a)):
+            key = (first, second) if first < second else (second, first)
+            direction = 1 if (first, second) == key else -1
+            occurrences = topology.edge_occurrences.setdefault(key, [])
+            old_edge_counts.setdefault(key, len(occurrences))
+            for neighbor_face, _neighbor_direction in occurrences:
+                topology.face_neighbors[face_index].append(neighbor_face)
+                topology.face_neighbors[neighbor_face].append(face_index)
+                touched_faces.add(neighbor_face)
+            occurrences.append((face_index, direction))
+
+    for vertex, additions in neighbor_additions.items():
+        topology.vertex_neighbors[vertex] = sorted(
+            set(topology.vertex_neighbors[vertex]).union(additions)
+        )
+    for face_index in touched_faces:
+        topology.face_neighbors[face_index] = sorted(set(topology.face_neighbors[face_index]))
+
+    boundary_edges = topology.boundary_edges
+    manifold = topology.manifold
+    winding_consistent = topology.winding_consistent
+    for edge, old_count in old_edge_counts.items():
+        occurrences = topology.edge_occurrences[edge]
+        new_count = len(occurrences)
+        boundary_edges += int(new_count == 1) - int(old_count == 1)
+        if new_count > 2:
+            manifold = False
+            winding_consistent = False
+        elif new_count == 2 and occurrences[0][1] == occurrences[1][1]:
+            winding_consistent = False
+
+    appended_indices = np.arange(
+        original_face_count,
+        original_face_count + len(faces_array),
+        dtype=int,
+    )
+    if len(topology.components) == 1:
+        topology.components[0] = np.concatenate((topology.components[0], appended_indices))
+    else:
+        topology.components = _face_components_from_neighbors(topology.face_neighbors)
+
+    topology.boundary_edges = max(0, boundary_edges)
+    topology.manifold = manifold
+    topology.winding_consistent = winding_consistent
+    topology.watertight = bool(topology.face_neighbors) and manifold and topology.boundary_edges == 0
+
+
 def _face_components(mesh: trimesh.Trimesh) -> list[np.ndarray]:
     return _topology_snapshot(mesh).components
 
@@ -251,8 +325,10 @@ def _fill_small_boundary_holes(
 
     if not new_faces:
         return 0, boundary_edges_before
-    mesh.faces = np.vstack((np.asarray(mesh.faces, dtype=int), np.asarray(new_faces, dtype=int)))
-    mesh.remove_unreferenced_vertices()
+    original_face_count = len(mesh.faces)
+    new_faces_array = np.asarray(new_faces, dtype=int)
+    mesh.faces = np.vstack((np.asarray(mesh.faces, dtype=int), new_faces_array))
+    _append_faces_to_topology(topology, new_faces_array, original_face_count)
     return len(loops), boundary_edges_before
 
 
@@ -726,7 +802,6 @@ def cleanup_mesh(
                 )
                 if report.holes_closed:
                     report.repair_backend = "native-small-hole-fill"
-                    current_topology = None
         report.stage_ms["small_hole_fill"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
         stage_started = time.perf_counter()
