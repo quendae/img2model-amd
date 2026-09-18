@@ -400,11 +400,42 @@ def _taubin_smooth(mesh: trimesh.Trimesh, iterations: int, lamb: float, nu: floa
     mesh.vertices = vertices
 
 
+def _signed_mesh_volume(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    chunk_size: int = 65536,
+) -> float:
+    """Compute signed triangle volume in bounded chunks to avoid huge temporary arrays."""
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    faces_array = np.asarray(faces, dtype=int)
+    if len(faces_array) == 0:
+        return 0.0
+    vertices_array = np.asarray(vertices)
+    signed_six_volume = 0.0
+    for start in range(0, len(faces_array), chunk_size):
+        batch = faces_array[start : start + chunk_size]
+        first = vertices_array[batch[:, 0]]
+        second = vertices_array[batch[:, 1]]
+        third = vertices_array[batch[:, 2]]
+        signed_six_volume += float(
+            np.einsum("ij,ij->", first, np.cross(second, third))
+        )
+    return signed_six_volume / 6.0
+
+
 def _repair_face_winding(
     mesh: trimesh.Trimesh,
     topology: _TopologySnapshot | None = None,
+    timings: dict[str, float] | None = None,
 ) -> _TopologySnapshot:
     """Orient adjacent triangle winding consistently without changing connectivity."""
+
+    if timings is not None:
+        timings.setdefault("repair_winding_graph_build", 0.0)
+        timings.setdefault("repair_winding_graph_walk", 0.0)
+        timings.setdefault("repair_winding_volume", 0.0)
 
     topology = topology or _topology_snapshot(mesh)
     faces_array = np.asarray(mesh.faces, dtype=int)
@@ -414,19 +445,18 @@ def _repair_face_winding(
     vertices = np.asarray(mesh.vertices)
     if topology.winding_consistent and len(topology.components) == 1:
         if topology.watertight:
-            triangles = vertices[faces_array]
-            signed_volume = float(
-                np.einsum(
-                    "ij,ij->i",
-                    triangles[:, 0],
-                    np.cross(triangles[:, 1], triangles[:, 2]),
-                ).sum()
-                / 6.0
-            )
+            volume_started = time.perf_counter()
+            signed_volume = _signed_mesh_volume(vertices, faces_array)
+            if timings is not None:
+                timings["repair_winding_volume"] += round(
+                    (time.perf_counter() - volume_started) * 1000.0,
+                    3,
+                )
             if signed_volume < 0.0:
                 mesh.faces = faces_array[:, [0, 2, 1]]
         return topology
 
+    graph_started = time.perf_counter()
     faces = faces_array.copy()
     relations: list[list[tuple[int, int]]] = [[] for _ in range(len(faces))]
     for occurrences in topology.edge_occurrences.values():
@@ -436,7 +466,14 @@ def _repair_face_winding(
         required = -first_direction * second_direction
         relations[first_face].append((second_face, required))
         relations[second_face].append((first_face, required))
+    if timings is not None:
+        timings["repair_winding_graph_build"] = round(
+            (time.perf_counter() - graph_started) * 1000.0,
+            3,
+        )
 
+    walk_started = time.perf_counter()
+    volume_ms = 0.0
     orientation = np.zeros(len(faces), dtype=np.int8)
     for component in topology.components:
         if len(component) == 0:
@@ -469,13 +506,16 @@ def _repair_face_winding(
                 count == 2 for count in edge_counts.values()
             )
         if component_closed:
-            triangles = vertices[component_faces]
-            signed_volume = float(
-                np.einsum("ij,ij->i", triangles[:, 0], np.cross(triangles[:, 1], triangles[:, 2])).sum()
-                / 6.0
-            )
+            volume_started = time.perf_counter()
+            signed_volume = _signed_mesh_volume(vertices, component_faces)
+            volume_ms += (time.perf_counter() - volume_started) * 1000.0
             if signed_volume < 0.0:
                 faces[component] = faces[component][:, [0, 2, 1]]
+
+    if timings is not None:
+        walk_total_ms = (time.perf_counter() - walk_started) * 1000.0
+        timings["repair_winding_graph_walk"] = round(max(0.0, walk_total_ms - volume_ms), 3)
+        timings["repair_winding_volume"] += round(volume_ms, 3)
 
     mesh.faces = faces
     return topology
@@ -603,6 +643,16 @@ def cleanup_mesh(
 ):
     working = mesh.copy()
     started = time.perf_counter()
+    settings = config.settings
+    triangles_before = len(working.faces)
+    vertices_before = len(working.vertices)
+
+    pre_topology_degenerate_ms: float | None = None
+    if config.preset not in {"game-ready", "aggressive"}:
+        stage_started = time.perf_counter()
+        if settings.remove_degenerate:
+            _remove_degenerate_faces(working)
+        pre_topology_degenerate_ms = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
     stage_started = time.perf_counter()
     input_topology = _topology_snapshot(working)
@@ -617,9 +667,9 @@ def cleanup_mesh(
         preset=config.preset,
         config_label=config.label,
         algorithm_version=config.algorithm_version,
-        triangles_before=len(working.faces),
+        triangles_before=triangles_before,
         triangles_after=len(working.faces),
-        vertices_before=len(working.vertices),
+        vertices_before=vertices_before,
         vertices_after=len(working.vertices),
         components_before=before_components,
         components_after=before_components,
@@ -628,16 +678,18 @@ def cleanup_mesh(
         boundary_edges_before=boundary_edges_before,
         stage_ms={"input_topology": input_topology_ms},
     )
-    settings = config.settings
+    if pre_topology_degenerate_ms is not None:
+        report.stage_ms["remove_degenerate"] = pre_topology_degenerate_ms
 
     if config.preset in {"game-ready", "aggressive"}:
         working = _cleanup_heavy(working, config, report, progress=progress)
         current_topology = None
     else:
-        stage_started = time.perf_counter()
-        if settings.remove_degenerate and _remove_degenerate_faces(working):
-            current_topology = None
-        report.stage_ms["remove_degenerate"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+        if pre_topology_degenerate_ms is None:
+            stage_started = time.perf_counter()
+            if settings.remove_degenerate and _remove_degenerate_faces(working):
+                current_topology = None
+            report.stage_ms["remove_degenerate"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
         stage_started = time.perf_counter()
         if settings.weld_vertices:
@@ -699,7 +751,11 @@ def cleanup_mesh(
 
         stage_started = time.perf_counter()
         if settings.recompute_normals:
-            current_topology = _repair_face_winding(working, topology=current_topology)
+            current_topology = _repair_face_winding(
+                working,
+                topology=current_topology,
+                timings=report.stage_ms,
+            )
         report.stage_ms["repair_winding"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
     stage_started = time.perf_counter()
