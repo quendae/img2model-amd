@@ -52,6 +52,7 @@ beforeEach(() => {
       preprocessMs: 155,
       inferenceMs: 29000,
       exportMs: 0,
+      outputSizeBytes: 1_500_000,
     },
     runShapeWorkflow: vi.fn(),
     runTextureWorkflow: vi.fn(),
@@ -67,12 +68,14 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('Activity preprocessing telemetry', () => {
-  it('shows image and mesh cache status and timings separately', () => {
+  it('shows image and mesh cache status, timings and output file size', () => {
     render(<App />);
 
     expect(screen.getByText('Image cache')).toBeTruthy();
     expect(screen.getByText('Mesh cache')).toBeTruthy();
     expect(screen.getByText('Image prep')).toBeTruthy();
     expect(screen.getByText('Mesh prep')).toBeTruthy();
+    expect(screen.getByText('Output size')).toBeTruthy();
+    expect(screen.getByText('1.43 MiB')).toBeTruthy();
   });
 });
