@@ -23,6 +23,7 @@ class _TopologySnapshot:
     manifold: bool
     boundary_edges: int
     watertight: bool
+    winding_consistent: bool
 
 
 def _mesh_scale(mesh: trimesh.Trimesh) -> float:
@@ -119,8 +120,18 @@ def _topology_snapshot(mesh: trimesh.Trimesh) -> _TopologySnapshot:
         np.asarray(mesh.faces), len(mesh.vertices)
     )
     components = _face_components_from_neighbors(face_neighbors)
-    boundary_edges = sum(1 for occurrences in edges.values() if len(occurrences) == 1)
-    manifold = all(len(occurrences) <= 2 for occurrences in edges.values())
+    boundary_edges = 0
+    manifold = True
+    winding_consistent = True
+    for occurrences in edges.values():
+        count = len(occurrences)
+        if count == 1:
+            boundary_edges += 1
+        elif count > 2:
+            manifold = False
+            winding_consistent = False
+        elif count == 2 and occurrences[0][1] == occurrences[1][1]:
+            winding_consistent = False
     watertight = bool(len(mesh.faces)) and manifold and boundary_edges == 0
     return _TopologySnapshot(
         vertex_faces=vertex_faces,
@@ -131,6 +142,7 @@ def _topology_snapshot(mesh: trimesh.Trimesh) -> _TopologySnapshot:
         manifold=manifold,
         boundary_edges=boundary_edges,
         watertight=watertight,
+        winding_consistent=winding_consistent,
     )
 
 
@@ -394,12 +406,28 @@ def _repair_face_winding(
 ) -> _TopologySnapshot:
     """Orient adjacent triangle winding consistently without changing connectivity."""
 
-    faces = np.asarray(mesh.faces, dtype=int).copy()
-    vertices = np.asarray(mesh.vertices)
     topology = topology or _topology_snapshot(mesh)
-    if len(faces) == 0:
+    faces_array = np.asarray(mesh.faces, dtype=int)
+    if len(faces_array) == 0:
         return topology
 
+    vertices = np.asarray(mesh.vertices)
+    if topology.winding_consistent and len(topology.components) == 1:
+        if topology.watertight:
+            triangles = vertices[faces_array]
+            signed_volume = float(
+                np.einsum(
+                    "ij,ij->i",
+                    triangles[:, 0],
+                    np.cross(triangles[:, 1], triangles[:, 2]),
+                ).sum()
+                / 6.0
+            )
+            if signed_volume < 0.0:
+                mesh.faces = faces_array[:, [0, 2, 1]]
+        return topology
+
+    faces = faces_array.copy()
     relations: list[list[tuple[int, int]]] = [[] for _ in range(len(faces))]
     for occurrences in topology.edge_occurrences.values():
         if len(occurrences) != 2:
@@ -428,13 +456,19 @@ def _repair_face_winding(
             faces[component_flips] = faces[component_flips][:, [0, 2, 1]]
 
         component_faces = faces[component]
-        edge_counts: dict[tuple[int, int], int] = defaultdict(int)
-        for face in component_faces:
-            a, b, c = (int(face[0]), int(face[1]), int(face[2]))
-            for first, second in ((a, b), (b, c), (c, a)):
-                key = (first, second) if first < second else (second, first)
-                edge_counts[key] += 1
-        if edge_counts and all(count == 2 for count in edge_counts.values()):
+        if topology.watertight:
+            component_closed = True
+        else:
+            edge_counts: dict[tuple[int, int], int] = defaultdict(int)
+            for face in component_faces:
+                a, b, c = (int(face[0]), int(face[1]), int(face[2]))
+                for first, second in ((a, b), (b, c), (c, a)):
+                    key = (first, second) if first < second else (second, first)
+                    edge_counts[key] += 1
+            component_closed = bool(edge_counts) and all(
+                count == 2 for count in edge_counts.values()
+            )
+        if component_closed:
             triangles = vertices[component_faces]
             signed_volume = float(
                 np.einsum("ij,ij->i", triangles[:, 0], np.cross(triangles[:, 1], triangles[:, 2])).sum()
