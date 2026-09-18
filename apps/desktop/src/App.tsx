@@ -40,6 +40,21 @@ const cleanupPresetLabels: Record<CleanupPreset, string> = {
   aggressive: 'Aggressive',
 };
 
+const cleanupStageLabels: Record<string, string> = {
+  input_topology: 'Input topology',
+  remove_degenerate: 'Remove degenerate',
+  weld_vertices: 'Weld vertices',
+  remove_small_islands: 'Remove small islands',
+  small_hole_fill: 'Small-hole fill',
+  spike_cleanup: 'Spike cleanup',
+  smoothing: 'Smoothing',
+  repair_winding: 'Repair winding',
+  heavy_repair: 'Heavy repair',
+  adaptive_reduction: 'Adaptive reduction',
+  heavy_validation: 'Heavy validation',
+  final_validation: 'Final validation',
+};
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -297,6 +312,9 @@ export function App() {
   const cleanupReportDetailed = cleanupReport?.algorithm_version === 'mesh-cleanup-v2'
     || cleanupReport?.algorithm_version === 'mesh-cleanup-v3'
     || cleanupReport?.algorithm_version === 'mesh-cleanup-v4';
+  const cleanupStageEntries = cleanupReport?.stage_ms
+    ? Object.entries(cleanupReport.stage_ms).filter(([, value]) => Number.isFinite(value))
+    : [];
   const inferenceMs = timing?.inferenceMs ?? timing?.textureStages?.running_texture;
   const hasSplitPreprocessTiming = timing?.imagePreprocessMs !== undefined || timing?.meshPreprocessMs !== undefined;
   const canTextureCurrentModel = Boolean(
@@ -550,6 +568,15 @@ export function App() {
                       <strong>{cleanupReport.boundary_edges_before?.toLocaleString() ?? '—'} → {cleanupReport.boundary_edges_after.toLocaleString()}</strong>
                     </>
                   )}
+                  {cleanupReportDetailed && cleanupReport.pre_repair_watertight != null && (
+                    <><span>Pre-repair watertight</span><strong>{yesNo(cleanupReport.pre_repair_watertight)}</strong></>
+                  )}
+                  {cleanupReportDetailed && cleanupReport.pre_repair_manifold != null && (
+                    <><span>Pre-repair manifold</span><strong>{yesNo(cleanupReport.pre_repair_manifold)}</strong></>
+                  )}
+                  {cleanupReportDetailed && cleanupReport.pre_repair_boundary_edges != null && (
+                    <><span>Pre-repair boundary edges</span><strong>{cleanupReport.pre_repair_boundary_edges.toLocaleString()}</strong></>
+                  )}
                   {cleanupReportDetailed && cleanupReport.holes_closed != null && (
                     <><span>Holes closed</span><strong>{cleanupReport.holes_closed.toLocaleString()}</strong></>
                   )}
@@ -579,6 +606,18 @@ export function App() {
                 <><span>Profile</span><strong>{timing.resolvedTextureProfile}</strong></>
               )}
             </div>
+
+            {cleanupStageEntries.length > 0 && (
+              <details className="technical-details cleanup-timing-details">
+                <summary>Cleanup stage timings</summary>
+                <div className="activity-meta">
+                  {cleanupStageEntries.flatMap(([stage, value]) => [
+                    <span key={`${stage}-label`}>{cleanupStageLabels[stage] ?? stage.replaceAll('_', ' ')}</span>,
+                    <strong key={`${stage}-value`}>{formatDuration(value)}</strong>,
+                  ])}
+                </div>
+              </details>
+            )}
 
             {cleanupReport?.warnings?.map((warning) => (
               <div key={warning} className="backend-note warning">{warning}</div>
