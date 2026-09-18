@@ -29,11 +29,14 @@ def _mesh_scale(mesh: trimesh.Trimesh) -> float:
     return max(float(np.linalg.norm(np.asarray(mesh.extents, dtype=float))), 1e-9)
 
 
-def _remove_degenerate_faces(mesh: trimesh.Trimesh) -> None:
+def _remove_degenerate_faces(mesh: trimesh.Trimesh) -> bool:
     area_eps = max(float(mesh.area) * 1e-12, _mesh_scale(mesh) ** 2 * 1e-14)
     keep = np.asarray(mesh.area_faces) > area_eps
+    if bool(np.all(keep)):
+        return False
     mesh.update_faces(keep)
     mesh.remove_unreferenced_vertices()
+    return True
 
 
 def _weld_near_vertices(mesh: trimesh.Trimesh, relative_epsilon: float) -> int:
@@ -253,8 +256,13 @@ def _game_ready_mesh_is_healthy(mesh: trimesh.Trimesh) -> bool:
     )
 
 
-def _remove_small_components(mesh: trimesh.Trimesh, min_area_ratio: float) -> int:
-    components = _face_components(mesh)
+def _remove_small_components(
+    mesh: trimesh.Trimesh,
+    min_area_ratio: float,
+    topology: _TopologySnapshot | None = None,
+) -> int:
+    topology = topology or _topology_snapshot(mesh)
+    components = topology.components
     if len(components) <= 1:
         return 0
     face_areas = np.asarray(mesh.area_faces)
@@ -268,6 +276,8 @@ def _remove_small_components(mesh: trimesh.Trimesh, min_area_ratio: float) -> in
             keep[component] = True
         else:
             removed += 1
+    if removed == 0:
+        return 0
     mesh.update_faces(keep)
     mesh.remove_unreferenced_vertices()
     return removed
@@ -378,17 +388,20 @@ def _taubin_smooth(mesh: trimesh.Trimesh, iterations: int, lamb: float, nu: floa
     mesh.vertices = vertices
 
 
-def _repair_face_winding(mesh: trimesh.Trimesh) -> None:
-    """Orient adjacent triangle winding consistently without graph extras."""
+def _repair_face_winding(
+    mesh: trimesh.Trimesh,
+    topology: _TopologySnapshot | None = None,
+) -> _TopologySnapshot:
+    """Orient adjacent triangle winding consistently without changing connectivity."""
 
     faces = np.asarray(mesh.faces, dtype=int).copy()
     vertices = np.asarray(mesh.vertices)
+    topology = topology or _topology_snapshot(mesh)
     if len(faces) == 0:
-        return
+        return topology
 
-    _vertex_faces, _vertex_neighbors, face_neighbors, edge_occurrences = _topology(faces, len(vertices))
     relations: list[list[tuple[int, int]]] = [[] for _ in range(len(faces))]
-    for occurrences in edge_occurrences.values():
+    for occurrences in topology.edge_occurrences.values():
         if len(occurrences) != 2:
             continue
         (first_face, first_direction), (second_face, second_direction) = occurrences
@@ -397,8 +410,7 @@ def _repair_face_winding(mesh: trimesh.Trimesh) -> None:
         relations[second_face].append((first_face, required))
 
     orientation = np.zeros(len(faces), dtype=np.int8)
-    components = _face_components_from_neighbors(face_neighbors)
-    for component in components:
+    for component in topology.components:
         if len(component) == 0:
             continue
         start = int(component[0])
@@ -432,6 +444,7 @@ def _repair_face_winding(mesh: trimesh.Trimesh) -> None:
                 faces[component] = faces[component][:, [0, 2, 1]]
 
     mesh.faces = faces
+    return topology
 
 
 def _heavy_policies(config) -> tuple[RepairPolicy, ReductionPolicy]:
@@ -559,6 +572,7 @@ def cleanup_mesh(
 
     stage_started = time.perf_counter()
     input_topology = _topology_snapshot(working)
+    current_topology: _TopologySnapshot | None = input_topology
     before_components = len(input_topology.components)
     watertight_before = input_topology.watertight
     manifold_before = input_topology.manifold
@@ -584,25 +598,38 @@ def cleanup_mesh(
 
     if config.preset in {"game-ready", "aggressive"}:
         working = _cleanup_heavy(working, config, report, progress=progress)
+        current_topology = None
     else:
         stage_started = time.perf_counter()
-        if settings.remove_degenerate:
-            _remove_degenerate_faces(working)
+        if settings.remove_degenerate and _remove_degenerate_faces(working):
+            current_topology = None
         report.stage_ms["remove_degenerate"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
         stage_started = time.perf_counter()
         if settings.weld_vertices:
             report.vertices_welded = _weld_near_vertices(working, settings.weld_relative_epsilon)
+            if report.vertices_welded:
+                current_topology = None
         report.stage_ms["weld_vertices"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
         stage_started = time.perf_counter()
         if settings.remove_small_islands:
-            report.components_removed = _remove_small_components(working, settings.min_component_area_ratio)
+            if current_topology is None:
+                current_topology = _topology_snapshot(working)
+            report.components_removed = _remove_small_components(
+                working,
+                settings.min_component_area_ratio,
+                topology=current_topology,
+            )
+            if report.components_removed:
+                current_topology = None
         report.stage_ms["remove_small_islands"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
         stage_started = time.perf_counter()
         if config.preset == "light":
-            pre_repair_topology = _topology_snapshot(working)
+            if current_topology is None:
+                current_topology = _topology_snapshot(working)
+            pre_repair_topology = current_topology
             report.pre_repair_watertight = pre_repair_topology.watertight
             report.pre_repair_manifold = pre_repair_topology.manifold
             report.pre_repair_boundary_edges = pre_repair_topology.boundary_edges
@@ -613,6 +640,7 @@ def cleanup_mesh(
                 )
                 if report.holes_closed:
                     report.repair_backend = "native-small-hole-fill"
+                    current_topology = None
         report.stage_ms["small_hole_fill"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
         stage_started = time.perf_counter()
@@ -637,12 +665,12 @@ def cleanup_mesh(
 
         stage_started = time.perf_counter()
         if settings.recompute_normals:
-            _repair_face_winding(working)
+            current_topology = _repair_face_winding(working, topology=current_topology)
         report.stage_ms["repair_winding"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
 
     stage_started = time.perf_counter()
     working.remove_unreferenced_vertices()
-    final_topology = _topology_snapshot(working)
+    final_topology = current_topology or _topology_snapshot(working)
     report.triangles_after = len(working.faces)
     report.vertices_after = len(working.vertices)
     report.components_after = len(final_topology.components)
