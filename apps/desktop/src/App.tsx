@@ -49,6 +49,9 @@ const cleanupStageLabels: Record<string, string> = {
   spike_cleanup: 'Spike cleanup',
   smoothing: 'Smoothing',
   repair_winding: 'Repair winding',
+  repair_winding_graph_build: 'Winding graph build',
+  repair_winding_graph_walk: 'Winding graph walk',
+  repair_winding_volume: 'Winding volume',
   heavy_repair: 'Heavy repair',
   adaptive_reduction: 'Adaptive reduction',
   heavy_validation: 'Heavy validation',
@@ -316,9 +319,15 @@ export function App() {
   const displayError = job.error ?? runtime.error ?? diagnosticError;
   const timing = job.timingSummary;
   const cleanupReport = timing?.cleanupReport;
-  const cleanupReportDetailed = cleanupReport?.algorithm_version === 'mesh-cleanup-v2'
-    || cleanupReport?.algorithm_version === 'mesh-cleanup-v3'
-    || cleanupReport?.algorithm_version === 'mesh-cleanup-v4';
+  const cleanupReportDetailed = Boolean(cleanupReport && (
+    cleanupReport.watertight_before != null
+    || cleanupReport.watertight_after != null
+    || cleanupReport.manifold_before != null
+    || cleanupReport.manifold_after != null
+    || cleanupReport.boundary_edges_after != null
+    || cleanupReport.repair_backend
+    || cleanupReport.normalized_error != null
+  ));
   const cleanupStageEntries = cleanupReport?.stage_ms
     ? Object.entries(cleanupReport.stage_ms).filter(([, value]) => Number.isFinite(value))
     : [];
