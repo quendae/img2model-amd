@@ -2,7 +2,7 @@ from dataclasses import asdict
 
 from .models import CleanupSettings, ResolvedCleanupConfig
 
-ALGORITHM_VERSION = "mesh-cleanup-v4"
+ALGORITHM_VERSION = "mesh-cleanup-v5"
 
 PRESET_SETTINGS = {
     "off": CleanupSettings(False, False, 0.0, False, 0.0, False, 0.0, 0.0, 0.0, False, 0, 0.0, 0.0, False),
