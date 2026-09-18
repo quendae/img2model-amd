@@ -60,7 +60,7 @@ class CleanupGeometryTests(unittest.TestCase):
             self.assertIn(stage, report.stage_ms)
             self.assertGreaterEqual(report.stage_ms[stage], 0.0)
 
-    def test_light_reuses_topology_snapshots_instead_of_rescanning_same_mesh(self):
+    def test_light_reuses_topology_across_noop_stages_and_final_validation(self):
         source = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
         source.update_faces([False] + [True] * (len(source.faces) - 1))
         source.remove_unreferenced_vertices()
@@ -73,8 +73,8 @@ class CleanupGeometryTests(unittest.TestCase):
         self.assertGreaterEqual(report.holes_closed or 0, 1)
         self.assertLessEqual(
             topology.call_count,
-            5,
-            "Light cleanup should build topology once per changed geometry snapshot, not once per metric.",
+            2,
+            "Light cleanup should reuse the input snapshot through no-op preprocessing and reuse the post-fill snapshot for final validation.",
         )
 
     def test_game_ready_clean_watertight_mesh_skips_invasive_remesh_before_qem(self):
