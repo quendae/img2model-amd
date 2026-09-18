@@ -16,7 +16,7 @@ The implementation is already expected to preserve explicit targets through UI -
 - Shape: Hunyuan3D 2 Mini
 - Texture: Hunyuan Paint
 - Branch: `feat/game-ready-mesh-cleanup`
-- Build/HEAD: fill at test time
+- Build/HEAD: rolling branch build; exact cleanup build captured in issue #6
 
 ## Test rules
 
@@ -46,8 +46,10 @@ Cleanup: Light unless otherwise noted.
 | 1,000 |  |  |  |  |  |  |  |  |
 | 2,500 |  |  |  |  |  |  |  |  |
 | 5,000 |  |  |  |  |  |  |  |  |
-| 10,000 |  |  |  |  |  |  |  |  |
+| 10,000 | 10,000 | 1:32 | full pipeline 5:51 | 2.42 MiB | visually preserved in built-in viewer | source-like wood texture retained | no blocking artifact observed in supplied run | PASS |
 | 40,000 |  |  |  |  |  |  |  |  |
+
+Observed full-pipeline context for the 10k run: Shape 2:26, Light cleanup 1:53, Texture 1:32. The cleaned working mesh was 1,861,966 triangles before the texture target reduction. Activity reported `Watertight: No -> Yes`, `Manifold: No -> Yes`, pre-repair 434 boundary edges, 143 holes closed, and no remesh.
 
 ## Asset B — organic / steak regression asset
 
