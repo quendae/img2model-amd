@@ -123,6 +123,7 @@ export interface GenerationTimingSummary {
   inferenceMs?: number;
   preprocessMs?: number;
   exportMs?: number;
+  outputSizeBytes?: number;
 }
 
 export interface TextureRetryContext {
