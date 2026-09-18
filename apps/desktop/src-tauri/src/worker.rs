@@ -158,6 +158,7 @@ pub struct GenerateResult {
     pub inference_ms: Option<f64>,
     pub preprocess_ms: Option<f64>,
     pub export_ms: Option<f64>,
+    pub output_size_bytes: Option<u64>,
 }
 
 pub fn resolve_worker_path(start: &Path) -> Option<PathBuf> {
@@ -457,7 +458,13 @@ where
 {
     let arguments = texture_arguments(&request)?;
     let (status, stdout, stderr) = run_worker_streamed(&arguments, on_event)?;
-    let result: GenerateResult = parse_last_json_line(&stdout)?;
+    let mut result: GenerateResult = parse_last_json_line(&stdout)?;
+
+    if result.ok && result.output_size_bytes.is_none() {
+        if let Some(output) = result.output.as_deref() {
+            result.output_size_bytes = std::fs::metadata(output).ok().map(|metadata| metadata.len());
+        }
+    }
 
     if status.success() || !result.ok {
         Ok(result)
