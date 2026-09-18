@@ -49,6 +49,9 @@ function cleanupReport(overrides: Record<string, unknown> = {}) {
     manifold_after: true,
     boundary_edges_before: 42,
     boundary_edges_after: 0,
+    pre_repair_watertight: false,
+    pre_repair_manifold: true,
+    pre_repair_boundary_edges: 12,
     holes_closed: 2,
     non_manifold_edges_fixed: 5,
     reduction_ratio: 0.99064,
@@ -56,6 +59,15 @@ function cleanupReport(overrides: Record<string, unknown> = {}) {
     repair_backend: 'pymeshlab+manifold3d',
     normalized_error: 0.0042,
     target_triangles: 5000,
+    stage_ms: {
+      input_topology: 3200,
+      remove_degenerate: 150,
+      weld_vertices: 900,
+      remove_small_islands: 2100,
+      small_hole_fill: 1400,
+      repair_winding: 3600,
+      final_validation: 650,
+    },
     warnings: [],
     ...overrides,
   };
@@ -114,6 +126,17 @@ describe('Activity cleanup v4 telemetry', () => {
     expect(screen.queryByText('Spikes adjusted')).toBeNull();
   });
 
+  it('shows pre-repair topology and cleanup stage timings for performance diagnosis', () => {
+    render(<App />);
+
+    expect(screen.getByText('Pre-repair boundary edges')).toBeTruthy();
+    expect(screen.getByText('12')).toBeTruthy();
+    expect(screen.getByText('Cleanup stage timings')).toBeTruthy();
+    expect(screen.getByText('Input topology')).toBeTruthy();
+    expect(screen.getByText('Repair winding')).toBeTruthy();
+    expect(screen.getByText('4s')).toBeTruthy();
+  });
+
   it('renders a completed auto-budget cleanup report when optional worker fields are null', () => {
     mocks.useGenerationJob.mockReturnValue(jobState(cleanupReport({
       config_label: 'Game-ready',
@@ -125,10 +148,14 @@ describe('Activity cleanup v4 telemetry', () => {
       manifold_after: true,
       boundary_edges_before: 0,
       boundary_edges_after: 0,
+      pre_repair_watertight: null,
+      pre_repair_manifold: null,
+      pre_repair_boundary_edges: null,
       holes_closed: null,
       non_manifold_edges_fixed: null,
       normalized_error: 0.0008451891542219474,
       target_triangles: null,
+      stage_ms: {},
     })));
 
     render(<App />);
@@ -139,5 +166,6 @@ describe('Activity cleanup v4 telemetry', () => {
     expect(screen.queryByText('Holes closed')).toBeNull();
     expect(screen.queryByText('Non-manifold edges fixed')).toBeNull();
     expect(screen.queryByText('Target triangles')).toBeNull();
+    expect(screen.queryByText('Cleanup stage timings')).toBeNull();
   });
 });
