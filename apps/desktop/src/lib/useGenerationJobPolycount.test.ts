@@ -31,6 +31,7 @@ describe('useGenerationJob texture polycount propagation', () => {
       faces_before: 100_000,
       faces_after: 5_000,
       resolved_profile: 'balanced',
+      output_size_bytes: 1_500_000,
     });
 
     const { result } = renderHook(() => useGenerationJob());
@@ -55,6 +56,7 @@ describe('useGenerationJob texture polycount propagation', () => {
       textureTargetTriangles: 5_000,
       trianglesBefore: 100_000,
       trianglesAfter: 5_000,
+      outputSizeBytes: 1_500_000,
     });
   });
 
