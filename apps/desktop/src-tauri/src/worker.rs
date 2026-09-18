@@ -48,6 +48,9 @@ pub struct MeshCleanupReport {
     pub manifold_after: Option<bool>,
     pub boundary_edges_before: Option<u64>,
     pub boundary_edges_after: Option<u64>,
+    pub pre_repair_watertight: Option<bool>,
+    pub pre_repair_manifold: Option<bool>,
+    pub pre_repair_boundary_edges: Option<u64>,
     pub holes_closed: Option<u64>,
     pub non_manifold_edges_fixed: Option<u64>,
     pub reduction_ratio: Option<f64>,
@@ -55,6 +58,7 @@ pub struct MeshCleanupReport {
     pub repair_backend: Option<String>,
     pub normalized_error: Option<f64>,
     pub target_triangles: Option<u64>,
+    pub stage_ms: Option<std::collections::BTreeMap<String, f64>>,
     pub warnings: Vec<String>,
 }
 
