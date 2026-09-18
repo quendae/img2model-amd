@@ -109,7 +109,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe('Activity cleanup v4 telemetry', () => {
+describe('Activity cleanup telemetry', () => {
   it('shows reduction and topology instead of emphasizing legacy spike metrics', () => {
     render(<App />);
 
@@ -167,5 +167,28 @@ describe('Activity cleanup v4 telemetry', () => {
     expect(screen.queryByText('Non-manifold edges fixed')).toBeNull();
     expect(screen.queryByText('Target triangles')).toBeNull();
     expect(screen.queryByText('Cleanup stage timings')).toBeNull();
+  });
+
+  it('shows v8 topology and readable winding sub-timings', () => {
+    mocks.useGenerationJob.mockReturnValue(jobState(cleanupReport({
+      algorithm_version: 'mesh-cleanup-v8',
+      stage_ms: {
+        input_topology: 11000,
+        remove_small_islands: 12,
+        repair_winding: 14000,
+        repair_winding_graph_build: 0,
+        repair_winding_graph_walk: 0,
+        repair_winding_volume: 13750,
+        final_validation: 5,
+      },
+    })));
+
+    render(<App />);
+
+    expect(screen.getByText('Watertight')).toBeTruthy();
+    expect(screen.getByText('Manifold')).toBeTruthy();
+    expect(screen.getByText('Winding graph build')).toBeTruthy();
+    expect(screen.getByText('Winding graph walk')).toBeTruthy();
+    expect(screen.getByText('Winding volume')).toBeTruthy();
   });
 });
