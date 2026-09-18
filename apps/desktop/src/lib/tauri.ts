@@ -71,6 +71,7 @@ export interface GenerateResult {
   inference_ms?: number | null;
   preprocess_ms?: number | null;
   export_ms?: number | null;
+  output_size_bytes?: number | null;
 }
 
 export interface WorkerProgressEvent {
