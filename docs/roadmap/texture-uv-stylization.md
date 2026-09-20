@@ -1,64 +1,57 @@
 # UV and texture stylization roadmap
 
-**Status:** active — Phase 1 UV foundation is implemented through the first inspection/export slice and is awaiting real-desktop acceptance.
+**Status:** active — Phase 1 and Phase 2 are accepted on the real Windows/Radeon desktop path. Phase 3 has started with basic UV texture scale/rotation controls before generative style presets.
 
 ## Goal
 
 Build a UV-first texturing workflow that gives the user predictable control over texture layout and later allows style-directed texturing without depending only on the uploaded source image.
 
-The UV layer comes first. Style presets and reference-image conditioning should be built on top of a stable atlas/export/import path rather than being mixed directly into the current Hunyuan Paint call before we can inspect or replace the generated texture safely.
+The UV layer comes first. Style presets and reference-image conditioning are built on top of a stable atlas/export/import path rather than being mixed directly into the Hunyuan Paint call before the generated texture can be inspected or replaced safely.
 
-## Phase 1 — UV inspection and atlas export
+## Phase 1 — UV inspection and atlas export — accepted
 
-Add explicit UV inspection tools to the existing model workflow:
+Implemented and hardware-accepted:
 
-- show UV availability and atlas metadata for the current GLB/OBJ,
-- add a UV debug view in the viewer,
-- export a UV atlas/template image with island outlines,
-- record atlas resolution, material/texture slots and texel density where possible,
-- keep the UV/material mapping stable through cleanup, texture and final GLB export.
-
-### First slice implemented
-
-The current implementation provides:
-
-- a procedural **UV Checker** mode in the Three.js viewer,
+- procedural **UV Checker** mode in the Three.js viewer,
 - UV mesh/triangle/material/texture counts for the loaded model,
-- a **2048x2048 SVG UV template** export,
+- **2048x2048 SVG UV template** export,
 - light triangle guides plus stronger UV boundary/island outlines,
 - embedded `img2model-uv-template-v1` metadata,
 - native Tauri file saving with `.svg` and payload validation,
-- a browser-development download fallback.
+- browser-development download fallback,
+- normal Solid/Wireframe/Solid + Wire modes remain available.
 
-SVG is the first template format because it keeps dense UV outlines crisp at any zoom and is easy to inspect or rasterize externally. A raster PNG template/preview can be added later if it improves the direct-paint workflow; it is not required to validate the UV mapping itself.
+SVG remains the canonical editable template because it keeps dense UV outlines crisp at any zoom and is easy to rasterize externally.
 
-### Phase 1 acceptance gate
+## Phase 2 — direct UV texture input — accepted
 
-Before direct texture replacement starts, verify on a real generated textured GLB that:
+Implemented and hardware-accepted:
 
-- UV Checker covers the model and exposes stretching/seams without destabilizing the viewer,
-- exported SVG is non-empty and corresponds to the loaded model,
-- the normal Solid/Wireframe/Solid + Wire modes still work,
-- template export succeeds through the Windows Tauri save dialog.
+- import a user-supplied square PNG/JPG/WEBP atlas without regenerating geometry,
+- validate obvious atlas size/aspect mismatches,
+- rebind the atlas to compatible materials immediately in the built-in viewer,
+- preserve mesh geometry and UV coordinates,
+- export the result as a valid textured GLB through the native Tauri save path,
+- reopen/export acceptance confirmed on the Windows desktop path.
 
-## Phase 2 — direct UV texture input
+This is the deterministic advanced-user route: export template, edit it externally if needed, re-import, preview, and export GLB without another Shape or Hunyuan Paint run.
 
-Allow a user-supplied image that matches the exported UV atlas to be applied directly to the existing mesh.
+## Phase 3 — UV transform and style controls — active
 
-Requirements:
+### Slice A — basic UV transform
 
-- import an atlas-sized image without regenerating geometry,
-- rebind/replace the relevant material texture,
-- preserve UV coordinates,
-- export a valid GLB,
-- show the result immediately in the built-in viewer,
-- report obvious resolution/aspect mismatches instead of silently stretching the image.
+Keep this deliberately small rather than turning Img2Model into a UV editor:
 
-This gives advanced users a deterministic path that does not depend on generative texturing at all.
+- **Scale:** 50–200%, centered, live preview,
+- **Rotation:** -180° to +180°, centered, live preview,
+- **Reset:** 100% / 0°,
+- no X/Y translation, island editing, masks, distortion tools or per-island transforms,
+- a new imported atlas resets the transform to defaults,
+- GLB export preserves the visible scale/rotation mapping.
 
-## Phase 3 — style presets and style reference
+The transform is encoded as export-friendly texture offset/scale/rotation rather than relying on Three.js' non-portable texture `center` property. This keeps the centered preview compatible with the standard glTF texture-transform representation and does not modify mesh UV coordinates.
 
-Add a texture-style mode to the Texture UI.
+### Slice B — style presets
 
 Initial presets:
 
@@ -67,17 +60,17 @@ Initial presets:
 - **Stylized** — simplified game-art appearance.
 - **Hand-painted** — painterly color/value treatment with reduced photographic detail.
 - **Cartoon** — broader color regions and stronger graphic separation.
-- **Pixel-art** — handled as a dedicated technical preset, not only a textual style hint.
+- **Pixel-art** — exposed here as a style choice, with its technical sampling/output behavior implemented in Phase 4.
 
-Controls:
+Controls after the UV-transform slice:
 
 - texture style preset,
-- optional style reference image,
 - style strength,
+- optional style reference image,
 - preserve source colors toggle,
 - atlas/output resolution.
 
-Do not assume Hunyuan Paint natively supports arbitrary style conditioning. The first robust implementation may generate the normal UV-space texture with Hunyuan Paint and then run a separate 2D atlas stylization pass before applying the result back to the mesh. If a future backend supports native source + style conditioning reliably, it can be exposed behind the same UI contract.
+Do not assume Hunyuan Paint natively supports arbitrary style conditioning. The first robust implementation may generate the normal UV-space texture with Hunyuan Paint and then run a separate 2D atlas stylization pass before applying it back to the mesh. If a future backend supports native source + style conditioning reliably, it can be exposed behind the same UI contract.
 
 ## Phase 4 — pixel-art-specific output
 
@@ -96,7 +89,7 @@ The objective is crisp game-ready pixel texture output, not a blurred high-resol
 
 ## Phase 5 — UV-aware texture editing
 
-Once atlas export/import is stable, add lightweight local editing rather than a full Blender-like editor:
+Once the atlas and style paths are stable, add lightweight local editing rather than a full Blender-like editor:
 
 - local texture patch/inpaint,
 - mask-based repaint,
@@ -116,6 +109,7 @@ Shape generation
   -> target-triangle / working-mesh preparation
   -> UV validation / atlas preparation
   -> Hunyuan Paint or direct UV texture input
+  -> optional basic UV transform
   -> optional style/reference atlas pass
   -> optional UV-aware local edits
   -> final GLB export
@@ -125,10 +119,15 @@ Topology-changing operations should stay before the final UV-dependent texture s
 
 ## Acceptance milestones
 
-### UV foundation
+### UV foundation — complete
 - UV layout can be inspected in-app.
 - A usable atlas template can be exported.
 - The same mesh accepts a user-painted atlas and exports correctly.
+
+### UV transform
+- Scale and rotation update immediately without changing geometry or UV attributes.
+- Reset restores 100% / 0°.
+- Exported GLB reproduces the same mapping when reopened.
 
 ### Style controls
 - Style preset changes texture appearance without changing mesh geometry.
