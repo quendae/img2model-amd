@@ -3,6 +3,8 @@ name: Windows Installer
 on:
   workflow_dispatch:
   push:
+    branches:
+      - feat/game-ready-mesh-cleanup
     tags:
       - 'v*'
 
