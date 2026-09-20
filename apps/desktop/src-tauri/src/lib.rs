@@ -3,7 +3,7 @@ pub mod uv_export;
 pub mod worker;
 pub mod worker_session;
 
-pub use uv_export::save_uv_template_file;
+pub use uv_export::{save_textured_glb_file, save_uv_template_file};
 
 #[cfg(feature = "desktop")]
 use tauri::{ipc::Channel, Manager};
@@ -80,6 +80,12 @@ fn append_diagnostic_log(
 #[tauri::command]
 fn save_uv_template(path: String, contents: String) -> Result<String, String> {
     save_uv_template_file(std::path::Path::new(&path), &contents)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn save_textured_glb(path: String, bytes: Vec<u8>) -> Result<String, String> {
+    save_textured_glb_file(std::path::Path::new(&path), &bytes)
 }
 
 #[cfg(feature = "desktop")]
@@ -251,6 +257,7 @@ pub fn run() {
             diagnostic_log_path,
             append_diagnostic_log,
             save_uv_template,
+            save_textured_glb,
             hunyuan_health,
             hunyuan_texture_health,
             preload_hunyuan_shape,
