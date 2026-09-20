@@ -4,7 +4,7 @@ A Windows desktop image-to-3D application focused on AMD Radeon GPUs.
 
 The initial hardware target is the **Radeon RX 6950 XT (16 GB, gfx1030)**. The app uses a native Tauri/React desktop UI, Three.js for preview, and an out-of-process persistent Python worker for Hunyuan3D shape generation, game-ready mesh processing, and optional Hunyuan Paint texture generation.
 
-> **Current status:** MVP / experimental. Native ROCm/TheRock Hunyuan shape generation and Hunyuan Paint texture generation are hardware-validated on an RX 6950 XT. `mesh-cleanup-v2` with PyMeshLab repair/remesh plus adaptive QEM game-ready reduction is implemented and CI-validated; real RX 6950 XT quality/performance acceptance is the next checkpoint. See [`docs/status/2026-09-13.md`](docs/status/2026-09-13.md) for the current development status.
+> **Current status:** MVP / experimental. Native ROCm/TheRock Hunyuan shape generation, mesh cleanup, Hunyuan Paint texture generation, direct UV atlas replacement, UV transform controls, and texture style post-processing are hardware-validated on an RX 6950 XT. A Tauri/NSIS Windows installer is now built in CI; real-machine packaged-installer acceptance is the active gate. See [`docs/roadmap/current-priorities.md`](docs/roadmap/current-priorities.md).
 
 ## What works
 
@@ -15,29 +15,33 @@ The initial hardware target is the **Radeon RX 6950 XT (16 GB, gfx1030)**. The a
 - Hunyuan shape and texture capability health checks
 - Hunyuan3D-2 Mini image-to-shape worker using the `fp16` Mini weights by default
 - Optional Hunyuan Paint mesh + image texture stage
-- Conservative `Light` cleanup plus `Game-ready` / `Aggressive` `mesh-cleanup-v2`
-- PyMeshLab repair, non-manifold cleanup, hole closing and optional isotropic remesh
-- Adaptive QEM reduction driven by normalized symmetric Hausdorff error
+- Conservative `Light` cleanup plus `Game-ready` / `Aggressive` mesh cleanup
+- PyMeshLab repair, non-manifold cleanup, hole closing and adaptive QEM reduction
 - Optional Manifold3D validation/finalization
-- Auto triangle budget plus Manual target control for game-ready cleanup
-- Cleanup telemetry for reduction, topology, backend and normalized geometry error
+- Auto/manual triangle targets plus texture-oriented 500 / 1k / 2.5k / 5k / 10k / 40k presets
+- Cleanup and timing telemetry
 - Texture failure preserves the successful untextured shape output
 - CPU model offload plus MAX attention slicing as the validated 16 GB texture profile
+- UV Checker, UV metadata and exportable 2048×2048 SVG UV template
+- Direct PNG/JPG/WEBP UV atlas import and live material rebind
+- Centered UV texture scale/rotation and textured GLB export
+- Texture styles: Match source, Realistic, Stylized, Hand-painted, Cartoon and Pixel-art
+- Style strength, preserve-source-colors and optional reference-palette guidance
 - PNG/JPG/WEBP input selection
-- Fast / Balanced / Quality step presets
+- Fast / Balanced / Quality shape presets
 - Seed and optional background removal
 - GLB and OBJ worker export
 - Interactive Three.js GLB and OBJ preview
 - Explicit backend policy: **no silent fallback**
-- Unit tests for backend selection, job state transitions, preview formats, worker protocol, mesh cleanup and Rust bridge helpers
-- CI on Linux plus Windows desktop compilation and PowerShell validation
+- Tauri/NSIS Windows setup build with bundled version-matched runtime bootstrap sources
+- CI on Linux plus Windows desktop compilation, PowerShell validation and NSIS packaging
 
 ## Architecture
 
 ```text
 Tauri desktop app
   ├─ React / TypeScript UI
-  ├─ Three.js model viewer
+  ├─ Three.js model viewer + UV atlas workflow
   ├─ Rust diagnostics + persistent process bridge
   │    └─ native-rocm worker
   │         ├─ Hunyuan3D-2 Mini shape
@@ -45,29 +49,67 @@ Tauri desktop app
   │         │    ├─ Light: conservative Trimesh path
   │         │    └─ Game-ready/Aggressive: PyMeshLab + adaptive QEM
   │         │         └─ optional Manifold3D validation/finalization
-  │         └─ Hunyuan Paint texture (optional)
-  │              └─ custom rasterizer via PyTorch ROCm/HIPify
+  │         └─ Hunyuan Paint texture
+  │              ├─ custom rasterizer via PyTorch ROCm/HIPify
+  │              └─ 2D atlas style post-processing
   ├─ wsl-rocm       (planned)
   └─ Vulkan/TRELLIS (planned / experimental)
 ```
 
-The ML runtime is kept outside the desktop process. A failed model import, texture-extension import, cleanup run, or inference run returns an error rather than terminating the UI. Shape, cleanup and texture are intentionally separate stages so a later failure cannot destroy a valid generated mesh.
+The ML runtime is kept outside the desktop process. A failed model import, texture-extension import, cleanup run, or inference run returns an error rather than terminating the UI. Shape, cleanup and texture are separate stages so a later failure cannot destroy a valid generated mesh.
 
-## RX 6950 XT / gfx1030 setup on Windows
+## Windows installer
 
-TheRock publishes Windows ROCm/PyTorch packages for `gfx1030`. This project installs them into an isolated per-user runtime rather than modifying global Python.
+Img2Model AMD now has a Tauri v2 **NSIS** packaging path. GitHub Actions builds a `*-setup.exe` artifact using `.github/workflows/windows-installer.yml`.
 
-### Prerequisites
+The setup is intentionally split into the small desktop application and a persistent per-user Radeon/ML runtime:
+
+```text
+Application: normal Tauri current-user install directory
+Runtime:     %LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\
+Logs:        %LOCALAPPDATA%\Img2ModelAMD\logs\
+```
+
+Model weights are **not embedded in the installer**. Hugging Face/model caches remain outside the application installation and are preserved across app upgrades and uninstall. A healthy existing Img2Model AMD runtime is reused during upgrades: the installer refreshes the version-matched worker/backend sources, rechecks Shape/Texture health, and avoids reinstalling ROCm/Hunyuan. An unhealthy runtime follows the repair/install path.
+
+### Fresh-machine prerequisites for the first installer slice
 
 - Windows 11
 - current AMD display driver
-- Python **3.11 x64** with the Windows `py` launcher
-- Node.js 22+ for development builds
-- Rust stable toolchain for development builds
-- Microsoft WebView2 Runtime (normally already present on Windows 11)
-- For native texture-extension compilation: a usable Windows C++ build toolchain if PyTorch requests it
+- Python **3.11 x64** with the Windows `py.exe` launcher
+- Microsoft Visual Studio 2022 Build Tools with the **Desktop development with C++** workload
+- Microsoft WebView2 Runtime (normally present on Windows 11)
 
-### Automated runtime setup
+The first packaged slice reports missing prerequisites explicitly rather than silently invoking a package manager. Automatic acquisition of Python/C++ prerequisites is a possible follow-up after the packaged path is accepted on real hardware.
+
+The runtime bootstrap log is kept at:
+
+```text
+%LOCALAPPDATA%\Img2ModelAMD\logs\installer-runtime.log
+```
+
+Installer design and acceptance criteria: [`docs/roadmap/windows-installer.md`](docs/roadmap/windows-installer.md).
+
+### Build the NSIS setup locally
+
+From a Windows development checkout:
+
+```powershell
+npm install
+npm --workspace @img2model/desktop run prepare-installer
+cd apps\desktop
+npx tauri build --bundles nsis
+```
+
+The generated setup is placed under:
+
+```text
+apps\desktop\src-tauri\target\release\bundle\nsis\
+```
+
+## RX 6950 XT / gfx1030 development runtime setup
+
+TheRock publishes Windows ROCm/PyTorch packages for `gfx1030`. Repository development uses an isolated per-user runtime rather than modifying global Python.
 
 From PowerShell in the repository root:
 
@@ -78,28 +120,18 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The script defaults to AMD's **stable** TheRock wheel index and installs a matching gfx1030 ROCm/PyTorch stack, including the Hunyuan-required ROCm build of `torchvision`, plus the pinned game-ready mesh dependencies.
 
-If the stable stream has a packaging regression or lacks a dependency needed by Hunyuan, try the nightly stream:
+If the stable stream has a packaging regression or lacks a dependency needed by Hunyuan, try:
 
 ```powershell
 .\scripts\setup\windows-native-rocm.ps1 -Channel nightly
 ```
 
-Nightly packages can occasionally have ABI regressions, so stable is preferred when it works.
-
-By default the runtime is created at:
-
-```text
-%LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\
-```
-
-The setup script copies the worker and mesh-processing package into that persistent runtime and saves these per-user environment variables:
+By default the runtime is created at `%LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\` and persists these user variables:
 
 ```text
 IMG2MODEL_PYTHON=%LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\Scripts\python.exe
 IMG2MODEL_WORKER=%LOCALAPPDATA%\Img2ModelAMD\runtime\native-rocm\worker.py
 ```
-
-They are also set for the PowerShell process running setup. This lets a packaged desktop app find the AMD runtime without depending on the repository location.
 
 You can override the runtime destination explicitly:
 
@@ -113,65 +145,16 @@ To sync the current worker/backend into an existing runtime without reinstalling
 .\scripts\setup\windows-native-rocm.ps1 -VerifyOnly
 ```
 
-`-VerifyOnly` also verifies the installed PyMeshLab/Manifold3D dependencies and the Hunyuan/GPU health path.
+### Hunyuan texture extensions
 
-### RX 6950 XT hardware validation
-
-The native Windows path has been validated on a Radeon RX 6950 XT with:
-
-- PyTorch `2.13.0+rocm10.0.0`
-- HIP runtime reported by PyTorch
-- the GPU visible through the PyTorch `torch.cuda` compatibility namespace
-- approximately 16 GB VRAM detected
-- a real 1024×1024 matrix multiplication executed on the Radeon GPU
-- Hunyuan3D-2 Mini `fp16` shape generation completed successfully and exported a GLB
-- persistent Shape pipeline preload/cache followed by successful Shape inference
-- Hunyuan Paint native extensions compiled and imported successfully through TheRock/ROCm
-- the official Hunyuan texture working-mesh cleanup/reduction path validated for Paint
-- Hunyuan Paint completed a real textured GLB using CPU model offload plus MAX Diffusers attention slicing
-
-Both the shape and texture paths are therefore considered verified on the target card. The texture working-mesh ceiling used by Hunyuan Paint is not a recommended in-game triangle count. `mesh-cleanup-v2` now provides a separate game-ready path intended to reduce simple props into the low-thousands of triangles when the geometric-error tolerance allows it; real RX 6950 XT acceptance of that new path is still pending.
-
-### RX 6950 XT smoke test
-
-After setup, open a fresh PowerShell and run:
-
-```powershell
-.\scripts\smoke\windows-native-rocm.ps1
-```
-
-This performs a worker health check and a real ROCm tensor operation on the GPU, then prints the detected device, HIP version and VRAM.
-
-To exercise the full image-to-shape path as well:
-
-```powershell
-.\scripts\smoke\windows-native-rocm.ps1 `
-  -InputImage "C:\path\to\input.png" `
-  -Output "C:\path\to\smoke.glb"
-```
-
-The end-to-end mode uses Hunyuan3D-2 Mini `fp16`, verifies the process exit code and confirms that a non-empty output file was produced.
-
-## Hunyuan texture setup on Windows AMD
-
-Hunyuan's paint stage uses a native `custom_rasterizer` extension. Upstream defines it as a PyTorch `CUDAExtension`, but ROCm PyTorch can route CUDA extensions through its HIP extension / HIPify path. Img2Model AMD uses that route instead of maintaining a hand-forked rasterizer.
-
-The texture setup **reuses the existing native ROCm runtime**. It does not reinstall PyTorch or ROCm:
+The texture setup reuses the existing native ROCm runtime and builds the upstream rasterizer/differentiable-renderer extensions through PyTorch's HIPify route:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\setup\windows-hunyuan-texture.ps1
 ```
 
-The script:
-
-1. verifies that the existing PyTorch build reports HIP;
-2. resolves TheRock's core and development trees through the installed ROCm SDK tooling;
-3. sets `PYTORCH_ROCM_ARCH=gfx1030` plus the required device-library/include paths;
-4. downloads pinned Hunyuan3D-2 source into the runtime's texture build directory;
-5. builds upstream `custom_rasterizer` through PyTorch's ROCm/HIPify extension path;
-6. builds the upstream differentiable-renderer extension;
-7. runs a real import-based `texture-health` check.
+It verifies ROCm PyTorch, initializes TheRock's development tree, targets `gfx1030`, builds the native extensions and finishes with an import-based `texture-health` check.
 
 Texture capability check:
 
@@ -179,44 +162,47 @@ Texture capability check:
 & $env:IMG2MODEL_PYTHON $env:IMG2MODEL_WORKER texture-health --json
 ```
 
-A healthy result requires the Hunyuan texgen package plus successfully importable native rasterizer extensions.
+### RX 6950 XT hardware validation
 
-### Manual texture test
+The native Windows path has been validated on a Radeon RX 6950 XT with:
 
-With an existing untextured mesh and the original source image:
+- PyTorch `2.13.0+rocm10.0.0`
+- HIP runtime reported by PyTorch and the GPU visible through `torch.cuda`
+- approximately 16 GB VRAM detected
+- a real GPU tensor/matrix operation
+- Hunyuan3D-2 Mini `fp16` shape generation and GLB export
+- persistent Shape preload/cache
+- Hunyuan Paint native extensions compiled/imported through TheRock/ROCm
+- Hunyuan Paint textured GLB using CPU model offload plus MAX attention slicing
+- game-ready cleanup and a real 10k texture target run
+- direct UV atlas import/rebind, UV scale/rotation and GLB export/reopen
+- real texture-style post-processing after Hunyuan Paint
+
+The **packaged NSIS installer itself** still requires its separate real-machine acceptance gate before issue #14 can be closed.
+
+### RX 6950 XT smoke test
+
+After repository setup, open a fresh PowerShell and run:
 
 ```powershell
-& $env:IMG2MODEL_PYTHON $env:IMG2MODEL_WORKER texture `
-  --mesh "$env:USERPROFILE\Desktop\img2model-smoke.glb" `
-  --image "C:\tmp\drewno.png" `
-  --output "$env:USERPROFILE\Desktop\img2model-smoke-textured.glb" `
-  --model "tencent/Hunyuan3D-2" `
-  --subfolder "hunyuan3d-paint-v2-0-turbo" `
-  --remove-background
+.\scripts\smoke\windows-native-rocm.ps1
 ```
 
-On the validated RX 6950 XT profile, CPU model offload and `attention-slicing=max` are enabled by default. Advanced users can opt out explicitly with `--no-cpu-offload` and/or `--attention-slicing off` on higher-memory hardware. The default texture preprocessing follows Hunyuan's official Paint preparation path. The original untextured mesh remains untouched if the texture stage fails.
+To exercise full image-to-shape generation:
+
+```powershell
+.\scripts\smoke\windows-native-rocm.ps1 `
+  -InputImage "C:\path\to\input.png" `
+  -Output "C:\path\to\smoke.glb"
+```
 
 ## Game-ready mesh cleanup
 
-`Light` is intentionally conservative and aims to preserve the generated geometry.
+`Light` is intentionally conservative and aims to preserve generated geometry. `Game-ready` and `Aggressive` add topology repair and adaptive QEM reduction using PyMeshLab, with optional Manifold3D validation/finalization.
 
-`Game-ready` and `Aggressive` use `mesh-cleanup-v2`, which can repair topology and substantially rebuild/reduce the mesh:
+The representative dense wood-stack asset was accepted on RX 6950 XT: about 1.86M source triangles were repaired to watertight topology and the end-to-end 10k texture-target path produced a valid textured GLB. The remaining 500 / 1k / 2.5k / 5k / 40k matrix remains optional benchmark coverage rather than a blocker.
 
-- PyMeshLab duplicate/null geometry cleanup;
-- non-manifold edge/vertex repair;
-- small-component removal;
-- hole closing;
-- optional isotropic remesh;
-- adaptive QEM decimation;
-- normalized symmetric Hausdorff error to decide how far Auto mode may reduce;
-- optional Manifold3D validation/finalization.
-
-Auto mode is error-driven rather than a universal polycount preset. Manual mode exposes a 500–500000 triangle target in 500-triangle steps and defaults to 5000. For a simple prop such as the current steak test asset, the intended Game-ready range is the low-thousands when fidelity permits.
-
-Current automated coverage is GREEN, but this pipeline still requires real RX 6950 XT quality/performance acceptance before being called hardware-validated.
-
-## Run the desktop app
+## Run the desktop app from source
 
 ```powershell
 npm install
@@ -225,18 +211,16 @@ npm run tauri -- dev
 
 Current startup behavior:
 
-1. The Tauri GUI opens.
-2. The persistent native worker starts automatically.
-3. Runtime health is checked automatically.
-4. Hunyuan3D-2 Mini Shape preloads automatically and the header reports startup/loading/ready state.
-5. Select an image or switch to Mesh mode for standalone cleanup.
-6. Choose output, quality, cleanup preset and optional texture settings.
-7. Generate/process the asset.
-8. The latest successful model is loaded into the center 3D viewer.
+1. the Tauri GUI opens;
+2. the persistent native worker starts automatically;
+3. runtime health is checked;
+4. Hunyuan3D-2 Mini Shape preloads;
+5. select an image or existing mesh;
+6. choose Shape / Texture / Mesh settings;
+7. generate/process the asset;
+8. the latest successful model loads in the 3D viewer.
 
-The first shape or texture generation can download several GB of model weights from Hugging Face.
-
-A dedicated splash that appears immediately and keeps the main window hidden until worker/Shape preload completes is designed and planned next; see `docs/superpowers/plans/2026-09-13-startup-splash-preload.md`.
+The first model use can download several GB of weights from Hugging Face.
 
 ## Worker CLI
 
@@ -267,7 +251,9 @@ Texture generation:
   --mesh .\outputs\model.glb `
   --image .\input.png `
   --output .\outputs\model-textured.glb `
-  --max-faces 40000 `
+  --max-faces 10000 `
+  --style-preset stylized `
+  --style-strength 0.75 `
   --remove-background
 ```
 
@@ -293,12 +279,6 @@ python -m unittest discover -s backends/mesh_processing/tests -v
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
 ```
 
-Production frontend build:
-
-```bash
-npm run build
-```
-
 Windows Tauri compile check:
 
 ```powershell
@@ -313,22 +293,17 @@ Backends are deliberately explicit:
 - `wsl-rocm` — planned
 - `vulkan` — planned / experimental
 
-Selecting an unavailable backend does **not** cause an automatic switch to another backend. This prevents confusing situations where a generation unexpectedly runs on CPU, WSL or a different runtime.
+Selecting an unavailable backend does **not** cause an automatic switch to another backend.
 
 ## Current limitations
 
-- `mesh-cleanup-v2` is implemented and CI-validated, but real RX 6950 XT Game-ready Auto/Manual quality and performance acceptance is still pending.
-- The main GUI currently appears before Shape preload completes; a dedicated startup splash / hidden-main preload flow is designed but not yet implemented.
-- Hunyuan Paint remains substantially more memory-intensive than Shape and is intentionally lazy-loaded.
-- Generation progress is produced by the Python worker, but not every internal third-party operation has granular live progress.
-- Cancellation is modeled in the domain state machine but process cancellation is not yet connected to the UI.
-- The runtime installer is currently a PowerShell setup script; it is not yet integrated into the desktop UI or MSI/NSIS installer.
+- The NSIS package is CI-built but still awaiting real installed-app/runtime acceptance on the RX 6950 XT machine.
+- Fresh-machine installer bootstrap currently requires Python 3.11 x64 and Visual Studio 2022 C++ Build Tools to already be installed.
+- Hunyuan Paint is substantially more memory-intensive than Shape and is intentionally lazy-loaded.
+- Generation progress is worker-driven, but not every internal third-party operation exposes granular live progress.
+- Cancellation is modeled but process cancellation is not yet connected to the UI.
 - WSL2 and Vulkan/TRELLIS execution are not yet implemented.
-- The Hunyuan model/runtime, PyMeshLab and Manifold3D are third-party software with their own license terms. Model weights are not bundled with this repository.
-
-## Why Hunyuan3D-2 Mini first?
-
-Tencent documents the Mini shape pipeline as a 0.6B image-to-shape model. The texture path is substantially more memory-intensive and has native rasterization dependencies, so Img2Model AMD stages geometry and texture separately. On the 16 GB RX 6950 XT, the validated texture profile combines CPU model offload with maximum attention slicing.
+- Hunyuan, TheRock/ROCm, PyMeshLab and Manifold3D are third-party software with their own license terms. Model weights are not bundled.
 
 ## References
 
@@ -342,17 +317,15 @@ Tencent documents the Mini shape pipeline as a 0.6B image-to-shape model. The te
 
 ## Roadmap
 
-1. Native ROCm Hunyuan shape generation — **validated on RX 6950 XT**
-2. Native ROCm/HIP Hunyuan Paint rasterizer + textured GLB — **validated on RX 6950 XT**
-3. `mesh-cleanup-v2` Game-ready repair/remesh + adaptive QEM — **implemented and CI-validated; RX 6950 XT acceptance pending**
-4. Startup splash + hidden-main worker/Shape preload
-5. Optional quality-first low-poly baking pipeline if direct low-poly Paint needs more fidelity
-6. Runtime/model installer inside the UI
-7. Live progress + cancellation
-8. WSL2 ROCm worker
-9. Experimental TRELLIS / Vulkan or ROCm backend
-10. Packaged Windows installer and releases
+1. Native ROCm Hunyuan Shape — **validated on RX 6950 XT**
+2. Native ROCm/HIP Hunyuan Paint — **validated on RX 6950 XT**
+3. Game-ready cleanup + texture target controls — **hardware-accepted core path**
+4. UV foundation + direct atlas replacement + UV transform — **hardware-accepted**
+5. Texture style controls — **hardware-accepted**
+6. Windows NSIS installer + persistent runtime bootstrap — **CI package built; hardware acceptance active**
+7. Pixel-art/texel-density refinements
+8. UV-aware local texture editing
+9. Later game-asset extras: ground/pivot/LOD/collision
+10. WSL2 ROCm and experimental Vulkan/TRELLIS backends
 
-Current checkpoint: [`docs/status/2026-09-13.md`](docs/status/2026-09-13.md).
-
-See also `docs/superpowers/specs/2026-09-13-game-ready-remesh-startup-design.md`, `docs/superpowers/plans/2026-09-13-game-ready-remesh.md`, and `docs/superpowers/plans/2026-09-13-startup-splash-preload.md`.
+Current execution order: [`docs/roadmap/current-priorities.md`](docs/roadmap/current-priorities.md).
