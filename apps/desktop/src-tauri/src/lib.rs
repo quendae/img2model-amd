@@ -1,6 +1,9 @@
 pub mod diagnostics;
+pub mod uv_export;
 pub mod worker;
 pub mod worker_session;
+
+pub use uv_export::save_uv_template_file;
 
 #[cfg(feature = "desktop")]
 use tauri::{ipc::Channel, Manager};
@@ -71,6 +74,12 @@ fn append_diagnostic_log(
         details.as_deref(),
     )
     .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn save_uv_template(path: String, contents: String) -> Result<String, String> {
+    save_uv_template_file(std::path::Path::new(&path), &contents)
 }
 
 #[cfg(feature = "desktop")]
@@ -241,6 +250,7 @@ pub fn run() {
             get_system_diagnostics,
             diagnostic_log_path,
             append_diagnostic_log,
+            save_uv_template,
             hunyuan_health,
             hunyuan_texture_health,
             preload_hunyuan_shape,
