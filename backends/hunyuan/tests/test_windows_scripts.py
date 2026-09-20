@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -5,8 +6,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 SETUP = ROOT / "scripts" / "setup" / "windows-native-rocm.ps1"
 TEXTURE_SETUP = ROOT / "scripts" / "setup" / "windows-hunyuan-texture.ps1"
+INSTALLER_SETUP = ROOT / "scripts" / "setup" / "install-img2model-runtime.ps1"
+PREPARE_INSTALLER = ROOT / "scripts" / "setup" / "prepare-installer-resources.mjs"
 SMOKE = ROOT / "scripts" / "smoke" / "windows-native-rocm.ps1"
 BASE_REQUIREMENTS = ROOT / "backends" / "hunyuan" / "requirements-base.txt"
+DESKTOP_PACKAGE = ROOT / "apps" / "desktop" / "package.json"
+TAURI_CONFIG = ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json"
+INSTALLER_HOOKS = ROOT / "apps" / "desktop" / "src-tauri" / "windows" / "installer-hooks.nsh"
+INSTALLER_WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
 
 
 class WindowsScriptRegressionTests(unittest.TestCase):
@@ -125,6 +132,64 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn('$env:ROCM_HOME = $RocmDevelRoot', text)
         self.assertIn('$env:CPATH', text)
         self.assertIn('$env:CPLUS_INCLUDE_PATH', text)
+
+    def test_installer_payload_staging_is_wired_into_desktop_package(self) -> None:
+        package = json.loads(DESKTOP_PACKAGE.read_text(encoding="utf-8"))
+        self.assertEqual(
+            package["scripts"]["prepare-installer"],
+            "node ../../scripts/setup/prepare-installer-resources.mjs",
+        )
+        text = PREPARE_INSTALLER.read_text(encoding="utf-8")
+        self.assertIn("installer-payload", text)
+        self.assertIn("backends/hunyuan", text)
+        self.assertIn("backends/mesh_processing", text)
+        self.assertIn("scripts/setup", text)
+        for forbidden in (".runtime", "models/cache", "outputs"):
+            self.assertNotIn(forbidden, text)
+
+    def test_installer_runtime_setup_uses_bundled_payload_and_checks_prerequisites(self) -> None:
+        text = INSTALLER_SETUP.read_text(encoding="utf-8")
+        self.assertIn("PayloadRoot", text)
+        self.assertIn("Python 3.11 x64", text)
+        self.assertIn("C++ build tools", text)
+        self.assertIn("installer-runtime.log", text)
+        self.assertLess(text.index("windows-native-rocm.ps1"), text.index("windows-hunyuan-texture.ps1"))
+        self.assertIn("health --json", text)
+        self.assertIn("texture-health --json", text)
+
+    def test_existing_setup_scripts_accept_payload_root_without_breaking_repo_mode(self) -> None:
+        native = SETUP.read_text(encoding="utf-8")
+        texture = TEXTURE_SETUP.read_text(encoding="utf-8")
+        self.assertIn("PayloadRoot", native)
+        self.assertIn("PayloadRoot", texture)
+        self.assertIn("RepoRoot", native)
+        self.assertIn("RepoRoot", texture)
+
+    def test_tauri_config_builds_current_user_nsis_with_installer_payload(self) -> None:
+        config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
+        bundle = config["bundle"]
+        self.assertEqual(bundle["targets"], ["nsis"])
+        self.assertIn("resources/installer-payload", " ".join(bundle["resources"]))
+        nsis = bundle["windows"]["nsis"]
+        self.assertEqual(nsis["installMode"], "currentUser")
+        self.assertEqual(nsis["installerHooks"], "./windows/installer-hooks.nsh")
+
+    def test_nsis_postinstall_runs_runtime_bootstrap_and_checks_exit_code(self) -> None:
+        text = INSTALLER_HOOKS.read_text(encoding="utf-8")
+        self.assertIn("NSIS_HOOK_POSTINSTALL", text)
+        self.assertIn("install-img2model-runtime.ps1", text)
+        self.assertIn("ExecWait", text)
+        self.assertIn("$INSTDIR", text)
+        self.assertIn("Abort", text)
+        self.assertNotIn("NSIS_HOOK_POSTUNINSTALL", text)
+
+    def test_windows_installer_workflow_builds_and_uploads_nsis_setup(self) -> None:
+        text = INSTALLER_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("windows-latest", text)
+        self.assertIn("prepare-installer", text)
+        self.assertIn("tauri build --bundles nsis", text)
+        self.assertIn("upload-artifact", text)
+        self.assertIn("*-setup.exe", text)
 
 
 if __name__ == "__main__":
