@@ -4,7 +4,9 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { writeDiagnosticLog } from '../lib/diagnosticLog';
+import { exportUvTemplate } from '../lib/uvExport';
 import { modelFormatFromUrl } from './modelPreview';
+import { buildUvTemplateSvg, collectUvLayout, type UvLayout } from './uvTemplate';
 
 export interface ModelComparison {
   beforeUrl: string;
@@ -13,7 +15,7 @@ export interface ModelComparison {
   afterTriangles?: number;
 }
 
-type InspectionMode = 'solid' | 'wireframe' | 'solid-wire';
+type InspectionMode = 'solid' | 'wireframe' | 'solid-wire' | 'uv-checker';
 
 interface ModelViewerProps {
   modelUrl: string | null;
@@ -24,6 +26,8 @@ interface ModelViewerProps {
 }
 
 const WIRE_OVERLAY_KEY = 'img2modelWireOverlay';
+const ORIGINAL_MATERIAL_KEY = 'img2modelOriginalMaterial';
+const UV_CHECKER_MATERIAL_KEY = 'img2modelUvCheckerMaterial';
 
 function setMaterialWireframe(material: THREE.Material, enabled: boolean) {
   const candidate = material as THREE.Material & { wireframe?: boolean };
@@ -57,11 +61,64 @@ function ensureWireOverlay(mesh: THREE.Mesh): THREE.LineSegments {
   return overlay;
 }
 
+function originalMaterialFor(mesh: THREE.Mesh): THREE.Material | THREE.Material[] {
+  if (mesh.userData[ORIGINAL_MATERIAL_KEY] === undefined) {
+    mesh.userData[ORIGINAL_MATERIAL_KEY] = mesh.material;
+  }
+  return mesh.userData[ORIGINAL_MATERIAL_KEY] as THREE.Material | THREE.Material[];
+}
+
+function restoreOriginalMaterial(mesh: THREE.Mesh) {
+  const original = mesh.userData[ORIGINAL_MATERIAL_KEY] as THREE.Material | THREE.Material[] | undefined;
+  if (original !== undefined) mesh.material = original;
+}
+
+function uvCheckerMaterialFor(mesh: THREE.Mesh): THREE.ShaderMaterial {
+  const existing = mesh.userData[UV_CHECKER_MATERIAL_KEY] as THREE.ShaderMaterial | undefined;
+  if (existing) return existing;
+
+  const material = new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    toneMapped: false,
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      void main() {
+        vec2 grid = vUv * 16.0;
+        float parity = mod(floor(grid.x) + floor(grid.y), 2.0);
+        vec3 darkCell = vec3(0.12, 0.16, 0.22);
+        vec3 lightCell = vec3(0.78, 0.84, 0.91);
+        vec3 color = mix(darkCell, lightCell, parity);
+        vec2 cell = fract(grid);
+        float distanceToLine = min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y));
+        float gridLine = 1.0 - smoothstep(0.025, 0.055, distanceToLine);
+        color = mix(color, vec3(0.92, 0.27, 0.22), gridLine * 0.82);
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `,
+  });
+  mesh.userData[UV_CHECKER_MATERIAL_KEY] = material;
+  return material;
+}
+
+function meshHasUv(mesh: THREE.Mesh): boolean {
+  const geometry = mesh.geometry as THREE.BufferGeometry;
+  return typeof geometry.getAttribute === 'function' && Boolean(geometry.getAttribute('uv'));
+}
+
 function applyInspectionMode(root: THREE.Object3D, mode: InspectionMode) {
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
 
-    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    const original = originalMaterialFor(object);
+    restoreOriginalMaterial(object);
+    const materials = Array.isArray(original) ? original : [original];
     materials.forEach((material) => setMaterialWireframe(material, mode === 'wireframe'));
 
     const existingOverlay = wireOverlayFor(object);
@@ -70,27 +127,60 @@ function applyInspectionMode(root: THREE.Object3D, mode: InspectionMode) {
     } else if (existingOverlay) {
       existingOverlay.visible = false;
     }
+
+    if (mode === 'uv-checker' && meshHasUv(object)) {
+      object.material = uvCheckerMaterialFor(object);
+    }
   });
 }
 
+function disposeMaterialValue(value: THREE.Material | THREE.Material[] | undefined, disposed: Set<THREE.Material>) {
+  if (!value) return;
+  const materials = Array.isArray(value) ? value : [value];
+  for (const material of materials) {
+    if (disposed.has(material)) continue;
+    disposed.add(material);
+    material.dispose();
+  }
+}
+
 function disposeLoadedRoot(root: THREE.Object3D) {
+  const disposedMaterials = new Set<THREE.Material>();
   root.traverse((object) => {
     if (object instanceof THREE.Mesh) {
       object.geometry?.dispose();
-      const materials = Array.isArray(object.material) ? object.material : [object.material];
-      materials.forEach((material) => material?.dispose());
+      disposeMaterialValue(object.material as THREE.Material | THREE.Material[], disposedMaterials);
+      disposeMaterialValue(
+        object.userData[ORIGINAL_MATERIAL_KEY] as THREE.Material | THREE.Material[] | undefined,
+        disposedMaterials,
+      );
+      disposeMaterialValue(
+        object.userData[UV_CHECKER_MATERIAL_KEY] as THREE.Material | undefined,
+        disposedMaterials,
+      );
       return;
     }
 
     if (object instanceof THREE.LineSegments && object.userData?.[WIRE_OVERLAY_KEY] === true) {
       object.geometry?.dispose();
-      if (Array.isArray(object.material)) {
-        object.material.forEach((material) => material?.dispose());
-      } else {
-        object.material?.dispose();
-      }
+      disposeMaterialValue(object.material as THREE.Material | THREE.Material[], disposedMaterials);
     }
   });
+}
+
+function uvTemplateFilename(modelUrl: string | null): string {
+  if (!modelUrl) return 'model-uv-template.svg';
+  const withoutQuery = modelUrl.split(/[?#]/, 1)[0];
+  const lastSegment = withoutQuery.split(/[\\/]/).filter(Boolean).at(-1) ?? 'model';
+  const decoded = (() => {
+    try {
+      return decodeURIComponent(lastSegment);
+    } catch {
+      return lastSegment;
+    }
+  })();
+  const stem = decoded.replace(/\.[^.]+$/, '') || 'model';
+  return `${stem}-uv-template.svg`;
 }
 
 export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabel }: ModelViewerProps) {
@@ -99,6 +189,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comparisonSide, setComparisonSide] = useState<'before' | 'after'>('after');
   const [inspectionMode, setInspectionMode] = useState<InspectionMode>('solid');
+  const [uvLayout, setUvLayout] = useState<UvLayout | null>(null);
+  const [uvExportStatus, setUvExportStatus] = useState<string | null>(null);
 
   useEffect(() => {
     setComparisonSide('after');
@@ -113,6 +205,39 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       ? comparison.beforeUrl
       : comparison.afterUrl
     : modelUrl;
+
+  useEffect(() => {
+    setUvLayout(null);
+    setUvExportStatus(null);
+  }, [activeModelUrl]);
+
+  const handleExportUvTemplate = async () => {
+    const root = loadedRootRef.current;
+    if (!root) return;
+    const layout = collectUvLayout(root);
+    if (layout.triangleCount === 0) {
+      setUvExportStatus('No UV coordinates found on this model.');
+      return;
+    }
+
+    try {
+      const svg = buildUvTemplateSvg(layout, { resolution: 2048 });
+      const savedPath = await exportUvTemplate(svg, uvTemplateFilename(activeModelUrl));
+      if (!savedPath) return;
+      setUvExportStatus('UV template saved.');
+      void writeDiagnosticLog('info', 'uv', 'UV template exported.', {
+        path: savedPath,
+        resolution: 2048,
+        triangles: layout.triangleCount,
+        materials: layout.materialCount,
+        textures: layout.textureCount,
+      });
+    } catch (error) {
+      const message = `UV export failed: ${String(error)}`;
+      setUvExportStatus(message);
+      void writeDiagnosticLog('error', 'uv', message, { activeModelUrl });
+    }
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -188,6 +313,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       loadedRoot = root;
       loadedRootRef.current = root;
       scene.add(root);
+      setUvLayout(collectUvLayout(root));
 
       const box = new THREE.Box3().setFromObject(root);
       const size = box.getSize(new THREE.Vector3());
@@ -259,6 +385,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     };
   }, [activeModelUrl, busy]);
 
+  const uvAvailable = Boolean(uvLayout && uvLayout.triangleCount > 0);
+
   return (
     <section className="viewer-shell" aria-label="3D model preview">
       <div ref={hostRef} className="viewer-canvas" />
@@ -289,7 +417,36 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
           >
             Solid + Wire
           </button>
+          <button
+            type="button"
+            aria-pressed={inspectionMode === 'uv-checker'}
+            className={inspectionMode === 'uv-checker' ? 'active' : ''}
+            disabled={!uvAvailable}
+            title={uvAvailable ? 'Inspect UV scale, seams and stretching with a procedural checker.' : 'This mesh has no UV coordinates.'}
+            onClick={() => setInspectionMode('uv-checker')}
+          >
+            UV Checker
+          </button>
+          <span className="viewer-inspection-divider" aria-hidden="true" />
+          <button
+            type="button"
+            className="viewer-export-uv"
+            disabled={!uvAvailable}
+            title="Export a 2048×2048 SVG UV template with triangle guides, island boundaries and metadata."
+            onClick={() => void handleExportUvTemplate()}
+          >
+            Export UV template
+          </button>
         </div>
+      )}
+
+      {uvAvailable && activeModelUrl && !busy && uvLayout && (
+        <div className="viewer-uv-meta" aria-label="UV metadata">
+          UV · {uvLayout.triangleCount.toLocaleString()} tris · {uvLayout.uvMeshCount}/{uvLayout.meshCount} meshes · {uvLayout.materialCount} mat · {uvLayout.textureCount} tex
+        </div>
+      )}
+      {uvExportStatus && activeModelUrl && !busy && (
+        <div className="viewer-uv-export-status" role="status">{uvExportStatus}</div>
       )}
 
       {comparison && (
