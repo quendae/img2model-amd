@@ -1,0 +1,29 @@
+name: Apply texture style compile follow-up
+
+on:
+  push:
+    branches:
+      - feat/game-ready-mesh-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]' && contains(github.event.head_commit.message, 'stage texture style compile follow-up')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply compile follow-up
+        run: python scripts/_apply_texture_style_compile_followup.py
+      - name: Commit production changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/_apply-texture-style-compile-followup.yml scripts/_apply_texture_style_compile_followup.py
+          git add apps/desktop/src/components/GenerationPanel.tsx apps/desktop/src-tauri/src/worker.rs apps/desktop/src-tauri/src/worker_session.rs
+          git commit -m "fix: keep texture style contract backward compatible"
+          git push origin HEAD:feat/game-ready-mesh-cleanup
