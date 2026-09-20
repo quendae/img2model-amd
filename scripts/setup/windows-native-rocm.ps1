@@ -28,8 +28,10 @@ $RuntimeDir = [System.IO.Path]::GetFullPath($RuntimeDir)
 $PythonExe = Join-Path $RuntimeDir "Scripts\python.exe"
 $WorkerSource = Join-Path $RepoRoot "backends\hunyuan\worker.py"
 $WorkerBaseSource = Join-Path $RepoRoot "backends\hunyuan\worker_base.py"
+$TextureStylizerSource = Join-Path $RepoRoot "backends\hunyuan\texture_stylizer.py"
 $InstalledWorker = Join-Path $RuntimeDir "worker.py"
 $InstalledWorkerBase = Join-Path $RuntimeDir "worker_base.py"
+$InstalledTextureStylizer = Join-Path $RuntimeDir "texture_stylizer.py"
 $MeshProcessingSource = Join-Path $RepoRoot "backends\mesh_processing"
 $InstalledBackendsRoot = Join-Path $RuntimeDir "backends"
 $InstalledMeshProcessing = Join-Path $InstalledBackendsRoot "mesh_processing"
@@ -111,6 +113,7 @@ if ($VerifyOnly) {
 Write-Host "[6/7] Installing the Img2Model worker into the persistent runtime..."
 Copy-Item -Force $WorkerSource $InstalledWorker
 Copy-Item -Force $WorkerBaseSource $InstalledWorkerBase
+Copy-Item -Force $TextureStylizerSource $InstalledTextureStylizer
 New-Item -ItemType Directory -Force -Path $InstalledBackendsRoot | Out-Null
 Set-Content -Path (Join-Path $InstalledBackendsRoot "__init__.py") -Value "" -Encoding utf8
 if (Test-Path $InstalledMeshProcessing) {
