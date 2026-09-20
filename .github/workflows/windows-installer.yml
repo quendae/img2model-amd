@@ -1,0 +1,43 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  nsis:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Prepare installer payload
+        run: npm --workspace @img2model/desktop run prepare-installer
+
+      - name: Validate installer PowerShell
+        shell: powershell
+        run: |
+          [void][scriptblock]::Create((Get-Content scripts/setup/install-img2model-runtime.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/setup/windows-hunyuan-texture.ps1 -Raw))
+
+      - name: Build NSIS setup
+        shell: powershell
+        run: |
+          Set-Location apps/desktop
+          npx tauri build --bundles nsis
+
+      - name: Upload setup executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Img2Model-AMD-Windows-Setup
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
