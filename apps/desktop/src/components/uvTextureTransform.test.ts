@@ -10,6 +10,7 @@ describe('direct UV texture transform', () => {
   it('scales and rotates the atlas around its center', () => {
     const texture = new THREE.Texture();
     const transform = normalizeUvTextureTransform({ scalePercent: 200, rotationDegrees: 90 });
+    const versionBefore = texture.version;
 
     applyUvTextureTransform(texture, transform);
 
@@ -18,7 +19,7 @@ describe('direct UV texture transform', () => {
     expect(texture.repeat.x).toBeCloseTo(0.5);
     expect(texture.repeat.y).toBeCloseTo(0.5);
     expect(texture.rotation).toBeCloseTo(Math.PI / 2);
-    expect(texture.needsUpdate).toBe(true);
+    expect(texture.version).toBeGreaterThan(versionBefore);
   });
 
   it('clamps scale and normalizes rotation to the supported UI range', () => {
