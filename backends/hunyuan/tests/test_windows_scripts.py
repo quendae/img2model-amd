@@ -8,6 +8,7 @@ SETUP = ROOT / "scripts" / "setup" / "windows-native-rocm.ps1"
 TEXTURE_SETUP = ROOT / "scripts" / "setup" / "windows-hunyuan-texture.ps1"
 INSTALLER_SETUP = ROOT / "scripts" / "setup" / "install-img2model-runtime.ps1"
 PREPARE_INSTALLER = ROOT / "scripts" / "setup" / "prepare-installer-resources.mjs"
+SYNC_DEV_WORKER = ROOT / "scripts" / "setup" / "sync-dev-worker.mjs"
 SMOKE = ROOT / "scripts" / "smoke" / "windows-native-rocm.ps1"
 BASE_REQUIREMENTS = ROOT / "backends" / "hunyuan" / "requirements-base.txt"
 DESKTOP_PACKAGE = ROOT / "apps" / "desktop" / "package.json"
@@ -154,16 +155,28 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn("C++ build tools", text)
         self.assertIn("installer-runtime.log", text)
         self.assertLess(text.index("windows-native-rocm.ps1"), text.index("windows-hunyuan-texture.ps1"))
-        self.assertIn("health --json", text)
-        self.assertIn("texture-health --json", text)
+        self.assertIn('Assert-Health "health"', text)
+        self.assertIn('Assert-Health "texture-health"', text)
 
-    def test_existing_setup_scripts_accept_payload_root_without_breaking_repo_mode(self) -> None:
+    def test_installer_payload_preserves_repo_layout_for_validated_setup_scripts(self) -> None:
         native = SETUP.read_text(encoding="utf-8")
         texture = TEXTURE_SETUP.read_text(encoding="utf-8")
-        self.assertIn("PayloadRoot", native)
-        self.assertIn("PayloadRoot", texture)
+        staging = PREPARE_INSTALLER.read_text(encoding="utf-8")
         self.assertIn("RepoRoot", native)
         self.assertIn("RepoRoot", texture)
+        self.assertIn("scripts/setup/windows-native-rocm.ps1", staging)
+        self.assertIn("scripts/setup/windows-hunyuan-texture.ps1", staging)
+        self.assertIn("backends/hunyuan/worker.py", staging)
+
+    def test_packaged_and_dev_runtimes_copy_texture_stylizer(self) -> None:
+        native = SETUP.read_text(encoding="utf-8")
+        sync = SYNC_DEV_WORKER.read_text(encoding="utf-8")
+        self.assertIn("texture_stylizer.py", native)
+        self.assertIn("InstalledTextureStylizer", native)
+        self.assertIn("Copy-Item -Force $TextureStylizerSource $InstalledTextureStylizer", native)
+        self.assertIn("texture_stylizer.py", sync)
+        self.assertIn("installedTextureStylizer", sync)
+        self.assertIn("copyFile(textureStylizerSource, installedTextureStylizer)", sync)
 
     def test_tauri_config_builds_current_user_nsis_with_installer_payload(self) -> None:
         config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
