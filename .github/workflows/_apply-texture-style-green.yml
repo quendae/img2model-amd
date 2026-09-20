@@ -1,0 +1,29 @@
+name: Apply texture style green patch
+
+on:
+  push:
+    branches:
+      - feat/game-ready-mesh-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]' && contains(github.event.head_commit.message, 'stage texture style green patch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply bounded Phase 3 Slice B patch
+        run: python scripts/_apply_texture_style_green.py
+      - name: Commit production changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/_apply-texture-style-green.yml scripts/_apply_texture_style_green.py
+          git add apps/desktop/src apps/desktop/src-tauri/src backends/hunyuan/worker.py
+          git commit -m "feat: add texture style preset contract"
+          git push origin HEAD:feat/game-ready-mesh-cleanup
