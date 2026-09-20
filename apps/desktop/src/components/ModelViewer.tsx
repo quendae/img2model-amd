@@ -10,6 +10,12 @@ import { exportUvTemplate } from '../lib/uvExport';
 import { modelFormatFromUrl } from './modelPreview';
 import { buildUvTemplateSvg, collectUvLayout, type UvLayout } from './uvTemplate';
 import { validateUvTextureDimensions } from './uvTexture';
+import {
+  DEFAULT_UV_TEXTURE_TRANSFORM,
+  applyUvTextureTransform,
+  normalizeUvTextureTransform,
+  type UvTextureTransform,
+} from './uvTextureTransform';
 
 export interface ModelComparison {
   beforeUrl: string;
@@ -338,6 +344,9 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const [uvTextureStatus, setUvTextureStatus] = useState<string | null>(null);
   const [uvTextureInfo, setUvTextureInfo] = useState<UvTextureInfo | null>(null);
   const [uvTextureBusy, setUvTextureBusy] = useState(false);
+  const [uvTextureTransform, setUvTextureTransform] = useState<UvTextureTransform>(() => ({
+    ...DEFAULT_UV_TEXTURE_TRANSFORM,
+  }));
 
   useEffect(() => {
     setComparisonSide('after');
@@ -362,12 +371,26 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     setUvTextureStatus(null);
     setUvTextureInfo(null);
     setUvTextureBusy(false);
+    setUvTextureTransform({ ...DEFAULT_UV_TEXTURE_TRANSFORM });
   }, [activeModelUrl]);
+
+  useEffect(() => {
+    const texture = importedTextureRef.current;
+    if (texture) applyUvTextureTransform(texture, uvTextureTransform);
+  }, [uvTextureTransform]);
 
   useEffect(() => () => {
     importedTextureRef.current?.dispose();
     importedTextureRef.current = null;
   }, []);
+
+  const updateUvTextureTransform = (patch: Partial<UvTextureTransform>) => {
+    setUvTextureTransform((current) => normalizeUvTextureTransform({ ...current, ...patch }));
+  };
+
+  const resetUvTextureTransform = () => {
+    setUvTextureTransform({ ...DEFAULT_UV_TEXTURE_TRANSFORM });
+  };
 
   const handleExportUvTemplate = async () => {
     const root = loadedRootRef.current;
@@ -421,7 +444,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       texture.wrapS = THREE.ClampToEdgeWrapping;
       texture.wrapT = THREE.ClampToEdgeWrapping;
       texture.name = inputFilename(path);
-      texture.needsUpdate = true;
+      const resetTransform = { ...DEFAULT_UV_TEXTURE_TRANSFORM };
+      applyUvTextureTransform(texture, resetTransform);
 
       const applied = applyUvTexture(root, texture);
       if (applied.materialCount === 0) {
@@ -434,6 +458,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       importedTextureRef.current = texture;
       texture = null;
       previous?.dispose();
+      setUvTextureTransform(resetTransform);
       setUvTextureInfo({
         path,
         name: inputFilename(path),
@@ -457,6 +482,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         meshCount: applied.meshCount,
         materialCount: applied.materialCount,
         warning: validation.warning,
+        textureTransform: resetTransform,
       });
     } catch (error) {
       texture?.dispose();
@@ -510,6 +536,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         texture: uvTextureInfo.path,
         width: uvTextureInfo.width,
         height: uvTextureInfo.height,
+        textureTransform: uvTextureTransform,
         bytes: exported.byteLength,
       });
     } catch (error) {
@@ -750,6 +777,53 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
               {uvTextureInfo.name} · {uvTextureInfo.width}×{uvTextureInfo.height}
             </span>
           )}
+        </div>
+      )}
+
+      {uvTextureInfo && activeModelUrl && !busy && (
+        <div className="viewer-uv-transform" aria-label="UV Transform">
+          <div className="viewer-uv-transform-heading">
+            <strong>UV Transform</strong>
+            <button
+              type="button"
+              disabled={uvTextureBusy}
+              onClick={resetUvTextureTransform}
+            >
+              Reset
+            </button>
+          </div>
+          <label>
+            <span>
+              Scale
+              <output>{Math.round(uvTextureTransform.scalePercent)}%</output>
+            </span>
+            <input
+              type="range"
+              min="50"
+              max="200"
+              step="1"
+              value={uvTextureTransform.scalePercent}
+              disabled={uvTextureBusy}
+              aria-label="UV texture scale"
+              onChange={(event) => updateUvTextureTransform({ scalePercent: Number(event.currentTarget.value) })}
+            />
+          </label>
+          <label>
+            <span>
+              Rotation
+              <output>{Math.round(uvTextureTransform.rotationDegrees)}°</output>
+            </span>
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              step="1"
+              value={uvTextureTransform.rotationDegrees}
+              disabled={uvTextureBusy}
+              aria-label="UV texture rotation"
+              onChange={(event) => updateUvTextureTransform({ rotationDegrees: Number(event.currentTarget.value) })}
+            />
+          </label>
         </div>
       )}
 
