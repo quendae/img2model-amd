@@ -24,6 +24,16 @@ describe('direct UV texture transform', () => {
     expect(texture.version).toBeGreaterThan(versionBefore);
   });
 
+  it('uses nearest sampling without mipmaps for pixel-art textures', () => {
+    const texture = new THREE.Texture();
+
+    applyUvTextureTransform(texture, DEFAULT_UV_TEXTURE_TRANSFORM, 'pixel-art' as any);
+
+    expect(texture.magFilter).toBe(THREE.NearestFilter);
+    expect(texture.minFilter).toBe(THREE.NearestFilter);
+    expect(texture.generateMipmaps).toBe(false);
+  });
+
   it('clamps scale and normalizes rotation to the supported UI range', () => {
     expect(normalizeUvTextureTransform({ scalePercent: 10, rotationDegrees: 270 })).toEqual({
       scalePercent: 50,
