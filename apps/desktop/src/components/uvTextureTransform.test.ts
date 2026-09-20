@@ -7,18 +7,20 @@ import {
 } from './uvTextureTransform';
 
 describe('direct UV texture transform', () => {
-  it('scales and rotates the atlas around its center', () => {
+  it('scales and rotates the atlas around its center with export-friendly offset math', () => {
     const texture = new THREE.Texture();
     const transform = normalizeUvTextureTransform({ scalePercent: 200, rotationDegrees: 90 });
     const versionBefore = texture.version;
 
     applyUvTextureTransform(texture, transform);
 
-    expect(texture.center.x).toBeCloseTo(0.5);
-    expect(texture.center.y).toBeCloseTo(0.5);
+    expect(texture.center.x).toBeCloseTo(0);
+    expect(texture.center.y).toBeCloseTo(0);
     expect(texture.repeat.x).toBeCloseTo(0.5);
     expect(texture.repeat.y).toBeCloseTo(0.5);
     expect(texture.rotation).toBeCloseTo(Math.PI / 2);
+    expect(texture.offset.x).toBeCloseTo(0.25);
+    expect(texture.offset.y).toBeCloseTo(0.75);
     expect(texture.version).toBeGreaterThan(versionBefore);
   });
 
