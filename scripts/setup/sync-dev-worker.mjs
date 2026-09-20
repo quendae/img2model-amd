@@ -34,13 +34,15 @@ export async function syncDevRuntime({
 
   const workerSource = join(repoRoot, 'backends', 'hunyuan', 'worker.py');
   const workerBaseSource = join(repoRoot, 'backends', 'hunyuan', 'worker_base.py');
+  const textureStylizerSource = join(repoRoot, 'backends', 'hunyuan', 'texture_stylizer.py');
   const meshProcessingSource = join(repoRoot, 'backends', 'mesh_processing');
   const installedWorker = join(runtimeDir, 'worker.py');
   const installedWorkerBase = join(runtimeDir, 'worker_base.py');
+  const installedTextureStylizer = join(runtimeDir, 'texture_stylizer.py');
   const installedBackendsRoot = join(runtimeDir, 'backends');
   const installedMeshProcessing = join(installedBackendsRoot, 'mesh_processing');
 
-  for (const source of [workerSource, workerBaseSource, meshProcessingSource]) {
+  for (const source of [workerSource, workerBaseSource, textureStylizerSource, meshProcessingSource]) {
     if (!(await exists(source))) {
       throw new Error(`Development runtime sync source is missing: ${source}`);
     }
@@ -48,6 +50,7 @@ export async function syncDevRuntime({
 
   await copyFile(workerSource, installedWorker);
   await copyFile(workerBaseSource, installedWorkerBase);
+  await copyFile(textureStylizerSource, installedTextureStylizer);
   await mkdir(installedBackendsRoot, { recursive: true });
   await writeFile(join(installedBackendsRoot, '__init__.py'), '', 'utf8');
   await rm(installedMeshProcessing, { recursive: true, force: true });
@@ -57,6 +60,7 @@ export async function syncDevRuntime({
     synced: true,
     runtimeDir,
     worker: installedWorker,
+    textureStylizer: installedTextureStylizer,
     meshProcessing: installedMeshProcessing,
   };
 }
@@ -67,6 +71,7 @@ if (launchedDirectly) {
     const result = await syncDevRuntime();
     if (result.synced) {
       console.log(`[Img2Model AMD] Synced development worker: ${result.worker}`);
+      console.log(`[Img2Model AMD] Synced texture stylizer: ${result.textureStylizer}`);
       console.log(`[Img2Model AMD] Synced mesh backend: ${result.meshProcessing}`);
     } else if (result.reason === 'runtime-missing') {
       console.log(`[Img2Model AMD] Native ROCm runtime not installed yet; dev sync skipped: ${result.runtimeDir}`);
