@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run sync-dev-runtime && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run prepare-installer && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -31,6 +31,16 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": ["nsis"],
+    "resources": [
+      "resources/installer-payload/**/*"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/installer-hooks.nsh",
+        "languages": ["English", "Polish"]
+      }
+    }
   }
 }
