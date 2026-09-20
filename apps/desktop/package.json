@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest",
     "tauri": "tauri",
-    "sync-dev-runtime": "node ../../scripts/setup/sync-dev-worker.mjs"
+    "sync-dev-runtime": "node ../../scripts/setup/sync-dev-worker.mjs",
+    "prepare-installer": "node ../../scripts/setup/prepare-installer-resources.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
