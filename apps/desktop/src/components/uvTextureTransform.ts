@@ -35,10 +35,22 @@ export function normalizeUvTextureTransform(transform: UvTextureTransform): UvTe
 export function applyUvTextureTransform(texture: THREE.Texture, transform: UvTextureTransform): UvTextureTransform {
   const normalized = normalizeUvTextureTransform(transform);
   const repeat = 100 / normalized.scalePercent;
+  const rotation = THREE.MathUtils.degToRad(normalized.rotationDegrees);
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const center = 0.5;
 
-  texture.center.set(0.5, 0.5);
+  // KHR_texture_transform does not carry Three.js' `center` property. Encode the
+  // same centered transform as an origin-based offset + scale + rotation so the
+  // live preview and exported GLB use the same mapping.
+  const offsetX = center - repeat * (cos * center + sin * center);
+  const offsetY = center - repeat * (-sin * center + cos * center);
+
+  texture.center.set(0, 0);
+  texture.offset.set(offsetX, offsetY);
   texture.repeat.set(repeat, repeat);
-  texture.rotation = THREE.MathUtils.degToRad(normalized.rotationDegrees);
+  texture.rotation = rotation;
+  texture.updateMatrix();
   texture.needsUpdate = true;
 
   return normalized;
