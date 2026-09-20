@@ -28,7 +28,7 @@ interface GenerationPanelProps {
   outputMode: ShapeOutputMode;
   profile: GenerationOptions['profile'];
   textureProfile: TextureProfile;
-  textureStylePreset: TextureStylePreset;
+  textureStylePreset?: TextureStylePreset;
   textureEngine: TextureEngineId;
   textureMeshPath: string | null;
   textureTargetTriangles?: number;
@@ -49,7 +49,7 @@ interface GenerationPanelProps {
   onShapeOutputModeChange: (mode: ShapeOutputMode) => void;
   onProfileChange: (profile: GenerationOptions['profile']) => void;
   onTextureProfileChange: (profile: TextureProfile) => void;
-  onTextureStylePresetChange: (style: TextureStylePreset) => void;
+  onTextureStylePresetChange?: (style: TextureStylePreset) => void;
   onTextureTargetTrianglesChange?: (triangles: number) => void;
   onCleanupPresetChange?: (preset: CleanupPreset) => void;
   onCleanupOverridesChange?: (overrides: CleanupAdvancedOverrides) => void;
@@ -130,7 +130,7 @@ export function GenerationPanel({
   outputMode,
   profile,
   textureProfile,
-  textureStylePreset,
+  textureStylePreset = 'match-source',
   textureEngine,
   textureMeshPath,
   textureTargetTriangles = DEFAULT_TEXTURE_TARGET_TRIANGLES,
@@ -151,7 +151,7 @@ export function GenerationPanel({
   onShapeOutputModeChange,
   onProfileChange,
   onTextureProfileChange,
-  onTextureStylePresetChange,
+  onTextureStylePresetChange = () => {},
   onTextureTargetTrianglesChange = () => {},
   onCleanupPresetChange = () => {},
   onCleanupOverridesChange = () => {},
