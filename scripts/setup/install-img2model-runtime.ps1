@@ -2,7 +2,8 @@ param(
     [string]$PayloadRoot = "",
     [ValidateSet("stable", "nightly")]
     [string]$Channel = "stable",
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [switch]$ForceRepair
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +27,14 @@ $NativeSetup = Join-Path $PayloadRoot "scripts\setup\windows-native-rocm.ps1"
 $TextureSetup = Join-Path $PayloadRoot "scripts\setup\windows-hunyuan-texture.ps1"
 $PythonExe = Join-Path $RuntimeDir "Scripts\python.exe"
 $InstalledWorker = Join-Path $RuntimeDir "worker.py"
+$InstalledWorkerBase = Join-Path $RuntimeDir "worker_base.py"
+$InstalledTextureStylizer = Join-Path $RuntimeDir "texture_stylizer.py"
+$InstalledBackendsRoot = Join-Path $RuntimeDir "backends"
+$InstalledMeshProcessing = Join-Path $InstalledBackendsRoot "mesh_processing"
+$WorkerSource = Join-Path $PayloadRoot "backends\hunyuan\worker.py"
+$WorkerBaseSource = Join-Path $PayloadRoot "backends\hunyuan\worker_base.py"
+$TextureStylizerSource = Join-Path $PayloadRoot "backends\hunyuan\texture_stylizer.py"
+$MeshProcessingSource = Join-Path $PayloadRoot "backends\mesh_processing"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
@@ -33,6 +42,74 @@ function Assert-File([string]$Path, [string]$Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Label was not found in the installer payload: $Path"
     }
+}
+
+function Test-WorkerHealth([string]$CommandName) {
+    if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+    if (-not (Test-Path -LiteralPath $InstalledWorker -PathType Leaf)) { return $false }
+
+    try {
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $Lines = @(& $PythonExe $InstalledWorker $CommandName --json 2>$null)
+            $ExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+        }
+        if ($ExitCode -ne 0) { return $false }
+        $JsonLine = $Lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1
+        if ([string]::IsNullOrWhiteSpace([string]$JsonLine)) { return $false }
+        $Result = $JsonLine | ConvertFrom-Json
+        return [bool]$Result.ok
+    } catch {
+        return $false
+    }
+}
+
+function Test-ExistingRuntimeHealth {
+    if (-not (Test-WorkerHealth "health")) { return $false }
+    if (-not (Test-WorkerHealth "texture-health")) { return $false }
+
+    try {
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & $PythonExe -c "import pymeshlab, manifold3d" 2>$null
+            $DependencyExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+        }
+        return $DependencyExitCode -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Sync-RuntimeSources {
+    Assert-File $WorkerSource "Bundled Img2Model worker"
+    Assert-File $WorkerBaseSource "Bundled Img2Model worker base"
+    Assert-File $TextureStylizerSource "Bundled texture stylizer"
+    if (-not (Test-Path -LiteralPath $MeshProcessingSource -PathType Container)) {
+        throw "Bundled mesh processing backend was not found: $MeshProcessingSource"
+    }
+
+    Copy-Item -Force $WorkerSource $InstalledWorker
+    Copy-Item -Force $WorkerBaseSource $InstalledWorkerBase
+    Copy-Item -Force $TextureStylizerSource $InstalledTextureStylizer
+    New-Item -ItemType Directory -Force -Path $InstalledBackendsRoot | Out-Null
+    Set-Content -Path (Join-Path $InstalledBackendsRoot "__init__.py") -Value "" -Encoding utf8
+    if (Test-Path -LiteralPath $InstalledMeshProcessing) {
+        Remove-Item -Recurse -Force $InstalledMeshProcessing
+    }
+    Copy-Item -Recurse -Force $MeshProcessingSource $InstalledMeshProcessing
+}
+
+function Persist-RuntimeEnvironment {
+    $env:IMG2MODEL_PYTHON = $PythonExe
+    $env:IMG2MODEL_WORKER = $InstalledWorker
+    [Environment]::SetEnvironmentVariable("IMG2MODEL_PYTHON", $PythonExe, "User")
+    [Environment]::SetEnvironmentVariable("IMG2MODEL_WORKER", $InstalledWorker, "User")
 }
 
 function Resolve-VsDevCmd {
@@ -60,6 +137,9 @@ function Resolve-VsDevCmd {
 function Invoke-TextureSetup([string]$VsDevCmd) {
     if ([string]::IsNullOrWhiteSpace($VsDevCmd)) {
         & $TextureSetup -PythonExe $PythonExe -RuntimeDir $RuntimeDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "Hunyuan texture setup failed with exit code $LASTEXITCODE."
+        }
         return
     }
 
@@ -91,25 +171,12 @@ function Assert-Health([string]$CommandName) {
 Assert-File $NativeSetup "Native ROCm setup script"
 Assert-File $TextureSetup "Hunyuan texture setup script"
 
-$PyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
-if ($null -eq $PyLauncher) {
-    throw "Python 3.11 x64 with the Windows py.exe launcher is required. Install Python 3.11 x64, enable the Python Launcher, then run Img2Model AMD setup again."
-}
-& py.exe -3.11 -c "import sys; raise SystemExit(0 if sys.maxsize > 2**32 else 1)"
-if ($LASTEXITCODE -ne 0) {
-    throw "Python 3.11 x64 is required. The installed Python 3.11 interpreter is missing or is not 64-bit."
-}
-
-$VsDevCmd = Resolve-VsDevCmd
-if (-not $VerifyOnly -and -not (Get-Command cl.exe -ErrorAction SilentlyContinue) -and [string]::IsNullOrWhiteSpace([string]$VsDevCmd)) {
-    throw "Microsoft Visual Studio C++ build tools are required for Hunyuan Paint. Install Visual Studio 2022 Build Tools with the Desktop development with C++ workload, then run Img2Model AMD setup again."
-}
-
 Write-Host "Img2Model AMD runtime installer" -ForegroundColor Cyan
 Write-Host "  Payload : $PayloadRoot"
 Write-Host "  Runtime : $RuntimeDir"
 Write-Host "  Channel : $Channel"
 Write-Host "  Verify  : $VerifyOnly"
+Write-Host "  Repair  : $ForceRepair"
 Write-Host "  Log     : $LogPath"
 Write-Host ""
 
@@ -118,22 +185,52 @@ try {
     Start-Transcript -LiteralPath $LogPath -Append | Out-Null
     $TranscriptStarted = $true
 
-    if ($VerifyOnly) {
-        & $NativeSetup -Channel $Channel -RuntimeDir $RuntimeDir -VerifyOnly
-    } else {
-        & $NativeSetup -Channel $Channel -RuntimeDir $RuntimeDir
-        Invoke-TextureSetup $VsDevCmd
+    $ExistingRuntimeHealthy = Test-ExistingRuntimeHealth
+    if ($ExistingRuntimeHealthy -and -not $ForceRepair) {
+        Write-Host "Reusing healthy existing Img2Model AMD runtime; refreshing version-matched worker sources only." -ForegroundColor Green
+        Sync-RuntimeSources
+
+        if (Test-ExistingRuntimeHealth) {
+            Persist-RuntimeEnvironment
+            Write-Host "Existing runtime remains healthy after worker refresh." -ForegroundColor Green
+            Write-Host "Model and Hugging Face caches were left untouched."
+            exit 0
+        }
+
+        Write-Host "Existing runtime needs maintenance after the worker refresh; continuing with repair." -ForegroundColor Yellow
     }
+
+    if ($VerifyOnly) {
+        throw "Existing Img2Model AMD runtime is not healthy. VerifyOnly does not modify the runtime; rerun setup without -VerifyOnly to repair it."
+    }
+
+    Write-Host "Repairing/installing persistent Radeon runtime..." -ForegroundColor Cyan
+
+    $PyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($null -eq $PyLauncher) {
+        throw "Python 3.11 x64 with the Windows py.exe launcher is required. Install Python 3.11 x64, enable the Python Launcher, then run Img2Model AMD setup again."
+    }
+    & py.exe -3.11 -c "import sys; raise SystemExit(0 if sys.maxsize > 2**32 else 1)"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python 3.11 x64 is required. The installed Python 3.11 interpreter is missing or is not 64-bit."
+    }
+
+    $VsDevCmd = Resolve-VsDevCmd
+    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue) -and [string]::IsNullOrWhiteSpace([string]$VsDevCmd)) {
+        throw "Microsoft Visual Studio C++ build tools are required for Hunyuan Paint. Install Visual Studio 2022 Build Tools with the Desktop development with C++ workload, then run Img2Model AMD setup again."
+    }
+
+    & $NativeSetup -Channel $Channel -RuntimeDir $RuntimeDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native Radeon runtime setup failed with exit code $LASTEXITCODE."
+    }
+    Invoke-TextureSetup $VsDevCmd
 
     Assert-File $PythonExe "Installed Python runtime"
     Assert-File $InstalledWorker "Installed Img2Model worker"
     Assert-Health "health"
     Assert-Health "texture-health"
-
-    $env:IMG2MODEL_PYTHON = $PythonExe
-    $env:IMG2MODEL_WORKER = $InstalledWorker
-    [Environment]::SetEnvironmentVariable("IMG2MODEL_PYTHON", $PythonExe, "User")
-    [Environment]::SetEnvironmentVariable("IMG2MODEL_WORKER", $InstalledWorker, "User")
+    Persist-RuntimeEnvironment
 
     Write-Host ""
     Write-Host "Img2Model AMD runtime setup completed successfully." -ForegroundColor Green
