@@ -4,6 +4,7 @@ import { GenerationPanel } from './components/GenerationPanel';
 import { InputPanel } from './components/InputPanel';
 import { ModelViewer } from './components/ModelViewer';
 import { DEFAULT_TEXTURE_TARGET_TRIANGLES } from './domain/texturePolycount';
+import { DEFAULT_TEXTURE_STYLE_PRESET } from './domain/textureStyles';
 import type {
   BackendId,
   CleanupAdvancedOverrides,
@@ -13,6 +14,7 @@ import type {
   SystemDiagnostics,
   TextureEngineId,
   TextureProfile,
+  TextureStylePreset,
   WorkflowMode,
 } from './domain/types';
 import {
@@ -98,6 +100,7 @@ export function App() {
   const [shapeOutputMode, setShapeOutputMode] = useState<ShapeOutputMode>('model-only');
   const [profile, setProfile] = useState<GenerationOptions['profile']>('balanced');
   const [textureProfile, setTextureProfile] = useState<TextureProfile>('auto');
+  const [textureStylePreset, setTextureStylePreset] = useState<TextureStylePreset>(DEFAULT_TEXTURE_STYLE_PRESET);
   const [textureTargetTriangles, setTextureTargetTriangles] = useState(DEFAULT_TEXTURE_TARGET_TRIANGLES);
   const [textureEngine] = useState<TextureEngineId>('hunyuan-paint');
   const [shapeCleanupPreset, setShapeCleanupPreset] = useState<CleanupPreset>('light');
@@ -268,6 +271,7 @@ export function App() {
         removeBackground,
         textureEngine,
         textureProfile,
+        textureStylePreset,
         textureMaxFaces: textureTargetTriangles,
         cleanupPreset: shapeCleanupPreset,
         cleanupOverrides: shapeCleanupOverrides,
@@ -283,6 +287,7 @@ export function App() {
       backend,
       engine: textureEngine,
       profile: textureProfile,
+      stylePreset: textureStylePreset,
       maxFaces: textureTargetTriangles,
       mesh: textureMeshPath!,
       image: inputPath,
@@ -306,6 +311,7 @@ export function App() {
     setTextureMeshPath(context.mesh);
     setBackend(context.backend);
     setTextureProfile(context.profile);
+    setTextureStylePreset(context.stylePreset ?? DEFAULT_TEXTURE_STYLE_PRESET);
     if (context.maxFaces !== undefined) setTextureTargetTriangles(context.maxFaces);
     setWorkflowMode('texture');
     setModelPath(context.mesh);
@@ -397,6 +403,7 @@ export function App() {
               outputMode={shapeOutputMode}
               profile={profile}
               textureProfile={textureProfile}
+              textureStylePreset={textureStylePreset}
               textureEngine={textureEngine}
               textureMeshPath={textureMeshPath}
               textureTargetTriangles={textureTargetTriangles}
@@ -417,6 +424,7 @@ export function App() {
               onShapeOutputModeChange={setShapeOutputMode}
               onProfileChange={changeProfile}
               onTextureProfileChange={setTextureProfile}
+              onTextureStylePresetChange={setTextureStylePreset}
               onTextureTargetTrianglesChange={setTextureTargetTriangles}
               onCleanupPresetChange={changeCleanupPreset}
               onCleanupOverridesChange={changeCleanupOverrides}
@@ -435,6 +443,7 @@ export function App() {
           busy={job.busy}
           progress={progressPercent}
           progressLabel={progressLabelText}
+          textureStylePreset={textureStylePreset}
         />
 
         <aside className="right-rail">

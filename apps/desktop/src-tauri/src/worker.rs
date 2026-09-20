@@ -111,6 +111,8 @@ pub struct TextureRequest {
     pub engine: String,
     pub profile: String,
     #[serde(default)]
+    pub style_preset: Option<String>,
+    #[serde(default)]
     pub max_faces: Option<u64>,
     pub mesh: String,
     pub image: String,
@@ -403,6 +405,10 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
     if !matches!(request.profile.as_str(), "auto" | "safe" | "balanced" | "quality") {
         return Err(format!("Texture profile '{}' is not implemented.", request.profile));
     }
+    let style_preset = request.style_preset.as_deref().unwrap_or("match-source");
+    if !matches!(style_preset, "match-source" | "realistic" | "stylized" | "hand-painted" | "cartoon" | "pixel-art") {
+        return Err(format!("Texture style preset '{}' is not implemented.", style_preset));
+    }
     if let Some(max_faces) = request.max_faces {
         if !(300..=40_000).contains(&max_faces) {
             return Err(format!(
@@ -434,6 +440,8 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
         subfolder,
         "--profile".to_string(),
         request.profile.clone(),
+        "--style-preset".to_string(),
+        style_preset.to_string(),
     ];
 
     if let Some(max_faces) = request.max_faces {

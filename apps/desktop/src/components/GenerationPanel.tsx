@@ -1,4 +1,5 @@
 import { textureProfileDescriptions, textureProfileLabels } from '../domain/textureProfiles';
+import { TEXTURE_STYLE_OPTIONS, textureStyleDescription } from '../domain/textureStyles';
 import {
   DEFAULT_TEXTURE_TARGET_TRIANGLES,
   MAX_TEXTURE_TARGET_TRIANGLES,
@@ -17,6 +18,7 @@ import type {
   ShapeOutputMode,
   TextureEngineId,
   TextureProfile,
+  TextureStylePreset,
   WorkflowMode,
 } from '../domain/types';
 
@@ -26,6 +28,7 @@ interface GenerationPanelProps {
   outputMode: ShapeOutputMode;
   profile: GenerationOptions['profile'];
   textureProfile: TextureProfile;
+  textureStylePreset: TextureStylePreset;
   textureEngine: TextureEngineId;
   textureMeshPath: string | null;
   textureTargetTriangles?: number;
@@ -46,6 +49,7 @@ interface GenerationPanelProps {
   onShapeOutputModeChange: (mode: ShapeOutputMode) => void;
   onProfileChange: (profile: GenerationOptions['profile']) => void;
   onTextureProfileChange: (profile: TextureProfile) => void;
+  onTextureStylePresetChange: (style: TextureStylePreset) => void;
   onTextureTargetTrianglesChange?: (triangles: number) => void;
   onCleanupPresetChange?: (preset: CleanupPreset) => void;
   onCleanupOverridesChange?: (overrides: CleanupAdvancedOverrides) => void;
@@ -126,6 +130,7 @@ export function GenerationPanel({
   outputMode,
   profile,
   textureProfile,
+  textureStylePreset,
   textureEngine,
   textureMeshPath,
   textureTargetTriangles = DEFAULT_TEXTURE_TARGET_TRIANGLES,
@@ -146,6 +151,7 @@ export function GenerationPanel({
   onShapeOutputModeChange,
   onProfileChange,
   onTextureProfileChange,
+  onTextureStylePresetChange,
   onTextureTargetTrianglesChange = () => {},
   onCleanupPresetChange = () => {},
   onCleanupOverridesChange = () => {},
@@ -542,6 +548,21 @@ export function GenerationPanel({
               </div>
             )}
           </div>
+
+          <label className="field compact-field">
+            <span>Texture style</span>
+            <select
+              aria-label="Texture style"
+              value={textureStylePreset}
+              disabled={busy}
+              onChange={(event) => onTextureStylePresetChange(event.target.value as TextureStylePreset)}
+            >
+              {TEXTURE_STYLE_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+            </select>
+            <small className="profile-description">{textureStyleDescription(textureStylePreset)}</small>
+          </label>
 
           <div className="field compact-field">
             <span>Texture profile</span>

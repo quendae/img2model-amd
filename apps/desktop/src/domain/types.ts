@@ -3,6 +3,7 @@ export type BackendId = 'native-rocm' | 'wsl-rocm' | 'vulkan';
 export type WorkflowMode = 'shape' | 'texture' | 'mesh';
 export type ShapeOutputMode = 'model-only' | 'model-and-texture';
 export type TextureProfile = 'auto' | 'safe' | 'balanced' | 'quality';
+export type TextureStylePreset = 'match-source' | 'realistic' | 'stylized' | 'hand-painted' | 'cartoon' | 'pixel-art';
 export type TextureEngineId = 'hunyuan-paint';
 export type GenerationPhase = 'shape' | 'mesh' | 'texture';
 export type CleanupPreset = 'off' | 'light' | 'game-ready' | 'aggressive';
@@ -133,6 +134,7 @@ export interface TextureRetryContext {
   backend: BackendId;
   engine: TextureEngineId;
   profile: TextureProfile;
+  stylePreset?: TextureStylePreset;
   maxFaces?: number;
   removeBackground: boolean;
 }

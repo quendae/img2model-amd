@@ -54,6 +54,7 @@ _BasePipelineCache = _base.PipelineCache
 _original_dispatch_serve_command = _base.dispatch_serve_command
 _original_build_parser = _base.build_parser
 _original_run_generate = _base.run_generate
+_original_texture_namespace = _base._texture_namespace
 _original_emit = _base.emit
 _shape_debug_stage: str | None = None
 _texture_debug_stage: str | None = None
@@ -161,6 +162,28 @@ def run_generate(args: argparse.Namespace, cache: Any | None = None) -> int:
 
 
 _base.run_generate = run_generate
+
+_TEXTURE_STYLE_PRESETS = {
+    "match-source",
+    "realistic",
+    "stylized",
+    "hand-painted",
+    "cartoon",
+    "pixel-art",
+}
+
+
+def _texture_namespace(request: dict[str, Any]) -> argparse.Namespace:
+    style_preset = str(request.get("stylePreset") or request.get("style_preset") or "match-source")
+    if style_preset not in _TEXTURE_STYLE_PRESETS:
+        choices = ", ".join(sorted(_TEXTURE_STYLE_PRESETS))
+        raise ValueError(f"Texture style preset must be one of: {choices}")
+    args = _original_texture_namespace(request)
+    args.style_preset = style_preset
+    return args
+
+
+_base._texture_namespace = _texture_namespace
 
 
 class PipelineCache(_BasePipelineCache):
@@ -412,6 +435,12 @@ def build_parser() -> argparse.ArgumentParser:
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
     subparsers_action.choices["serve"].set_defaults(func=run_serve)
+    texture_parser = subparsers_action.choices["texture"]
+    texture_parser.add_argument(
+        "--style-preset",
+        choices=sorted(_TEXTURE_STYLE_PRESETS),
+        default="match-source",
+    )
 
     mesh_cleanup = subparsers_action.add_parser(
         "mesh-cleanup",

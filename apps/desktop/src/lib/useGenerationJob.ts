@@ -11,6 +11,7 @@ import type {
   TextureEngineId,
   TextureProfile,
   TextureRetryContext,
+  TextureStylePreset,
 } from '../domain/types';
 import {
   cleanupMesh,
@@ -32,6 +33,7 @@ export interface ShapeWorkflowRequest {
   removeBackground: boolean;
   textureEngine: TextureEngineId;
   textureProfile: TextureProfile;
+  textureStylePreset?: TextureStylePreset;
   textureMaxFaces?: number;
   cleanupPreset?: CleanupPreset;
   cleanupOverrides?: CleanupAdvancedOverrides;
@@ -323,6 +325,7 @@ export function useGenerationJob() {
     },
   ): Promise<string | null> => {
     const includesShape = Boolean(options?.includesShape);
+    const stylePreset = request.stylePreset ?? 'match-source';
     const textureStartedAt = nowMs();
     const totalStartedAt = options?.totalStartedAt ?? textureStartedAt;
     const stageTracker: StageTracker = { durations: {} };
@@ -350,6 +353,7 @@ export function useGenerationJob() {
           backend: request.backend,
           engine: request.engine,
           profile: request.profile,
+          stylePreset,
           maxFaces: request.maxFaces,
           mesh: request.mesh,
           image: request.image,
@@ -372,7 +376,7 @@ export function useGenerationJob() {
 
       if (!result.ok) {
         setTechnicalError(result.error ?? null);
-        setRetryContext(request);
+        setRetryContext({ ...request, stylePreset });
         if (result.error_kind === 'worker_crashed') {
           setWorkerNeedsRestart(true);
           setError('Persistent Hunyuan worker crashed during texture generation. The generated shape was preserved successfully.');
@@ -413,7 +417,7 @@ export function useGenerationJob() {
       setTechnicalError(String(reason));
       setError('Texture generation failed. The generated shape was preserved successfully.');
       setMessage('Texture stage failed; shape output was preserved.');
-      setRetryContext(request);
+      setRetryContext({ ...request, stylePreset });
       setTimingSummary({
         shapeMs: options?.shapeMs,
         textureMs,
@@ -525,6 +529,7 @@ export function useGenerationJob() {
         backend: request.backend,
         engine: request.textureEngine,
         profile: request.textureProfile,
+        stylePreset: request.textureStylePreset ?? 'match-source',
         maxFaces: request.textureMaxFaces,
         mesh: nextMesh,
         image: request.image,

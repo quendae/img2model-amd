@@ -9,6 +9,7 @@ import type {
   TextureEngineId,
   TextureHealth,
   TextureProfile,
+  TextureStylePreset,
   WorkerHealth,
 } from '../domain/types';
 
@@ -27,6 +28,7 @@ export interface TextureMeshRequest {
   backend: BackendId;
   engine: TextureEngineId;
   profile: TextureProfile;
+  stylePreset?: TextureStylePreset;
   maxFaces?: number;
   mesh: string;
   image: string;

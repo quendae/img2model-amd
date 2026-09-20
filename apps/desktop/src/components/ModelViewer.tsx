@@ -7,6 +7,7 @@ import { writeDiagnosticLog } from '../lib/diagnosticLog';
 import { exportTexturedGlb } from '../lib/modelExport';
 import { chooseInputImage, localAssetUrl } from '../lib/tauri';
 import { exportUvTemplate } from '../lib/uvExport';
+import type { TextureStylePreset } from '../domain/types';
 import { modelFormatFromUrl } from './modelPreview';
 import { buildUvTemplateSvg, collectUvLayout, type UvLayout } from './uvTemplate';
 import { validateUvTextureDimensions } from './uvTexture';
@@ -32,6 +33,7 @@ interface ModelViewerProps {
   busy: boolean;
   progress?: number | null;
   progressLabel?: string | null;
+  textureStylePreset?: TextureStylePreset;
 }
 
 interface UvTextureInfo {
@@ -331,7 +333,7 @@ function applyUvTexture(root: THREE.Object3D, texture: THREE.Texture): { meshCou
   return { meshCount, materialCount: changedMaterials.size };
 }
 
-export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabel }: ModelViewerProps) {
+export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabel, textureStylePreset = 'match-source' }: ModelViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const loadedRootRef = useRef<THREE.Object3D | null>(null);
   const originalTransformRef = useRef<TransformSnapshot | null>(null);
@@ -376,8 +378,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
 
   useEffect(() => {
     const texture = importedTextureRef.current;
-    if (texture) applyUvTextureTransform(texture, uvTextureTransform);
-  }, [uvTextureTransform]);
+    if (texture) applyUvTextureTransform(texture, uvTextureTransform, textureStylePreset);
+  }, [uvTextureTransform, textureStylePreset]);
 
   useEffect(() => () => {
     importedTextureRef.current?.dispose();
@@ -445,7 +447,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       texture.wrapT = THREE.ClampToEdgeWrapping;
       texture.name = inputFilename(path);
       const resetTransform = { ...DEFAULT_UV_TEXTURE_TRANSFORM };
-      applyUvTextureTransform(texture, resetTransform);
+      applyUvTextureTransform(texture, resetTransform, textureStylePreset);
 
       const applied = applyUvTexture(root, texture);
       if (applied.materialCount === 0) {

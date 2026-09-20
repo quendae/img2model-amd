@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { TextureStylePreset } from '../domain/types';
 
 export interface UvTextureTransform {
   scalePercent: number;
@@ -32,7 +33,11 @@ export function normalizeUvTextureTransform(transform: UvTextureTransform): UvTe
   };
 }
 
-export function applyUvTextureTransform(texture: THREE.Texture, transform: UvTextureTransform): UvTextureTransform {
+export function applyUvTextureTransform(
+  texture: THREE.Texture,
+  transform: UvTextureTransform,
+  stylePreset: TextureStylePreset = 'match-source',
+): UvTextureTransform {
   const normalized = normalizeUvTextureTransform(transform);
   const repeat = 100 / normalized.scalePercent;
   const rotation = THREE.MathUtils.degToRad(normalized.rotationDegrees);
@@ -50,6 +55,15 @@ export function applyUvTextureTransform(texture: THREE.Texture, transform: UvTex
   texture.offset.set(offsetX, offsetY);
   texture.repeat.set(repeat, repeat);
   texture.rotation = rotation;
+  if (stylePreset === 'pixel-art') {
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+  } else {
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+  }
   texture.updateMatrix();
   texture.needsUpdate = true;
 
