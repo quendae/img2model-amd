@@ -29,6 +29,9 @@ export interface TextureMeshRequest {
   engine: TextureEngineId;
   profile: TextureProfile;
   stylePreset?: TextureStylePreset;
+  styleStrength?: number;
+  preserveSourceColors?: boolean;
+  styleReference?: string | null;
   maxFaces?: number;
   mesh: string;
   image: string;
@@ -168,6 +171,10 @@ export async function chooseInputImage(): Promise<string | null> {
     filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
   });
   return typeof selected === 'string' ? selected : null;
+}
+
+export async function chooseStyleReferenceImage(): Promise<string | null> {
+  return chooseInputImage();
 }
 
 export async function chooseInputMesh(): Promise<string | null> {

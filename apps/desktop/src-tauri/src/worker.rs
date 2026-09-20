@@ -113,6 +113,12 @@ pub struct TextureRequest {
     #[serde(default)]
     pub style_preset: Option<String>,
     #[serde(default)]
+    pub style_strength: Option<f64>,
+    #[serde(default)]
+    pub preserve_source_colors: Option<bool>,
+    #[serde(default)]
+    pub style_reference: Option<String>,
+    #[serde(default)]
     pub max_faces: Option<u64>,
     pub mesh: String,
     pub image: String,
@@ -409,6 +415,11 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
     if !matches!(style_preset, "match-source" | "realistic" | "stylized" | "hand-painted" | "cartoon" | "pixel-art") {
         return Err(format!("Texture style preset '{}' is not implemented.", style_preset));
     }
+    if let Some(style_strength) = request.style_strength {
+        if !(0.0..=1.0).contains(&style_strength) {
+            return Err(format!("Texture styleStrength must be between 0.0 and 1.0; got {style_strength}."));
+        }
+    }
     if let Some(max_faces) = request.max_faces {
         if !(300..=40_000).contains(&max_faces) {
             return Err(format!(
@@ -443,6 +454,18 @@ pub fn texture_arguments(request: &TextureRequest) -> Result<Vec<String>, String
         "--style-preset".to_string(),
         style_preset.to_string(),
     ];
+
+    if let Some(style_strength) = request.style_strength {
+        arguments.push("--style-strength".to_string());
+        arguments.push(style_strength.to_string());
+    }
+    if request.preserve_source_colors == Some(false) {
+        arguments.push("--no-preserve-source-colors".to_string());
+    }
+    if let Some(style_reference) = request.style_reference.as_deref().filter(|value| !value.trim().is_empty()) {
+        arguments.push("--style-reference".to_string());
+        arguments.push(style_reference.to_string());
+    }
 
     if let Some(max_faces) = request.max_faces {
         arguments.push("--max-faces".to_string());
@@ -597,6 +620,9 @@ mod tests {
             engine: "hunyuan-paint".to_string(),
             profile: "safe".to_string(),
             style_preset: None,
+            style_strength: None,
+            preserve_source_colors: None,
+            style_reference: None,
             max_faces: None,
             mesh: "C:\\input folder\\shape.glb".to_string(),
             image: "C:\\input folder\\source.png".to_string(),
@@ -623,6 +649,9 @@ mod tests {
             engine: "future-engine".to_string(),
             profile: "auto".to_string(),
             style_preset: None,
+            style_strength: None,
+            preserve_source_colors: None,
+            style_reference: None,
             max_faces: None,
             mesh: "shape.glb".to_string(),
             image: "source.png".to_string(),

@@ -8,11 +8,11 @@ export const TEXTURE_STYLE_OPTIONS: ReadonlyArray<{
   description: string;
 }> = [
   { id: 'match-source', label: 'Match source', description: 'Current Hunyuan Paint behavior; preserve the source image character.' },
-  { id: 'realistic', label: 'Realistic', description: 'Style contract for a natural material/detail atlas pass.' },
-  { id: 'stylized', label: 'Stylized', description: 'Style contract for simplified game-art treatment.' },
-  { id: 'hand-painted', label: 'Hand-painted', description: 'Style contract for painterly color and reduced photographic detail.' },
-  { id: 'cartoon', label: 'Cartoon', description: 'Style contract for broad color regions and graphic separation.' },
-  { id: 'pixel-art', label: 'Pixel-art', description: 'Uses crisp nearest sampling for direct UV textures; atlas stylization comes next.' },
+  { id: 'realistic', label: 'Realistic', description: 'Adds contrast, color and detail to the generated atlas.' },
+  { id: 'stylized', label: 'Stylized', description: 'Simplifies tones and colors for game-art readability.' },
+  { id: 'hand-painted', label: 'Hand-painted', description: 'Smooths photographic detail into broader painted color regions.' },
+  { id: 'cartoon', label: 'Cartoon', description: 'Posterizes color regions and adds graphic edge separation.' },
+  { id: 'pixel-art', label: 'Pixel-art', description: 'Pixelates and palette-reduces the atlas, with nearest-neighbor sampling in the viewer.' },
 ];
 
 export function textureStyleDescription(style: TextureStylePreset): string {

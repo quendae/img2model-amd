@@ -135,6 +135,9 @@ export interface TextureRetryContext {
   engine: TextureEngineId;
   profile: TextureProfile;
   stylePreset?: TextureStylePreset;
+  styleStrength?: number;
+  preserveSourceColors?: boolean;
+  styleReference?: string | null;
   maxFaces?: number;
   removeBackground: boolean;
 }

@@ -54,10 +54,18 @@ _BasePipelineCache = _base.PipelineCache
 _original_dispatch_serve_command = _base.dispatch_serve_command
 _original_build_parser = _base.build_parser
 _original_run_generate = _base.run_generate
+_original_run_texture = _base.run_texture
+_original_build_texture_pipeline = _base.build_texture_pipeline
 _original_texture_namespace = _base._texture_namespace
 _original_emit = _base.emit
 _shape_debug_stage: str | None = None
 _texture_debug_stage: str | None = None
+_texture_style_context: dict[str, Any] = {
+    'preset': 'match-source',
+    'strength': 1.0,
+    'preserve_source_colors': True,
+    'style_reference': None,
+}
 
 _SHAPE_DEBUG_STAGES = {
     "starting_backend": "opening_input",
@@ -178,12 +186,89 @@ def _texture_namespace(request: dict[str, Any]) -> argparse.Namespace:
     if style_preset not in _TEXTURE_STYLE_PRESETS:
         choices = ", ".join(sorted(_TEXTURE_STYLE_PRESETS))
         raise ValueError(f"Texture style preset must be one of: {choices}")
+    style_strength = float(request.get('styleStrength', request.get('style_strength', 1.0)))
+    if not 0.0 <= style_strength <= 1.0:
+        raise ValueError('Texture style strength must be between 0.0 and 1.0')
+    preserve_source_colors = bool(request.get('preserveSourceColors', request.get('preserve_source_colors', True)))
+    style_reference = request.get('styleReference', request.get('style_reference'))
+
     args = _original_texture_namespace(request)
     args.style_preset = style_preset
+    args.style_strength = style_strength
+    args.preserve_source_colors = preserve_source_colors
+    args.style_reference = str(style_reference) if style_reference else None
     return args
 
 
 _base._texture_namespace = _texture_namespace
+
+
+class _TextureStylePipeline:
+    def __init__(self, pipeline: Any) -> None:
+        self._pipeline = pipeline
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        textured_mesh = self._pipeline(*args, **kwargs)
+        preset = str(_texture_style_context["preset"])
+        strength = float(_texture_style_context["strength"])
+        if preset == "match-source" or strength <= 0.0:
+            return textured_mesh
+
+        try:
+            from .texture_stylizer import apply_texture_style_to_mesh
+        except ImportError:
+            from texture_stylizer import apply_texture_style_to_mesh  # type: ignore
+        from PIL import Image  # type: ignore
+
+        emit("progress", ok=True, stage="stylizing_texture", progress=0.88, style_preset=preset, style_strength=strength)
+        reference_image = None
+        style_reference = _texture_style_context.get("style_reference")
+        if style_reference:
+            reference_path = Path(str(style_reference)).expanduser().resolve()
+            if not reference_path.is_file():
+                raise FileNotFoundError(f"Style reference does not exist: {reference_path}")
+            with Image.open(reference_path) as source:
+                reference_image = source.convert("RGBA")
+
+        return apply_texture_style_to_mesh(
+            textured_mesh,
+            preset=preset,
+            strength=strength,
+            preserve_source_colors=bool(_texture_style_context["preserve_source_colors"]),
+            reference_image=reference_image,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pipeline, name)
+
+
+def build_texture_pipeline(args: argparse.Namespace, *, cpu_offload: bool, attention_slicing: str) -> Any:
+    return _TextureStylePipeline(
+        _original_build_texture_pipeline(
+            args,
+            cpu_offload=cpu_offload,
+            attention_slicing=attention_slicing,
+        )
+    )
+
+
+def run_texture(args: argparse.Namespace, cache: Any | None = None) -> int:
+    previous = dict(_texture_style_context)
+    _texture_style_context.update(
+        preset=str(getattr(args, "style_preset", "match-source")),
+        strength=float(getattr(args, "style_strength", 1.0)),
+        preserve_source_colors=bool(getattr(args, "preserve_source_colors", True)),
+        style_reference=getattr(args, "style_reference", None),
+    )
+    try:
+        return _original_run_texture(args, cache=cache)
+    finally:
+        _texture_style_context.clear()
+        _texture_style_context.update(previous)
+
+
+_base.build_texture_pipeline = build_texture_pipeline
+_base.run_texture = run_texture
 
 
 class PipelineCache(_BasePipelineCache):
@@ -441,6 +526,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(_TEXTURE_STYLE_PRESETS),
         default="match-source",
     )
+    texture_parser.add_argument("--style-strength", type=float, default=1.0)
+    texture_parser.add_argument("--style-reference")
+    texture_parser.add_argument("--preserve-source-colors", dest="preserve_source_colors", action="store_true", default=True)
+    texture_parser.add_argument("--no-preserve-source-colors", dest="preserve_source_colors", action="store_false")
 
     mesh_cleanup = subparsers_action.add_parser(
         "mesh-cleanup",

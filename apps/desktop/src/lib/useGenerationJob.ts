@@ -34,6 +34,9 @@ export interface ShapeWorkflowRequest {
   textureEngine: TextureEngineId;
   textureProfile: TextureProfile;
   textureStylePreset?: TextureStylePreset;
+  textureStyleStrength?: number;
+  preserveSourceColors?: boolean;
+  styleReference?: string | null;
   textureMaxFaces?: number;
   cleanupPreset?: CleanupPreset;
   cleanupOverrides?: CleanupAdvancedOverrides;
@@ -72,6 +75,7 @@ const stageLabels: Record<string, string> = {
   preparing_mesh: 'Preparing mesh for texturing…',
   mesh_ready: 'Texture mesh is ready…',
   running_texture: 'Generating Hunyuan Paint texture…',
+  stylizing_texture: 'Applying texture style…',
   postprocessing: 'Exporting model…',
   completed: 'Generation complete.',
 };
@@ -354,6 +358,9 @@ export function useGenerationJob() {
           engine: request.engine,
           profile: request.profile,
           stylePreset,
+          styleStrength: request.styleStrength ?? 1.0,
+          preserveSourceColors: request.preserveSourceColors ?? true,
+          styleReference: request.styleReference ?? null,
           maxFaces: request.maxFaces,
           mesh: request.mesh,
           image: request.image,
@@ -530,6 +537,9 @@ export function useGenerationJob() {
         engine: request.textureEngine,
         profile: request.textureProfile,
         stylePreset: request.textureStylePreset ?? 'match-source',
+        styleStrength: request.textureStyleStrength ?? 1.0,
+        preserveSourceColors: request.preserveSourceColors ?? true,
+        styleReference: request.styleReference ?? null,
         maxFaces: request.textureMaxFaces,
         mesh: nextMesh,
         image: request.image,

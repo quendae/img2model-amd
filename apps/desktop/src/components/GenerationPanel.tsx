@@ -29,6 +29,9 @@ interface GenerationPanelProps {
   profile: GenerationOptions['profile'];
   textureProfile: TextureProfile;
   textureStylePreset?: TextureStylePreset;
+  textureStyleStrength?: number;
+  preserveSourceColors?: boolean;
+  styleReferencePath?: string | null;
   textureEngine: TextureEngineId;
   textureMeshPath: string | null;
   textureTargetTriangles?: number;
@@ -50,6 +53,10 @@ interface GenerationPanelProps {
   onProfileChange: (profile: GenerationOptions['profile']) => void;
   onTextureProfileChange: (profile: TextureProfile) => void;
   onTextureStylePresetChange?: (style: TextureStylePreset) => void;
+  onTextureStyleStrengthChange?: (strength: number) => void;
+  onPreserveSourceColorsChange?: (enabled: boolean) => void;
+  onChooseStyleReference?: () => void;
+  onClearStyleReference?: () => void;
   onTextureTargetTrianglesChange?: (triangles: number) => void;
   onCleanupPresetChange?: (preset: CleanupPreset) => void;
   onCleanupOverridesChange?: (overrides: CleanupAdvancedOverrides) => void;
@@ -131,6 +138,9 @@ export function GenerationPanel({
   profile,
   textureProfile,
   textureStylePreset = 'match-source',
+  textureStyleStrength = 1.0,
+  preserveSourceColors = true,
+  styleReferencePath = null,
   textureEngine,
   textureMeshPath,
   textureTargetTriangles = DEFAULT_TEXTURE_TARGET_TRIANGLES,
@@ -152,6 +162,10 @@ export function GenerationPanel({
   onProfileChange,
   onTextureProfileChange,
   onTextureStylePresetChange = () => {},
+  onTextureStyleStrengthChange = () => {},
+  onPreserveSourceColorsChange = () => {},
+  onChooseStyleReference = () => {},
+  onClearStyleReference = () => {},
   onTextureTargetTrianglesChange = () => {},
   onCleanupPresetChange = () => {},
   onCleanupOverridesChange = () => {},
@@ -563,6 +577,71 @@ export function GenerationPanel({
             </select>
             <small className="profile-description">{textureStyleDescription(textureStylePreset)}</small>
           </label>
+
+          {textureStylePreset !== 'match-source' && (
+            <div className="texture-style-controls">
+              <label className="field compact-field">
+                <span>Style strength</span>
+                <input
+                  aria-label="Style strength"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={Math.round(Math.min(1, Math.max(0, textureStyleStrength)) * 100)}
+                  disabled={busy}
+                  onChange={(event) => onTextureStyleStrengthChange(Number(event.target.value) / 100)}
+                />
+                <small className="profile-description">
+                  {Math.round(Math.min(1, Math.max(0, textureStyleStrength)) * 100)}% · blends the styled atlas with the original Hunyuan Paint atlas.
+                </small>
+              </label>
+
+              <label className="toggle-row compact-toggle-row">
+                <input
+                  aria-label="Preserve source colors"
+                  type="checkbox"
+                  checked={preserveSourceColors}
+                  disabled={busy}
+                  onChange={(event) => onPreserveSourceColorsChange(event.target.checked)}
+                />
+                <span>
+                  <strong>Preserve source colors</strong>
+                  <small>Keeps the generated atlas hue/saturation while applying the selected style's tonal treatment.</small>
+                </span>
+              </label>
+
+              <div className="field compact-field">
+                <span>Style reference</span>
+                <div className="mesh-picker">
+                  <div title={styleReferencePath ?? undefined}>{styleReferencePath ?? 'No style reference selected'}</div>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    aria-label="Choose style reference"
+                    disabled={busy}
+                    onClick={onChooseStyleReference}
+                  >
+                    Choose
+                  </button>
+                  {styleReferencePath && (
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      aria-label="Clear style reference"
+                      disabled={busy}
+                      onClick={onClearStyleReference}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <small className="profile-description">
+                  Optional palette/color guide. Disable Preserve source colors when you want the reference palette to dominate.
+                </small>
+              </div>
+            </div>
+          )}
 
           <div className="field compact-field">
             <span>Texture profile</span>

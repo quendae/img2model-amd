@@ -21,6 +21,7 @@ import {
   chooseInputImage,
   chooseInputMesh,
   chooseOutputModel,
+  chooseStyleReferenceImage,
   clearHunyuanWorkerCache,
   getSystemDiagnostics,
   localAssetUrl,
@@ -101,6 +102,9 @@ export function App() {
   const [profile, setProfile] = useState<GenerationOptions['profile']>('balanced');
   const [textureProfile, setTextureProfile] = useState<TextureProfile>('auto');
   const [textureStylePreset, setTextureStylePreset] = useState<TextureStylePreset>(DEFAULT_TEXTURE_STYLE_PRESET);
+  const [textureStyleStrength, setTextureStyleStrength] = useState(1.0);
+  const [preserveSourceColors, setPreserveSourceColors] = useState(true);
+  const [styleReferencePath, setStyleReferencePath] = useState<string | null>(null);
   const [textureTargetTriangles, setTextureTargetTriangles] = useState(DEFAULT_TEXTURE_TARGET_TRIANGLES);
   const [textureEngine] = useState<TextureEngineId>('hunyuan-paint');
   const [shapeCleanupPreset, setShapeCleanupPreset] = useState<CleanupPreset>('light');
@@ -217,6 +221,11 @@ export function App() {
     }
   };
 
+  const chooseStyleReference = async () => {
+    const path = await chooseStyleReferenceImage();
+    if (path) setStyleReferencePath(path);
+  };
+
   const changeProfile = (nextProfile: GenerationOptions['profile']) => {
     setProfile(nextProfile);
     setSteps(profileSteps[nextProfile]);
@@ -272,6 +281,9 @@ export function App() {
         textureEngine,
         textureProfile,
         textureStylePreset,
+        textureStyleStrength,
+        preserveSourceColors,
+        styleReference: styleReferencePath,
         textureMaxFaces: textureTargetTriangles,
         cleanupPreset: shapeCleanupPreset,
         cleanupOverrides: shapeCleanupOverrides,
@@ -288,6 +300,9 @@ export function App() {
       engine: textureEngine,
       profile: textureProfile,
       stylePreset: textureStylePreset,
+      styleStrength: textureStyleStrength,
+      preserveSourceColors,
+      styleReference: styleReferencePath,
       maxFaces: textureTargetTriangles,
       mesh: textureMeshPath!,
       image: inputPath,
@@ -312,6 +327,9 @@ export function App() {
     setBackend(context.backend);
     setTextureProfile(context.profile);
     setTextureStylePreset(context.stylePreset ?? DEFAULT_TEXTURE_STYLE_PRESET);
+    setTextureStyleStrength(context.styleStrength ?? 1.0);
+    setPreserveSourceColors(context.preserveSourceColors ?? true);
+    setStyleReferencePath(context.styleReference ?? null);
     if (context.maxFaces !== undefined) setTextureTargetTriangles(context.maxFaces);
     setWorkflowMode('texture');
     setModelPath(context.mesh);
@@ -404,6 +422,9 @@ export function App() {
               profile={profile}
               textureProfile={textureProfile}
               textureStylePreset={textureStylePreset}
+              textureStyleStrength={textureStyleStrength}
+              preserveSourceColors={preserveSourceColors}
+              styleReferencePath={styleReferencePath}
               textureEngine={textureEngine}
               textureMeshPath={textureMeshPath}
               textureTargetTriangles={textureTargetTriangles}
@@ -425,6 +446,10 @@ export function App() {
               onProfileChange={changeProfile}
               onTextureProfileChange={setTextureProfile}
               onTextureStylePresetChange={setTextureStylePreset}
+              onTextureStyleStrengthChange={setTextureStyleStrength}
+              onPreserveSourceColorsChange={setPreserveSourceColors}
+              onChooseStyleReference={() => void chooseStyleReference()}
+              onClearStyleReference={() => setStyleReferencePath(null)}
               onTextureTargetTrianglesChange={setTextureTargetTriangles}
               onCleanupPresetChange={changeCleanupPreset}
               onCleanupOverridesChange={changeCleanupOverrides}

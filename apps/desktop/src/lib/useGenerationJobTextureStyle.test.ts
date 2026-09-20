@@ -32,6 +32,9 @@ describe('useGenerationJob texture style', () => {
         engine: 'hunyuan-paint',
         profile: 'balanced',
         stylePreset: 'stylized',
+        styleStrength: 0.65,
+        preserveSourceColors: false,
+        styleReference: 'C:/reference.png',
         mesh: 'C:/shape.glb',
         image: 'C:/source.png',
         output: 'C:/textured.glb',
@@ -39,7 +42,12 @@ describe('useGenerationJob texture style', () => {
       } as any);
     });
 
-    expect(tauriMocks.textureMesh.mock.calls[0][0]).toMatchObject({ stylePreset: 'stylized' });
+    expect(tauriMocks.textureMesh.mock.calls[0][0]).toMatchObject({
+      stylePreset: 'stylized',
+      styleStrength: 0.65,
+      preserveSourceColors: false,
+      styleReference: 'C:/reference.png',
+    });
   });
 
   it('keeps stylePreset when retrying with Safe profile', async () => {
@@ -60,6 +68,9 @@ describe('useGenerationJob texture style', () => {
         engine: 'hunyuan-paint',
         profile: 'quality',
         stylePreset: 'cartoon',
+        styleStrength: 0.8,
+        preserveSourceColors: true,
+        styleReference: 'C:/style.png',
         mesh: 'C:/shape.glb',
         image: 'C:/source.png',
         output: 'C:/retry.glb',
@@ -73,6 +84,9 @@ describe('useGenerationJob texture style', () => {
     expect(tauriMocks.textureMesh.mock.calls[1][0]).toMatchObject({
       profile: 'safe',
       stylePreset: 'cartoon',
+      styleStrength: 0.8,
+      preserveSourceColors: true,
+      styleReference: 'C:/style.png',
     });
   });
 });

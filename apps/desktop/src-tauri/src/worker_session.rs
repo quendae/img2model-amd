@@ -476,7 +476,7 @@ mod tests {
     fn fixture_texture_request() -> TextureRequest {
         TextureRequest {
             backend: "native-rocm".to_string(), engine: "hunyuan-paint".to_string(), profile: "balanced".to_string(),
-            style_preset: None, max_faces: None,
+            style_preset: None, style_strength: None, preserve_source_colors: None, style_reference: None, max_faces: None,
             mesh: "shape.glb".to_string(), image: "source.png".to_string(), output: "textured.glb".to_string(),
             model: None, subfolder: None, remove_background: true,
         }
