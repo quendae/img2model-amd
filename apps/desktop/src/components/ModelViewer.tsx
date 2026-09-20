@@ -4,9 +4,12 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { writeDiagnosticLog } from '../lib/diagnosticLog';
+import { exportTexturedGlb } from '../lib/modelExport';
+import { chooseInputImage, localAssetUrl } from '../lib/tauri';
 import { exportUvTemplate } from '../lib/uvExport';
 import { modelFormatFromUrl } from './modelPreview';
 import { buildUvTemplateSvg, collectUvLayout, type UvLayout } from './uvTemplate';
+import { validateUvTextureDimensions } from './uvTexture';
 
 export interface ModelComparison {
   beforeUrl: string;
@@ -25,9 +28,34 @@ interface ModelViewerProps {
   progressLabel?: string | null;
 }
 
+interface UvTextureInfo {
+  path: string;
+  name: string;
+  width: number;
+  height: number;
+  warning: string | null;
+  meshCount: number;
+  materialCount: number;
+}
+
+interface TransformSnapshot {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  scale: [number, number, number];
+}
+
+interface InternalViewerDataSnapshot {
+  mesh: THREE.Mesh;
+  hadOriginal: boolean;
+  original: unknown;
+  hadChecker: boolean;
+  checker: unknown;
+}
+
 const WIRE_OVERLAY_KEY = 'img2modelWireOverlay';
 const ORIGINAL_MATERIAL_KEY = 'img2modelOriginalMaterial';
 const UV_CHECKER_MATERIAL_KEY = 'img2modelUvCheckerMaterial';
+const UV_TEMPLATE_RESOLUTION = 2048;
 
 function setMaterialWireframe(material: THREE.Material, enabled: boolean) {
   const candidate = material as THREE.Material & { wireframe?: boolean };
@@ -168,8 +196,8 @@ function disposeLoadedRoot(root: THREE.Object3D) {
   });
 }
 
-function uvTemplateFilename(modelUrl: string | null): string {
-  if (!modelUrl) return 'model-uv-template.svg';
+function modelStem(modelUrl: string | null): string {
+  if (!modelUrl) return 'model';
   const withoutQuery = modelUrl.split(/[?#]/, 1)[0];
   const lastSegment = withoutQuery.split(/[\\/]/).filter(Boolean).at(-1) ?? 'model';
   const decoded = (() => {
@@ -179,18 +207,137 @@ function uvTemplateFilename(modelUrl: string | null): string {
       return lastSegment;
     }
   })();
-  const stem = decoded.replace(/\.[^.]+$/, '') || 'model';
-  return `${stem}-uv-template.svg`;
+  return decoded.replace(/\.[^.]+$/, '') || 'model';
+}
+
+function uvTemplateFilename(modelUrl: string | null): string {
+  return `${modelStem(modelUrl)}-uv-template.svg`;
+}
+
+function texturedModelFilename(modelUrl: string | null): string {
+  return `${modelStem(modelUrl)}-uv-textured.glb`;
+}
+
+function inputFilename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? 'UV texture';
+}
+
+function finiteOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function captureTransform(root: THREE.Object3D): TransformSnapshot {
+  const position = root.position as unknown as { x?: number; y?: number; z?: number };
+  const quaternion = (root as unknown as { quaternion?: { x?: number; y?: number; z?: number; w?: number } }).quaternion;
+  const scale = root.scale as unknown as { x?: number; y?: number; z?: number };
+  return {
+    position: [finiteOr(position.x, 0), finiteOr(position.y, 0), finiteOr(position.z, 0)],
+    quaternion: [
+      finiteOr(quaternion?.x, 0),
+      finiteOr(quaternion?.y, 0),
+      finiteOr(quaternion?.z, 0),
+      finiteOr(quaternion?.w, 1),
+    ],
+    scale: [finiteOr(scale.x, 1), finiteOr(scale.y, 1), finiteOr(scale.z, 1)],
+  };
+}
+
+function applyTransform(root: THREE.Object3D, snapshot: TransformSnapshot) {
+  root.position.set(...snapshot.position);
+  root.quaternion.set(...snapshot.quaternion);
+  root.scale.set(...snapshot.scale);
+}
+
+function updateWorldMatrix(root: THREE.Object3D) {
+  const candidate = root as THREE.Object3D & { updateMatrixWorld?: (force?: boolean) => void };
+  candidate.updateMatrixWorld?.(true);
+}
+
+function detachInternalViewerData(root: THREE.Object3D): InternalViewerDataSnapshot[] {
+  const snapshots: InternalViewerDataSnapshot[] = [];
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const hadOriginal = Object.prototype.hasOwnProperty.call(object.userData, ORIGINAL_MATERIAL_KEY);
+    const hadChecker = Object.prototype.hasOwnProperty.call(object.userData, UV_CHECKER_MATERIAL_KEY);
+    snapshots.push({
+      mesh: object,
+      hadOriginal,
+      original: object.userData[ORIGINAL_MATERIAL_KEY],
+      hadChecker,
+      checker: object.userData[UV_CHECKER_MATERIAL_KEY],
+    });
+    delete object.userData[ORIGINAL_MATERIAL_KEY];
+    delete object.userData[UV_CHECKER_MATERIAL_KEY];
+  });
+  return snapshots;
+}
+
+function restoreInternalViewerData(snapshots: InternalViewerDataSnapshot[]) {
+  for (const snapshot of snapshots) {
+    if (snapshot.hadOriginal) snapshot.mesh.userData[ORIGINAL_MATERIAL_KEY] = snapshot.original;
+    if (snapshot.hadChecker) snapshot.mesh.userData[UV_CHECKER_MATERIAL_KEY] = snapshot.checker;
+  }
+}
+
+function imageDimensions(texture: THREE.Texture): [number, number] {
+  const image = texture.image as {
+    naturalWidth?: number;
+    naturalHeight?: number;
+    videoWidth?: number;
+    videoHeight?: number;
+    width?: number;
+    height?: number;
+  } | null | undefined;
+  return [
+    Number(image?.naturalWidth ?? image?.videoWidth ?? image?.width ?? 0),
+    Number(image?.naturalHeight ?? image?.videoHeight ?? image?.height ?? 0),
+  ];
+}
+
+function loadUvTexture(url: string): Promise<THREE.Texture> {
+  return new Promise((resolve, reject) => {
+    new THREE.TextureLoader().load(url, resolve, undefined, reject);
+  });
+}
+
+function applyUvTexture(root: THREE.Object3D, texture: THREE.Texture): { meshCount: number; materialCount: number } {
+  let meshCount = 0;
+  const changedMaterials = new Set<THREE.Material>();
+
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || !meshHasUv(object)) return;
+    const baseMaterials = originalMaterialFor(object);
+    const materials = Array.isArray(baseMaterials) ? baseMaterials : [baseMaterials];
+    let changedMesh = false;
+
+    for (const material of materials) {
+      const candidate = material as THREE.Material & { map?: THREE.Texture | null };
+      if (!(material && 'map' in candidate)) continue;
+      candidate.map = texture;
+      candidate.needsUpdate = true;
+      changedMaterials.add(material);
+      changedMesh = true;
+    }
+
+    if (changedMesh) meshCount += 1;
+  });
+
+  return { meshCount, materialCount: changedMaterials.size };
 }
 
 export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabel }: ModelViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const loadedRootRef = useRef<THREE.Object3D | null>(null);
+  const originalTransformRef = useRef<TransformSnapshot | null>(null);
+  const importedTextureRef = useRef<THREE.Texture | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comparisonSide, setComparisonSide] = useState<'before' | 'after'>('after');
   const [inspectionMode, setInspectionMode] = useState<InspectionMode>('solid');
   const [uvLayout, setUvLayout] = useState<UvLayout | null>(null);
   const [uvExportStatus, setUvExportStatus] = useState<string | null>(null);
+  const [uvTextureStatus, setUvTextureStatus] = useState<string | null>(null);
+  const [uvTextureInfo, setUvTextureInfo] = useState<UvTextureInfo | null>(null);
+  const [uvTextureBusy, setUvTextureBusy] = useState(false);
 
   useEffect(() => {
     setComparisonSide('after');
@@ -207,9 +354,20 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     : modelUrl;
 
   useEffect(() => {
+    importedTextureRef.current?.dispose();
+    importedTextureRef.current = null;
+    originalTransformRef.current = null;
     setUvLayout(null);
     setUvExportStatus(null);
+    setUvTextureStatus(null);
+    setUvTextureInfo(null);
+    setUvTextureBusy(false);
   }, [activeModelUrl]);
+
+  useEffect(() => () => {
+    importedTextureRef.current?.dispose();
+    importedTextureRef.current = null;
+  }, []);
 
   const handleExportUvTemplate = async () => {
     const root = loadedRootRef.current;
@@ -221,13 +379,13 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     }
 
     try {
-      const svg = buildUvTemplateSvg(layout, { resolution: 2048 });
+      const svg = buildUvTemplateSvg(layout, { resolution: UV_TEMPLATE_RESOLUTION });
       const savedPath = await exportUvTemplate(svg, uvTemplateFilename(activeModelUrl));
       if (!savedPath) return;
       setUvExportStatus('UV template saved.');
       void writeDiagnosticLog('info', 'uv', 'UV template exported.', {
         path: savedPath,
-        resolution: 2048,
+        resolution: UV_TEMPLATE_RESOLUTION,
         triangles: layout.triangleCount,
         materials: layout.materialCount,
         textures: layout.textureCount,
@@ -236,6 +394,134 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       const message = `UV export failed: ${String(error)}`;
       setUvExportStatus(message);
       void writeDiagnosticLog('error', 'uv', message, { activeModelUrl });
+    }
+  };
+
+  const handleImportUvTexture = async () => {
+    const root = loadedRootRef.current;
+    if (!root || !uvLayout || uvLayout.triangleCount === 0 || uvTextureBusy) return;
+
+    const path = await chooseInputImage();
+    if (!path) return;
+
+    setUvTextureBusy(true);
+    setUvTextureStatus('Loading UV texture…');
+    let texture: THREE.Texture | null = null;
+    try {
+      texture = await loadUvTexture(localAssetUrl(path));
+      const [width, height] = imageDimensions(texture);
+      const validation = validateUvTextureDimensions(width, height, UV_TEMPLATE_RESOLUTION);
+      if (!validation.ok) {
+        texture.dispose();
+        setUvTextureStatus(validation.error ?? 'UV texture validation failed.');
+        return;
+      }
+
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.name = inputFilename(path);
+      texture.needsUpdate = true;
+
+      const applied = applyUvTexture(root, texture);
+      if (applied.materialCount === 0) {
+        texture.dispose();
+        setUvTextureStatus('No compatible UV material was found for direct texture replacement.');
+        return;
+      }
+
+      const previous = importedTextureRef.current;
+      importedTextureRef.current = texture;
+      texture = null;
+      previous?.dispose();
+      setUvTextureInfo({
+        path,
+        name: inputFilename(path),
+        width: Math.round(width),
+        height: Math.round(height),
+        warning: validation.warning,
+        meshCount: applied.meshCount,
+        materialCount: applied.materialCount,
+      });
+      setInspectionMode('solid');
+      applyInspectionMode(root, 'solid');
+
+      const message = validation.warning
+        ? `UV texture applied. ${validation.warning}`
+        : `UV texture applied at ${Math.round(width)}×${Math.round(height)}.`;
+      setUvTextureStatus(message);
+      void writeDiagnosticLog(validation.warning ? 'warn' : 'info', 'uv', 'Direct UV texture applied.', {
+        path,
+        width: Math.round(width),
+        height: Math.round(height),
+        meshCount: applied.meshCount,
+        materialCount: applied.materialCount,
+        warning: validation.warning,
+      });
+    } catch (error) {
+      texture?.dispose();
+      const message = `UV texture import failed: ${String(error)}`;
+      setUvTextureStatus(message);
+      void writeDiagnosticLog('error', 'uv', message, { activeModelUrl, path });
+    } finally {
+      setUvTextureBusy(false);
+    }
+  };
+
+  const handleExportTexturedGlb = async () => {
+    const root = loadedRootRef.current;
+    const originalTransform = originalTransformRef.current;
+    if (!root || !originalTransform || !uvTextureInfo || uvTextureBusy) return;
+
+    setUvTextureBusy(true);
+    setUvTextureStatus('Exporting textured GLB…');
+    const viewerTransform = captureTransform(root);
+    const currentInspectionMode = inspectionMode;
+    let viewerData: InternalViewerDataSnapshot[] = [];
+
+    try {
+      applyInspectionMode(root, 'solid');
+      viewerData = detachInternalViewerData(root);
+      applyTransform(root, originalTransform);
+      updateWorldMatrix(root);
+
+      const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+      const exporter = new GLTFExporter();
+      const exported = await exporter.parseAsync(root, {
+        binary: true,
+        onlyVisible: true,
+      });
+      if (!(exported instanceof ArrayBuffer)) {
+        throw new Error('GLTFExporter returned JSON instead of binary GLB data.');
+      }
+
+      const savedPath = await exportTexturedGlb(
+        new Uint8Array(exported),
+        texturedModelFilename(activeModelUrl),
+      );
+      if (!savedPath) {
+        setUvTextureStatus('Textured GLB export cancelled.');
+        return;
+      }
+
+      setUvTextureStatus('Textured GLB saved.');
+      void writeDiagnosticLog('info', 'uv', 'Direct UV textured GLB exported.', {
+        path: savedPath,
+        texture: uvTextureInfo.path,
+        width: uvTextureInfo.width,
+        height: uvTextureInfo.height,
+        bytes: exported.byteLength,
+      });
+    } catch (error) {
+      const message = `Textured GLB export failed: ${String(error)}`;
+      setUvTextureStatus(message);
+      void writeDiagnosticLog('error', 'uv', message, { activeModelUrl });
+    } finally {
+      restoreInternalViewerData(viewerData);
+      applyTransform(root, viewerTransform);
+      updateWorldMatrix(root);
+      applyInspectionMode(root, currentInspectionMode);
+      setUvTextureBusy(false);
     }
   };
 
@@ -312,6 +598,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       if (disposed) return;
       loadedRoot = root;
       loadedRootRef.current = root;
+      originalTransformRef.current = captureTransform(root);
       scene.add(root);
       setUvLayout(collectUvLayout(root));
 
@@ -432,7 +719,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
             type="button"
             className="viewer-export-uv"
             disabled={!uvAvailable}
-            title="Export a 2048×2048 SVG UV template with triangle guides, island boundaries and metadata."
+            title={`Export a ${UV_TEMPLATE_RESOLUTION}×${UV_TEMPLATE_RESOLUTION} SVG UV template with triangle guides, island boundaries and metadata.`}
             onClick={() => void handleExportUvTemplate()}
           >
             Export UV template
@@ -445,8 +732,31 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
           UV · {uvLayout.triangleCount.toLocaleString()} tris · {uvLayout.uvMeshCount}/{uvLayout.meshCount} meshes · {uvLayout.materialCount} mat · {uvLayout.textureCount} tex
         </div>
       )}
-      {uvExportStatus && activeModelUrl && !busy && (
-        <div className="viewer-uv-export-status" role="status">{uvExportStatus}</div>
+
+      {uvAvailable && activeModelUrl && !busy && (
+        <div className="viewer-uv-tools" aria-label="Direct UV texture tools">
+          <button type="button" disabled={uvTextureBusy} onClick={() => void handleImportUvTexture()}>
+            {uvTextureBusy && !uvTextureInfo ? 'Loading…' : 'Import UV texture'}
+          </button>
+          <button
+            type="button"
+            disabled={uvTextureBusy || !uvTextureInfo}
+            onClick={() => void handleExportTexturedGlb()}
+          >
+            Export textured GLB
+          </button>
+          {uvTextureInfo && (
+            <span title={uvTextureInfo.path}>
+              {uvTextureInfo.name} · {uvTextureInfo.width}×{uvTextureInfo.height}
+            </span>
+          )}
+        </div>
+      )}
+
+      {(uvExportStatus || uvTextureStatus) && activeModelUrl && !busy && (
+        <div className="viewer-uv-export-status" role="status">
+          {uvTextureStatus ?? uvExportStatus}
+        </div>
       )}
 
       {comparison && (
