@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 describe('development runtime synchronization', () => {
-  it('replaces the persisted worker and mesh backend with the checked-out source', async () => {
+  it('replaces the persisted worker, texture stylizer and mesh backend with the checked-out source', async () => {
     const root = await makeTempRoot();
     const repoRoot = join(root, 'repo');
     const localAppData = join(root, 'local');
@@ -31,8 +31,10 @@ describe('development runtime synchronization', () => {
 
     await writeFile(join(sourceHunyuan, 'worker.py'), '# source worker\n', 'utf8');
     await writeFile(join(sourceHunyuan, 'worker_base.py'), '# source worker base\n', 'utf8');
+    await writeFile(join(sourceHunyuan, 'texture_stylizer.py'), '# source texture stylizer\n', 'utf8');
     await writeFile(join(sourceMesh, 'presets.py'), 'ALGORITHM_VERSION = "mesh-cleanup-v3"\n', 'utf8');
     await writeFile(join(runtimeDir, 'worker.py'), '# stale worker\n', 'utf8');
+    await writeFile(join(runtimeDir, 'texture_stylizer.py'), '# stale texture stylizer\n', 'utf8');
     await writeFile(join(runtimeDir, 'backends', 'mesh_processing', 'presets.py'), 'ALGORITHM_VERSION = "mesh-cleanup-v2"\n', 'utf8');
 
     const result = await syncDevRuntime({ platform: 'win32', localAppData, repoRoot });
@@ -40,6 +42,7 @@ describe('development runtime synchronization', () => {
     expect(result.synced).toBe(true);
     expect(await readFile(join(runtimeDir, 'worker.py'), 'utf8')).toBe('# source worker\n');
     expect(await readFile(join(runtimeDir, 'worker_base.py'), 'utf8')).toBe('# source worker base\n');
+    expect(await readFile(join(runtimeDir, 'texture_stylizer.py'), 'utf8')).toBe('# source texture stylizer\n');
     expect(await readFile(join(runtimeDir, 'backends', 'mesh_processing', 'presets.py'), 'utf8'))
       .toContain('mesh-cleanup-v3');
   });
