@@ -1,6 +1,6 @@
 # UV and texture stylization roadmap
 
-**Status:** queued — begin after the current dense-mesh Light cleanup performance work (#6) and texture-target acceptance (#4).
+**Status:** active — Phase 1 UV foundation is implemented through the first inspection/export slice and is awaiting real-desktop acceptance.
 
 ## Goal
 
@@ -18,7 +18,28 @@ Add explicit UV inspection tools to the existing model workflow:
 - record atlas resolution, material/texture slots and texel density where possible,
 - keep the UV/material mapping stable through cleanup, texture and final GLB export.
 
-The exported template should be useful both for debugging and for external painting. A PNG template is the first target; SVG export can be added later if it materially helps manual workflows.
+### First slice implemented
+
+The current implementation provides:
+
+- a procedural **UV Checker** mode in the Three.js viewer,
+- UV mesh/triangle/material/texture counts for the loaded model,
+- a **2048x2048 SVG UV template** export,
+- light triangle guides plus stronger UV boundary/island outlines,
+- embedded `img2model-uv-template-v1` metadata,
+- native Tauri file saving with `.svg` and payload validation,
+- a browser-development download fallback.
+
+SVG is the first template format because it keeps dense UV outlines crisp at any zoom and is easy to inspect or rasterize externally. A raster PNG template/preview can be added later if it improves the direct-paint workflow; it is not required to validate the UV mapping itself.
+
+### Phase 1 acceptance gate
+
+Before direct texture replacement starts, verify on a real generated textured GLB that:
+
+- UV Checker covers the model and exposes stretching/seams without destabilizing the viewer,
+- exported SVG is non-empty and corresponds to the loaded model,
+- the normal Solid/Wireframe/Solid + Wire modes still work,
+- template export succeeds through the Windows Tauri save dialog.
 
 ## Phase 2 — direct UV texture input
 
@@ -123,3 +144,5 @@ Topology-changing operations should stay before the final UV-dependent texture s
 Primary issue: #7 — UV atlas workflow and texture style controls.
 
 Execution order is recorded in `docs/roadmap/current-priorities.md`.
+
+The completed dense-mesh cleanup performance gate is tracked in #6. Remaining polycount-quality coverage stays in #4/#11 as a parallel benchmark lane rather than a blocker for UV work.
