@@ -175,6 +175,7 @@
 
 .viewer-uv-meta,
 .viewer-uv-tools,
+.viewer-uv-transform,
 .viewer-uv-export-status {
   position: absolute;
   z-index: 3;
@@ -202,7 +203,8 @@
   padding: 4px;
 }
 
-.viewer-uv-tools button {
+.viewer-uv-tools button,
+.viewer-uv-transform button {
   min-height: 26px;
   padding: 0 8px;
   border: 0;
@@ -215,11 +217,13 @@
   white-space: nowrap;
 }
 
-.viewer-uv-tools button:hover:not(:disabled) {
+.viewer-uv-tools button:hover:not(:disabled),
+.viewer-uv-transform button:hover:not(:disabled) {
   background: #30363f;
 }
 
-.viewer-uv-tools button:disabled {
+.viewer-uv-tools button:disabled,
+.viewer-uv-transform button:disabled {
   cursor: not-allowed;
   opacity: .4;
 }
@@ -233,10 +237,62 @@
   white-space: nowrap;
 }
 
+.viewer-uv-transform {
+  top: 78px;
+  width: min(340px, calc(100% - 24px));
+  display: grid;
+  gap: 7px;
+  padding: 7px;
+}
+
+.viewer-uv-transform-heading,
+.viewer-uv-transform label > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.viewer-uv-transform-heading strong {
+  color: #d6dbe1;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.viewer-uv-transform-heading button {
+  min-height: 22px;
+  padding: 0 7px;
+  font-size: 8px;
+}
+
+.viewer-uv-transform label {
+  display: grid;
+  gap: 3px;
+}
+
+.viewer-uv-transform label > span {
+  color: #8f98a3;
+}
+
+.viewer-uv-transform output {
+  color: #cbd1d8;
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer-uv-transform input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: #d95449;
+}
+
 .viewer-uv-export-status {
   top: 78px;
   padding: 5px 7px;
   color: #c2c8d0;
+}
+
+.viewer-uv-transform ~ .viewer-uv-export-status {
+  top: 190px;
 }
 
 .compact-field {
@@ -397,6 +453,7 @@
 
   .viewer-uv-meta,
   .viewer-uv-tools,
+  .viewer-uv-transform,
   .viewer-uv-export-status {
     left: 8px;
     max-width: calc(100% - 16px);
@@ -411,7 +468,16 @@
     flex-wrap: wrap;
   }
 
+  .viewer-uv-transform {
+    top: 128px;
+    width: calc(100% - 16px);
+  }
+
   .viewer-uv-export-status {
     top: 124px;
+  }
+
+  .viewer-uv-transform ~ .viewer-uv-export-status {
+    top: 240px;
   }
 }
