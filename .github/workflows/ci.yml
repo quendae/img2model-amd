@@ -34,7 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
+      - run: node scripts/setup/prepare-installer-resources.mjs
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-default-features
 
   desktop-windows:
@@ -46,10 +50,12 @@ jobs:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
+      - run: npm --workspace @img2model/desktop run prepare-installer
       - run: npm run build
       - name: Validate PowerShell scripts
         shell: powershell
         run: |
+          [void][scriptblock]::Create((Get-Content scripts/setup/install-img2model-runtime.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content scripts/setup/windows-hunyuan-texture.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content scripts/smoke/windows-native-rocm.ps1 -Raw))
