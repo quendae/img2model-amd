@@ -214,8 +214,19 @@ async function paintMaskAndPrompt(prompt = 'red leather') {
   mocks.paintHit = true;
   const canvas = document.querySelector('.viewer-canvas canvas');
   expect(canvas).toBeTruthy();
-  fireEvent.pointerDown(canvas!, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });
-  fireEvent.pointerUp(canvas!, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });
+  canvas!.dispatchEvent(new MouseEvent('pointerdown', {
+    bubbles: true,
+    button: 0,
+    buttons: 1,
+    clientX: 100,
+    clientY: 100,
+  }));
+  canvas!.dispatchEvent(new MouseEvent('pointerup', {
+    bubbles: true,
+    button: 0,
+    clientX: 100,
+    clientY: 100,
+  }));
   fireEvent.change(screen.getByRole('textbox', { name: 'Local Repaint prompt' }), { target: { value: prompt } });
 }
 
