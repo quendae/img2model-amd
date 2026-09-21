@@ -5,6 +5,16 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { writeDiagnosticLog } from '../lib/diagnosticLog';
 import {
+  atlasToCanvasTexture,
+  captureEditableAtlas,
+  compositeRepaintPatch,
+  editableAtlasToPng,
+  extractRepaintPatch,
+  pngBytesToEditableAtlas,
+  repaintMaskToEditableAtlas,
+  type EditableAtlas,
+} from '../lib/localRepaintAtlas';
+import {
   createRepaintMask,
   maskBounds,
   stampMaskSamples,
@@ -13,7 +23,7 @@ import {
   type TextureUvTransform as RepaintTextureUvTransform,
 } from '../lib/localRepaintMask';
 import { exportTexturedGlb } from '../lib/modelExport';
-import { chooseInputImage, localAssetUrl } from '../lib/tauri';
+import { chooseInputImage, localAssetUrl, localRepaint } from '../lib/tauri';
 import { exportUvTemplate } from '../lib/uvExport';
 import type { TextureStylePreset } from '../domain/types';
 import { modelFormatFromUrl } from './modelPreview';
@@ -81,6 +91,8 @@ const ORIGINAL_MATERIAL_KEY = 'img2modelOriginalMaterial';
 const UV_CHECKER_MATERIAL_KEY = 'img2modelUvCheckerMaterial';
 const REPAINT_OVERLAY_KEY = 'img2modelRepaintOverlay';
 const UV_TEMPLATE_RESOLUTION = 2048;
+const LOCAL_REPAINT_PADDING_PX = 32;
+const LOCAL_REPAINT_FEATHER_PX = 8;
 
 function setMaterialWireframe(material: THREE.Material, enabled: boolean) {
   const candidate = material as THREE.Material & { wireframe?: boolean };
@@ -433,6 +445,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const loadedRootRef = useRef<THREE.Object3D | null>(null);
   const originalTransformRef = useRef<TransformSnapshot | null>(null);
   const importedTextureRef = useRef<THREE.Texture | null>(null);
+  const currentAtlasRef = useRef<EditableAtlas | null>(null);
   const repaintModeRef = useRef(false);
   const repaintBrushModeRef = useRef<RepaintBrushMode>('paint');
   const repaintBrushSizeRef = useRef(32);
@@ -461,7 +474,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const [repaintHasMask, setRepaintHasMask] = useState(false);
   const [repaintPrompt, setRepaintPrompt] = useState('');
   const [repaintReferencePath, setRepaintReferencePath] = useState<string | null>(null);
-  const [repaintBusy] = useState(false);
+  const [repaintBusy, setRepaintBusy] = useState(false);
   const [repaintStatus, setRepaintStatus] = useState<string | null>(null);
   const [repaintAtlasError, setRepaintAtlasError] = useState<RepaintAtlasError | null>(null);
 
@@ -560,6 +573,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     resetRepaintSession();
     importedTextureRef.current?.dispose();
     importedTextureRef.current = null;
+    currentAtlasRef.current = null;
     originalTransformRef.current = null;
     setUvLayout(null);
     setUvExportStatus(null);
@@ -578,6 +592,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     disposeRepaintOverlay();
     importedTextureRef.current?.dispose();
     importedTextureRef.current = null;
+    currentAtlasRef.current = null;
   }, []);
 
   const updateUvTextureTransform = (patch: Partial<UvTextureTransform>) => {
@@ -653,6 +668,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       resetRepaintSession();
       const previous = importedTextureRef.current;
       importedTextureRef.current = texture;
+      currentAtlasRef.current = null;
       texture = null;
       previous?.dispose();
       setUvTextureTransform(resetTransform);
@@ -822,6 +838,90 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const handleChooseRepaintReference = async () => {
     const path = await chooseInputImage();
     if (path) setRepaintReferencePath(path);
+  };
+
+  const handleApplyLocalRepaint = async () => {
+    const root = loadedRootRef.current;
+    const mask = repaintMaskRef.current;
+    const sourceTexture = repaintTextureRef.current;
+    const prompt = repaintPrompt.trim() || null;
+    const referenceImage = repaintReferencePath;
+    if (!root || !mask || !sourceTexture || repaintBusy || !repaintHasMask || (!prompt && !referenceImage)) return;
+
+    setRepaintBusy(true);
+    setRepaintStatus('Preparing UV patch…');
+    try {
+      const currentAtlas = currentAtlasRef.current ?? captureEditableAtlas(sourceTexture);
+      const extracted = extractRepaintPatch(currentAtlas, mask, LOCAL_REPAINT_PADDING_PX);
+      const [sourcePng, maskPng] = await Promise.all([
+        editableAtlasToPng(extracted.sourcePatch),
+        editableAtlasToPng(repaintMaskToEditableAtlas(extracted.maskPatch)),
+      ]);
+
+      setRepaintStatus('Applying local repaint…');
+      const response = await localRepaint(
+        {
+          sourcePng: Array.from(sourcePng),
+          maskPng: Array.from(maskPng),
+          prompt,
+          referenceImage,
+          featherPx: LOCAL_REPAINT_FEATHER_PX,
+        },
+        (event) => {
+          if (event.stage === 'loading_repaint_model') {
+            setRepaintStatus('Downloading/preparing local repaint model…');
+          } else if (event.stage === 'running_repaint') {
+            setRepaintStatus('Applying local repaint…');
+          } else if (event.stage === 'writing_repaint') {
+            setRepaintStatus('Compositing atlas…');
+          }
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(response.error || 'Local Repaint worker returned an error.');
+      }
+      if (!response.editedPng?.length) {
+        throw new Error('Local Repaint completed without an edited PNG.');
+      }
+
+      setRepaintStatus('Compositing atlas…');
+      const editedPatch = await pngBytesToEditableAtlas(Uint8Array.from(response.editedPng));
+      const nextAtlas = compositeRepaintPatch(
+        currentAtlas,
+        editedPatch,
+        extracted.maskPatch,
+        extracted.rect,
+        LOCAL_REPAINT_FEATHER_PX,
+      );
+      const replacementTexture = atlasToCanvasTexture(nextAtlas, sourceTexture);
+      const applied = applyUvTexture(root, replacementTexture);
+      if (applied.materialCount === 0) {
+        replacementTexture.dispose();
+        throw new Error('Local Repaint could not apply the edited atlas to the model materials.');
+      }
+
+      currentAtlasRef.current = nextAtlas;
+      repaintTextureRef.current = replacementTexture;
+      importedTextureRef.current = replacementTexture;
+      mask.data.fill(0);
+      setRepaintHasMask(false);
+      refreshRepaintOverlay(mask);
+      setRepaintStatus('Local repaint applied.');
+      void writeDiagnosticLog('info', 'local-repaint', 'Local Repaint applied transactionally.', {
+        model: response.model,
+        cacheHit: response.cacheHit,
+        modelLoadMs: response.modelLoadMs,
+        inferenceMs: response.inferenceMs,
+        rect: extracted.rect,
+      });
+    } catch (error) {
+      const message = `Local Repaint failed: ${String(error)}`;
+      setRepaintStatus(message);
+      void writeDiagnosticLog('error', 'local-repaint', message, { activeModelUrl });
+    } finally {
+      setRepaintBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -1183,8 +1283,13 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
             </button>
             {repaintReferencePath && <span title={repaintReferencePath}>{inputFilename(repaintReferencePath)}</span>}
           </div>
-          <button type="button" className="viewer-local-repaint-apply" disabled={!repaintCanApply}>
-            Apply repaint
+          <button
+            type="button"
+            className="viewer-local-repaint-apply"
+            disabled={!repaintCanApply}
+            onClick={() => void handleApplyLocalRepaint()}
+          >
+            {repaintBusy ? 'Applying…' : 'Apply repaint'}
           </button>
           {repaintStatus && <div className={repaintAtlasError ? 'viewer-local-repaint-error' : 'viewer-local-repaint-status'}>{repaintStatus}</div>}
         </div>
