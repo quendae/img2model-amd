@@ -315,7 +315,9 @@ async function loadBlobImage(blob: Blob): Promise<{ source: CanvasImageSource; r
 
 export async function pngBytesToEditableAtlas(bytes: Uint8Array): Promise<EditableAtlas> {
   if (bytes.length === 0) throw new Error('Local Repaint returned an empty PNG image.');
-  const loaded = await loadBlobImage(new Blob([bytes], { type: 'image/png' }));
+  const ownedBuffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(ownedBuffer).set(bytes);
+  const loaded = await loadBlobImage(new Blob([ownedBuffer], { type: 'image/png' }));
   try {
     const { width, height } = imageDimensions(loaded.source);
     const canvas = document.createElement('canvas');
