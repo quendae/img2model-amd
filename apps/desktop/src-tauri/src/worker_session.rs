@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -28,6 +29,62 @@ impl SessionError {
 
     fn protocol(message: impl Into<String>) -> Self {
         Self { kind: "protocol_error", message: message.into() }
+    }
+}
+
+#[derive(Default)]
+pub struct LocalRepaintCancellationState {
+    active_pid: AtomicU32,
+    cancel_requested: AtomicBool,
+}
+
+impl LocalRepaintCancellationState {
+    pub fn active_pid(&self) -> u32 {
+        self.active_pid.load(Ordering::Acquire)
+    }
+
+    pub fn cancel_requested(&self) -> bool {
+        self.cancel_requested.load(Ordering::Acquire)
+    }
+
+    pub fn begin(&self, pid: u32) {
+        self.active_pid.store(pid, Ordering::Release);
+    }
+
+    pub fn request_cancel(&self) -> Option<u32> {
+        self.cancel_requested.store(true, Ordering::Release);
+        let pid = self.active_pid();
+        (pid != 0).then_some(pid)
+    }
+
+    pub fn finish(&self) -> bool {
+        let requested = self.cancel_requested.swap(false, Ordering::AcqRel);
+        self.active_pid.store(0, Ordering::Release);
+        requested
+    }
+}
+
+fn terminate_worker_pid(pid: u32) -> Result<(), String> {
+    let pid_text = pid.to_string();
+
+    #[cfg(windows)]
+    let status = Command::new("taskkill")
+        .args(["/PID", pid_text.as_str(), "/T", "/F"])
+        .status()
+        .map_err(|error| format!("Could not terminate Local Repaint worker PID {pid}: {error}"))?;
+
+    #[cfg(not(windows))]
+    let status = Command::new("kill")
+        .args(["-TERM", pid_text.as_str()])
+        .status()
+        .map_err(|error| format!("Could not terminate Local Repaint worker PID {pid}: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Local Repaint worker termination for PID {pid} exited with status {status}."
+        ))
     }
 }
 
@@ -426,6 +483,7 @@ impl Drop for WorkerSession {
 #[derive(Default)]
 pub struct WorkerSessionManager {
     inner: Mutex<Option<WorkerSession>>,
+    local_repaint_cancellation: LocalRepaintCancellationState,
 }
 
 impl WorkerSessionManager {
@@ -540,7 +598,25 @@ impl WorkerSessionManager {
             .inner
             .lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
-        let result = self.get_or_spawn(&mut guard)?.run_local_repaint(request, on_event);
+        let session = self.get_or_spawn(&mut guard)?;
+        let pid = session.child.id();
+        self.local_repaint_cancellation.begin(pid);
+
+        if self.local_repaint_cancellation.cancel_requested() {
+            let _ = terminate_worker_pid(pid);
+        }
+
+        let result = session.run_local_repaint(request, on_event);
+        let cancelled = self.local_repaint_cancellation.finish();
+
+        if cancelled {
+            Self::invalidate(&mut guard);
+            return Ok(failure_result(
+                "cancelled",
+                "Local Repaint was cancelled.".to_string(),
+            ));
+        }
+
         match result {
             Ok(result) => Ok(result),
             Err(error) => {
@@ -548,6 +624,14 @@ impl WorkerSessionManager {
                 Ok(failure_result(error.kind, error.message))
             }
         }
+    }
+
+    pub fn cancel_local_repaint(&self) -> Result<(), String> {
+        let Some(pid) = self.local_repaint_cancellation.request_cancel() else {
+            self.local_repaint_cancellation.finish();
+            return Ok(());
+        };
+        terminate_worker_pid(pid)
     }
 
     pub fn clear_cache(&self) -> Result<(), String> {
@@ -564,6 +648,7 @@ impl WorkerSessionManager {
     }
 
     pub fn restart(&self) -> Result<(), String> {
+        self.local_repaint_cancellation.finish();
         let mut guard = self
             .inner
             .lock()
