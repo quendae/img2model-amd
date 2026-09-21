@@ -276,6 +276,13 @@ export async function localRepaint(
   });
 }
 
+export async function cancelLocalRepaint(): Promise<void> {
+  if (!isTauri()) {
+    throw new Error('Local Repaint cancellation requires the Tauri desktop runtime.');
+  }
+  await invoke('cancel_local_repaint');
+}
+
 export async function restartHunyuanWorker(): Promise<void> {
   if (!isTauri()) throw new Error('Worker restart requires the Tauri desktop runtime.');
   await invoke('restart_hunyuan_worker');
