@@ -87,6 +87,59 @@ class LocalRepaintDownloadScopeTests(unittest.TestCase):
         clip_vision.from_pretrained.assert_not_called()
         pipeline.load_ip_adapter.assert_not_called()
 
+    def test_loader_emits_distinct_download_and_weight_load_stages(self) -> None:
+        fake_torch = types.SimpleNamespace(float16=object())
+        pipeline = mock.Mock()
+        auto_pipeline = mock.Mock()
+        auto_pipeline.from_pretrained.return_value = pipeline
+        clip_vision = mock.Mock()
+        clip_vision.from_pretrained.return_value = mock.Mock()
+        events: list[dict] = []
+
+        with mock.patch.object(
+            local_repaint_module,
+            "resolve_model_snapshot",
+            return_value=("/models/cached", True),
+        ), mock.patch.object(
+            local_repaint_module,
+            "_load_repaint_runtime",
+            return_value=(fake_torch, auto_pipeline, clip_vision),
+        ):
+            SdxlLocalRepaintBackend.load(emit_fn=events.append)
+
+        self.assertEqual(
+            [event["stage"] for event in events],
+            [
+                "resolving_repaint_sdxl",
+                "resolving_repaint_ip_adapter",
+                "loading_repaint_weights",
+            ],
+        )
+
+    def test_prompt_only_stages_do_not_claim_ip_adapter_work(self) -> None:
+        fake_torch = types.SimpleNamespace(float16=object())
+        pipeline = mock.Mock()
+        auto_pipeline = mock.Mock()
+        auto_pipeline.from_pretrained.return_value = pipeline
+        clip_vision = mock.Mock()
+        events: list[dict] = []
+
+        with mock.patch.object(
+            local_repaint_module,
+            "resolve_model_snapshot",
+            return_value=("/models/cached", True),
+        ), mock.patch.object(
+            local_repaint_module,
+            "_load_repaint_runtime",
+            return_value=(fake_torch, auto_pipeline, clip_vision),
+        ):
+            SdxlLocalRepaintBackend.load(use_ip_adapter=False, emit_fn=events.append)
+
+        self.assertEqual(
+            [event["stage"] for event in events],
+            ["resolving_repaint_sdxl", "loading_repaint_weights"],
+        )
+
     def test_snapshot_scope_is_used_for_cache_probe_and_first_download(self) -> None:
         calls: list[dict] = []
 
