@@ -4,6 +4,8 @@ import type {
   BackendId,
   CleanupAdvancedOverrides,
   CleanupPreset,
+  LocalRepaintRequest,
+  LocalRepaintResponse,
   MeshCleanupReport,
   SystemDiagnostics,
   TextureEngineId,
@@ -240,6 +242,36 @@ export async function cleanupMesh(
   }
   return invoke<GenerateResult>('cleanup_mesh', {
     request,
+    onEvent: progressChannel(onProgress),
+  });
+}
+
+export async function localRepaint(
+  request: LocalRepaintRequest,
+  onProgress?: ProgressHandler,
+): Promise<LocalRepaintResponse> {
+  if (!isTauri()) {
+    throw new Error('Local Repaint requires the Tauri desktop runtime.');
+  }
+  if (request.sourcePng.length === 0) {
+    throw new Error('Local Repaint source PNG is empty.');
+  }
+  if (request.maskPng.length === 0) {
+    throw new Error('Local Repaint mask PNG is empty.');
+  }
+
+  const prompt = request.prompt?.trim() || null;
+  const referenceImage = request.referenceImage?.trim() || null;
+  if (!prompt && !referenceImage) {
+    throw new Error('Local Repaint requires a prompt or reference image.');
+  }
+
+  return invoke<LocalRepaintResponse>('local_repaint', {
+    request: {
+      ...request,
+      prompt,
+      referenceImage,
+    },
     onEvent: progressChannel(onProgress),
   });
 }

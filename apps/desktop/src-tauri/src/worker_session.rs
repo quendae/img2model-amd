@@ -1,7 +1,8 @@
 use crate::diagnostics::configured_python;
 use crate::worker::{
     backend_is_implemented, configure_background_process, configured_worker_path, texture_arguments,
-    GenerateRequest, GenerateResult, MeshCleanupRequest, TextureRequest, WorkerProgressEvent,
+    GenerateRequest, GenerateResult, LocalRepaintWorkerRequest, MeshCleanupRequest, TextureRequest,
+    WorkerProgressEvent,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -62,6 +63,10 @@ fn texture_command(job_id: &str, request: &TextureRequest) -> Value {
 
 fn mesh_cleanup_command(job_id: &str, request: &MeshCleanupRequest) -> Value {
     json!({ "command": "mesh_cleanup", "job_id": job_id, "request": request })
+}
+
+pub fn local_repaint_command(job_id: &str, request: &LocalRepaintWorkerRequest) -> Value {
+    json!({ "command": "local_repaint", "job_id": job_id, "request": request })
 }
 
 fn control_command(job_id: &str, command: &str) -> Value {
@@ -215,7 +220,9 @@ impl WorkerSession {
     fn write_command<T: Serialize>(&mut self, command: &T) -> Result<(), SessionError> {
         serde_json::to_writer(&mut self.stdin, command)
             .map_err(|error| SessionError::protocol(format!("Could not serialize worker command: {error}")))?;
-        self.stdin.write_all(b"\n").and_then(|_| self.stdin.flush())
+        self.stdin
+            .write_all(b"\n")
+            .and_then(|_| self.stdin.flush())
             .map_err(|error| SessionError::crashed(format!("Could not write to worker stdin: {error}")))
     }
 
@@ -238,13 +245,16 @@ impl WorkerSession {
     fn read_json_line(&mut self) -> Result<Value, SessionError> {
         loop {
             let mut line = String::new();
-            let bytes = self.stdout.read_line(&mut line)
+            let bytes = self
+                .stdout
+                .read_line(&mut line)
                 .map_err(|error| SessionError::crashed(format!("Failed reading worker stdout: {error}")))?;
             if bytes == 0 {
                 let status = self.child.try_wait().ok().flatten();
                 let stderr = self.stderr_summary();
                 let stdout_log = self.stdout_log_summary();
-                let status_text = status.map(|value| value.to_string())
+                let status_text = status
+                    .map(|value| value.to_string())
                     .unwrap_or_else(|| "unknown exit status".to_string());
                 let mut suffix = String::new();
                 if !stdout_log.trim().is_empty() {
@@ -260,7 +270,10 @@ impl WorkerSession {
 
             match parse_worker_stdout_line(&line) {
                 Ok(Some(value)) => return Ok(value),
-                Ok(None) => { self.push_stdout_log(&line); continue; }
+                Ok(None) => {
+                    self.push_stdout_log(&line);
+                    continue;
+                }
                 Err(message) => return Err(SessionError::protocol(message)),
             }
         }
@@ -284,14 +297,22 @@ impl WorkerSession {
         Ok(())
     }
 
-    fn run_generation<F>(&mut self, command: Value, job_id: String, mut on_event: F) -> Result<GenerateResult, SessionError>
-    where F: FnMut(WorkerProgressEvent),
+    fn run_generation<F>(
+        &mut self,
+        command: Value,
+        job_id: String,
+        mut on_event: F,
+    ) -> Result<GenerateResult, SessionError>
+    where
+        F: FnMut(WorkerProgressEvent),
     {
         self.write_command(&command)?;
         loop {
             let value = self.read_json_line()?;
             validate_event_job_id(&value, &job_id)?;
-            let event_name = value.get("event").and_then(Value::as_str)
+            let event_name = value
+                .get("event")
+                .and_then(Value::as_str)
                 .ok_or_else(|| SessionError::protocol("Worker event is missing the event field."))?;
 
             if matches!(event_name, "progress" | "cache" | "completed" | "error") {
@@ -318,7 +339,8 @@ impl WorkerSession {
     }
 
     fn run_shape<F>(&mut self, request: GenerateRequest, on_event: F) -> Result<GenerateResult, SessionError>
-    where F: FnMut(WorkerProgressEvent),
+    where
+        F: FnMut(WorkerProgressEvent),
     {
         let job_id = self.next_job_id();
         let command = shape_command(&job_id, &request);
@@ -326,18 +348,37 @@ impl WorkerSession {
     }
 
     fn run_texture<F>(&mut self, request: TextureRequest, on_event: F) -> Result<GenerateResult, SessionError>
-    where F: FnMut(WorkerProgressEvent),
+    where
+        F: FnMut(WorkerProgressEvent),
     {
         let job_id = self.next_job_id();
         let command = texture_command(&job_id, &request);
         self.run_generation(command, job_id, on_event)
     }
 
-    fn run_mesh_cleanup<F>(&mut self, request: MeshCleanupRequest, on_event: F) -> Result<GenerateResult, SessionError>
-    where F: FnMut(WorkerProgressEvent),
+    fn run_mesh_cleanup<F>(
+        &mut self,
+        request: MeshCleanupRequest,
+        on_event: F,
+    ) -> Result<GenerateResult, SessionError>
+    where
+        F: FnMut(WorkerProgressEvent),
     {
         let job_id = self.next_job_id();
         let command = mesh_cleanup_command(&job_id, &request);
+        self.run_generation(command, job_id, on_event)
+    }
+
+    fn run_local_repaint<F>(
+        &mut self,
+        request: LocalRepaintWorkerRequest,
+        on_event: F,
+    ) -> Result<GenerateResult, SessionError>
+    where
+        F: FnMut(WorkerProgressEvent),
+    {
+        let job_id = self.next_job_id();
+        let command = local_repaint_command(&job_id, &request);
         self.run_generation(command, job_id, on_event)
     }
 
@@ -363,31 +404,53 @@ impl WorkerSession {
         }
     }
 
-    fn shutdown(&mut self) { let _ = self.control("shutdown"); let _ = self.child.wait(); }
-    fn kill(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
+    fn shutdown(&mut self) {
+        let _ = self.control("shutdown");
+        let _ = self.child.wait();
+    }
+
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl Drop for WorkerSession {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() { self.kill(); }
+        if self.child.try_wait().ok().flatten().is_none() {
+            self.kill();
+        }
     }
 }
 
 #[derive(Default)]
-pub struct WorkerSessionManager { inner: Mutex<Option<WorkerSession>> }
+pub struct WorkerSessionManager {
+    inner: Mutex<Option<WorkerSession>>,
+}
 
 impl WorkerSessionManager {
-    fn get_or_spawn<'a>(&self, guard: &'a mut Option<WorkerSession>) -> Result<&'a mut WorkerSession, String> {
-        if guard.is_none() { *guard = Some(WorkerSession::spawn()?); }
-        guard.as_mut().ok_or_else(|| "Persistent worker session was not initialized.".to_string())
+    fn get_or_spawn<'a>(
+        &self,
+        guard: &'a mut Option<WorkerSession>,
+    ) -> Result<&'a mut WorkerSession, String> {
+        if guard.is_none() {
+            *guard = Some(WorkerSession::spawn()?);
+        }
+        guard
+            .as_mut()
+            .ok_or_else(|| "Persistent worker session was not initialized.".to_string())
     }
 
     fn invalidate(guard: &mut Option<WorkerSession>) {
-        if let Some(mut session) = guard.take() { session.kill(); }
+        if let Some(mut session) = guard.take() {
+            session.kill();
+        }
     }
 
     pub fn preload_shape(&self) -> Result<GenerateResult, String> {
-        let mut guard = self.inner.lock()
+        let mut guard = self
+            .inner
+            .lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
         let result = self.get_or_spawn(&mut guard)?.preload_shape();
         match result {
@@ -400,50 +463,97 @@ impl WorkerSessionManager {
     }
 
     pub fn run_shape<F>(&self, request: GenerateRequest, on_event: F) -> Result<GenerateResult, String>
-    where F: FnMut(WorkerProgressEvent),
+    where
+        F: FnMut(WorkerProgressEvent),
     {
         if !backend_is_implemented(&request.backend) {
             return Err(format!(
-                "Backend '{}' is not implemented. Select native-rocm; no silent fallback was applied.", request.backend
+                "Backend '{}' is not implemented. Select native-rocm; no silent fallback was applied.",
+                request.backend
             ));
         }
-        let mut guard = self.inner.lock()
+        let mut guard = self
+            .inner
+            .lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
         let result = self.get_or_spawn(&mut guard)?.run_shape(request, on_event);
         match result {
             Ok(result) => Ok(result),
-            Err(error) => { Self::invalidate(&mut guard); Ok(failure_result(error.kind, error.message)) }
+            Err(error) => {
+                Self::invalidate(&mut guard);
+                Ok(failure_result(error.kind, error.message))
+            }
         }
     }
 
     pub fn run_texture<F>(&self, request: TextureRequest, on_event: F) -> Result<GenerateResult, String>
-    where F: FnMut(WorkerProgressEvent),
+    where
+        F: FnMut(WorkerProgressEvent),
     {
         texture_arguments(&request)?;
         let fallback_output = request.output.clone();
-        let mut guard = self.inner.lock()
+        let mut guard = self
+            .inner
+            .lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
         let result = self.get_or_spawn(&mut guard)?.run_texture(request, on_event);
         match result {
             Ok(result) => Ok(attach_output_size(result, &fallback_output)),
-            Err(error) => { Self::invalidate(&mut guard); Ok(failure_result(error.kind, error.message)) }
+            Err(error) => {
+                Self::invalidate(&mut guard);
+                Ok(failure_result(error.kind, error.message))
+            }
         }
     }
 
-    pub fn run_mesh_cleanup<F>(&self, request: MeshCleanupRequest, on_event: F) -> Result<GenerateResult, String>
-    where F: FnMut(WorkerProgressEvent),
+    pub fn run_mesh_cleanup<F>(
+        &self,
+        request: MeshCleanupRequest,
+        on_event: F,
+    ) -> Result<GenerateResult, String>
+    where
+        F: FnMut(WorkerProgressEvent),
     {
-        let mut guard = self.inner.lock()
+        let mut guard = self
+            .inner
+            .lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
         let result = self.get_or_spawn(&mut guard)?.run_mesh_cleanup(request, on_event);
         match result {
             Ok(result) => Ok(result),
-            Err(error) => { Self::invalidate(&mut guard); Ok(failure_result(error.kind, error.message)) }
+            Err(error) => {
+                Self::invalidate(&mut guard);
+                Ok(failure_result(error.kind, error.message))
+            }
+        }
+    }
+
+    pub fn run_local_repaint<F>(
+        &self,
+        request: LocalRepaintWorkerRequest,
+        on_event: F,
+    ) -> Result<GenerateResult, String>
+    where
+        F: FnMut(WorkerProgressEvent),
+    {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
+        let result = self.get_or_spawn(&mut guard)?.run_local_repaint(request, on_event);
+        match result {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                Self::invalidate(&mut guard);
+                Ok(failure_result(error.kind, error.message))
+            }
         }
     }
 
     pub fn clear_cache(&self) -> Result<(), String> {
-        let mut guard = self.inner.lock()
+        let mut guard = self
+            .inner
+            .lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
         let Some(session) = guard.as_mut() else { return Ok(()); };
         if let Err(error) = session.control("clear_cache") {
@@ -454,40 +564,78 @@ impl WorkerSessionManager {
     }
 
     pub fn restart(&self) -> Result<(), String> {
-        let mut guard = self.inner.lock()
+        let mut guard = self
+            .inner
+            .lock()
             .map_err(|_| "Persistent worker session lock is poisoned.".to_string())?;
-        if let Some(mut session) = guard.take() { session.shutdown(); }
+        if let Some(mut session) = guard.take() {
+            session.shutdown();
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{attach_output_size, mesh_cleanup_command, preload_shape_command, shape_command, texture_command, validate_event_job_id};
-    use crate::worker::{GenerateRequest, GenerateResult, MeshCleanupRequest, TextureRequest};
+    use super::{
+        attach_output_size, local_repaint_command, mesh_cleanup_command, preload_shape_command,
+        shape_command, texture_command, validate_event_job_id,
+    };
+    use crate::worker::{
+        GenerateRequest, GenerateResult, LocalRepaintWorkerRequest, MeshCleanupRequest, TextureRequest,
+    };
     use serde_json::json;
     use std::fs;
 
     fn fixture_shape_request() -> GenerateRequest {
         GenerateRequest {
-            backend: "native-rocm".to_string(), input: "source.png".to_string(), output: "shape.glb".to_string(),
-            model: None, subfolder: None, steps: 20, seed: 1234, remove_background: true,
+            backend: "native-rocm".to_string(),
+            input: "source.png".to_string(),
+            output: "shape.glb".to_string(),
+            model: None,
+            subfolder: None,
+            steps: 20,
+            seed: 1234,
+            remove_background: true,
         }
     }
 
     fn fixture_texture_request() -> TextureRequest {
         TextureRequest {
-            backend: "native-rocm".to_string(), engine: "hunyuan-paint".to_string(), profile: "balanced".to_string(),
-            style_preset: None, style_strength: None, preserve_source_colors: None, style_reference: None, max_faces: None,
-            mesh: "shape.glb".to_string(), image: "source.png".to_string(), output: "textured.glb".to_string(),
-            model: None, subfolder: None, remove_background: true,
+            backend: "native-rocm".to_string(),
+            engine: "hunyuan-paint".to_string(),
+            profile: "balanced".to_string(),
+            style_preset: None,
+            style_strength: None,
+            preserve_source_colors: None,
+            style_reference: None,
+            max_faces: None,
+            mesh: "shape.glb".to_string(),
+            image: "source.png".to_string(),
+            output: "textured.glb".to_string(),
+            model: None,
+            subfolder: None,
+            remove_background: true,
         }
     }
 
     fn fixture_mesh_cleanup_request() -> MeshCleanupRequest {
         MeshCleanupRequest {
-            input: "source.glb".to_string(), output: "source-clean.glb".to_string(),
-            preset: "game-ready".to_string(), overrides: None,
+            input: "source.glb".to_string(),
+            output: "source-clean.glb".to_string(),
+            preset: "game-ready".to_string(),
+            overrides: None,
+        }
+    }
+
+    fn fixture_local_repaint_request() -> LocalRepaintWorkerRequest {
+        LocalRepaintWorkerRequest {
+            source: "source.png".to_string(),
+            mask: "mask.png".to_string(),
+            output: "edited.png".to_string(),
+            prompt: Some("red leather".to_string()),
+            reference_image: None,
+            feather_px: 8,
         }
     }
 
@@ -525,6 +673,15 @@ mod tests {
     }
 
     #[test]
+    fn local_repaint_command_has_request_and_job_id() {
+        let value = local_repaint_command("job-11", &fixture_local_repaint_request());
+        assert_eq!(value["command"], "local_repaint");
+        assert_eq!(value["job_id"], "job-11");
+        assert_eq!(value["request"]["source"], "source.png");
+        assert_eq!(value["request"]["featherPx"], 8);
+    }
+
+    #[test]
     fn matching_job_id_is_accepted() {
         let value = json!({"job_id":"job-9","event":"progress"});
         assert!(validate_event_job_id(&value, "job-9").is_ok());
@@ -545,7 +702,8 @@ mod tests {
             "ok": true,
             "event": "completed",
             "output": path.to_string_lossy(),
-        })).unwrap();
+        }))
+        .unwrap();
 
         let result = attach_output_size(result, "unused.glb");
         assert_eq!(result.output_size_bytes, Some(321));

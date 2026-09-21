@@ -181,3 +181,22 @@ export interface TextureHealth {
   texture_import_ok: boolean;
   error?: string | null;
 }
+
+export interface LocalRepaintRequest {
+  sourcePng: number[];
+  maskPng: number[];
+  prompt?: string | null;
+  referenceImage?: string | null;
+  featherPx: number;
+}
+
+export interface LocalRepaintResponse {
+  ok: boolean;
+  editedPng?: number[] | null;
+  error?: string | null;
+  errorKind?: string | null;
+  model?: string | null;
+  cacheHit?: boolean | null;
+  modelLoadMs?: number | null;
+  inferenceMs?: number | null;
+}

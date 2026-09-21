@@ -155,6 +155,42 @@ pub struct MeshCleanupRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRepaintRequest {
+    pub source_png: Vec<u8>,
+    pub mask_png: Vec<u8>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub reference_image: Option<String>,
+    pub feather_px: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRepaintWorkerRequest {
+    pub source: String,
+    pub mask: String,
+    pub output: String,
+    pub prompt: Option<String>,
+    pub reference_image: Option<String>,
+    pub feather_px: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRepaintResponse {
+    pub ok: bool,
+    pub edited_png: Option<Vec<u8>>,
+    pub error: Option<String>,
+    pub error_kind: Option<String>,
+    pub model: Option<String>,
+    pub cache_hit: Option<bool>,
+    pub model_load_ms: Option<f64>,
+    pub inference_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateResult {
     pub ok: bool,
     pub event: String,
