@@ -11,9 +11,11 @@ const files = [
   'scripts/setup/windows-hunyuan-texture.ps1',
   'scripts/setup/install-img2model-runtime.ps1',
   'backends/hunyuan/requirements-base.txt',
+  'backends/hunyuan/requirements-repaint.txt',
   'backends/hunyuan/worker.py',
   'backends/hunyuan/worker_base.py',
   'backends/hunyuan/texture_stylizer.py',
+  'backends/hunyuan/local_repaint.py',
 ];
 
 const directories = [
