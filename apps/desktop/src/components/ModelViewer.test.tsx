@@ -19,10 +19,12 @@ vi.mock('three', () => {
     userData: Record<string, unknown> = {};
     renderOrder = 0;
     visible = true;
+    parent: Object3D | null = null;
     position = { x: 0, y: 0, z: 0, set() {}, sub() { return this; } };
     quaternion = { x: 0, y: 0, z: 0, w: 1, set() {} };
     scale = { x: 1, y: 1, z: 1, setScalar() {}, set() {} };
-    add(child: any) { this.children.push(child); }
+    add(child: any) { child.parent = this; this.children.push(child); }
+    remove(child: any) { this.children = this.children.filter((candidate) => candidate !== child); child.parent = null; }
     traverse(callback: (object: any) => void) {
       callback(this);
       for (const child of this.children) child.traverse?.(callback) ?? callback(child);
@@ -42,6 +44,7 @@ vi.mock('three', () => {
     x = 0;
     y = 0;
     set(x: number, y: number) { this.x = x; this.y = y; return this; }
+    copy(other: { x: number; y: number }) { this.x = other.x; this.y = other.y; return this; }
   }
 
   class Vector3 {
@@ -118,9 +121,9 @@ vi.mock('three', () => {
     generateMipmaps = true;
     needsUpdate = false;
     rotation = 0;
-    offset = { x: 0, y: 0, set(x: number, y: number) { this.x = x; this.y = y; } };
-    repeat = { x: 1, y: 1, set(x: number, y: number) { this.x = x; this.y = y; } };
-    center = { x: 0, y: 0, set(x: number, y: number) { this.x = x; this.y = y; } };
+    offset = new Vector2();
+    repeat = Object.assign(new Vector2(), { x: 1, y: 1 });
+    center = new Vector2();
     updateMatrix() {}
     dispose() {}
   }
@@ -153,11 +156,12 @@ vi.mock('three', () => {
 
   class Mesh extends Object3D {
     isMesh = true;
-    geometry = new Geometry();
+    geometry: Geometry;
     material: Material | Material[];
-    constructor(texture: Texture | null = null) {
+    constructor(geometry: Geometry = new Geometry(), material: Material | Material[] = new Material()) {
       super();
-      this.material = new Material({ map: texture });
+      this.geometry = geometry;
+      this.material = material;
     }
   }
 
@@ -190,13 +194,14 @@ vi.mock('three', () => {
 
   mocks.makeLoadedRoot = () => {
     const root = new Object3D();
+    const texturedMesh = (texture: Texture | null) => new Mesh(new Geometry(), new Material({ map: texture }));
     if (mocks.textureMode === 'none') {
-      root.add(new Mesh(null));
+      root.add(texturedMesh(null));
     } else if (mocks.textureMode === 'multiple') {
-      root.add(new Mesh(new Texture()));
-      root.add(new Mesh(new Texture()));
+      root.add(texturedMesh(new Texture()));
+      root.add(texturedMesh(new Texture()));
     } else {
-      root.add(new Mesh(new Texture()));
+      root.add(texturedMesh(new Texture()));
     }
     return root;
   };
@@ -277,10 +282,20 @@ beforeEach(() => {
   });
   vi.stubGlobal('requestAnimationFrame', () => 1);
   vi.stubGlobal('cancelAnimationFrame', () => undefined);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((kind: string) => {
+    if (kind !== '2d') return null;
+    return {
+      createImageData(width: number, height: number) {
+        return { width, height, data: new Uint8ClampedArray(width * height * 4) };
+      },
+      putImageData() {},
+    } as unknown as CanvasRenderingContext2D;
+  }) as typeof HTMLCanvasElement.prototype.getContext);
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
