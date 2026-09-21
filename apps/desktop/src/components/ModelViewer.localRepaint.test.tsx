@@ -368,7 +368,7 @@ describe('ModelViewer Local Repaint apply flow', () => {
   });
 
   it('can cancel an active repaint without clearing the current mask', async () => {
-    let resolveJob: ((value: unknown) => void) | null = null;
+    let resolveJob!: (value: unknown) => void;
     mocks.localRepaint.mockReturnValueOnce(new Promise((resolve) => { resolveJob = resolve; }));
     render(<ModelViewer modelUrl="textured.glb" busy={false} />);
     await paintMaskAndPrompt('long repaint');
@@ -378,7 +378,7 @@ describe('ModelViewer Local Repaint apply flow', () => {
     fireEvent.click(cancel);
     await waitFor(() => expect(mocks.cancelLocalRepaint).toHaveBeenCalledTimes(1));
 
-    resolveJob?.({ ok: false, error: 'Local Repaint was cancelled.', errorKind: 'cancelled' });
+    resolveJob({ ok: false, error: 'Local Repaint was cancelled.', errorKind: 'cancelled' });
     await waitFor(() => expect((screen.getByRole('button', { name: 'Clear mask' }) as HTMLButtonElement).disabled).toBe(false));
   });
 
