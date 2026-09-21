@@ -229,6 +229,7 @@ beforeEach(() => {
   mocks.cancelLocalRepaint.mockReset();
   mocks.chooseInputImage.mockReset();
   mocks.localRepaint.mockResolvedValue({ ok: true, editedPng: [1, 2, 3] });
+  mocks.cancelLocalRepaint.mockResolvedValue(undefined);
   Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   vi.stubGlobal('requestAnimationFrame', () => 1);
@@ -251,8 +252,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function paintMaskAndPrompt(prompt = 'red leather') {
-  fireEvent.click(await screen.findByRole('button', { name: 'Local Repaint' }));
+function paintCurrentMask() {
   mocks.paintHit = true;
   const canvas = document.querySelector('.viewer-canvas canvas');
   expect(canvas).toBeTruthy();
@@ -269,22 +269,128 @@ async function paintMaskAndPrompt(prompt = 'red leather') {
     clientX: 100,
     clientY: 100,
   }));
+}
+
+async function openAndPaintMask() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Local Repaint' }));
+  paintCurrentMask();
+}
+
+async function paintMaskAndPrompt(prompt = 'red leather') {
+  await openAndPaintMask();
   fireEvent.change(screen.getByRole('textbox', { name: 'Local Repaint prompt' }), { target: { value: prompt } });
+}
+
+async function applyRepaint() {
+  const apply = screen.getByRole('button', { name: 'Apply repaint' }) as HTMLButtonElement;
+  await waitFor(() => expect(apply.disabled).toBe(false));
+  fireEvent.click(apply);
 }
 
 describe('ModelViewer Local Repaint apply flow', () => {
   it('sends a prompt-only painted request through Local Repaint IPC', async () => {
     render(<ModelViewer modelUrl="textured.glb" busy={false} />);
     await paintMaskAndPrompt('red leather');
-
-    const apply = screen.getByRole('button', { name: 'Apply repaint' }) as HTMLButtonElement;
-    await waitFor(() => expect(apply.disabled).toBe(false));
-    fireEvent.click(apply);
+    await applyRepaint();
 
     await waitFor(() => expect(mocks.localRepaint).toHaveBeenCalledTimes(1));
     expect(mocks.localRepaint.mock.calls[0][0]).toMatchObject({
       prompt: 'red leather',
       referenceImage: null,
     });
+  });
+
+  it('accepts reference-only Local Repaint without inventing a prompt', async () => {
+    mocks.chooseInputImage.mockResolvedValueOnce('C:/fixture/reference.png');
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    await openAndPaintMask();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose reference image' }));
+    await screen.findByText('reference.png');
+    await applyRepaint();
+
+    await waitFor(() => expect(mocks.localRepaint).toHaveBeenCalledTimes(1));
+    expect(mocks.localRepaint.mock.calls[0][0]).toMatchObject({
+      prompt: null,
+      referenceImage: 'C:/fixture/reference.png',
+    });
+  });
+
+  it('forwards prompt and reference together', async () => {
+    mocks.chooseInputImage.mockResolvedValueOnce('C:/fixture/style.png');
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    await paintMaskAndPrompt('blue ceramic');
+    fireEvent.click(screen.getByRole('button', { name: 'Choose reference image' }));
+    await screen.findByText('style.png');
+    await applyRepaint();
+
+    await waitFor(() => expect(mocks.localRepaint).toHaveBeenCalledTimes(1));
+    expect(mocks.localRepaint.mock.calls[0][0]).toMatchObject({
+      prompt: 'blue ceramic',
+      referenceImage: 'C:/fixture/style.png',
+    });
+  });
+
+  it('keeps Apply disabled when neither prompt nor reference is provided', async () => {
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    await openAndPaintMask();
+
+    expect((screen.getByRole('button', { name: 'Apply repaint' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mocks.localRepaint).not.toHaveBeenCalled();
+  });
+
+  it('preserves the retry input after a failed repaint and exposes Retry', async () => {
+    mocks.localRepaint.mockRejectedValueOnce(new Error('backend exploded'));
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    await paintMaskAndPrompt('red leather');
+    await applyRepaint();
+
+    expect(await screen.findByText(/Local Repaint failed: Error: backend exploded/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry repaint' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Clear mask' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('uses the first accepted repaint as the source of the second repaint', async () => {
+    mocks.localRepaint
+      .mockResolvedValueOnce({ ok: true, editedPng: [20] })
+      .mockResolvedValueOnce({ ok: true, editedPng: [30] });
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    await paintMaskAndPrompt('first edit');
+    await applyRepaint();
+    await screen.findByText('Local repaint applied.');
+
+    paintCurrentMask();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Local Repaint prompt' }), { target: { value: 'second edit' } });
+    await applyRepaint();
+    await waitFor(() => expect(mocks.localRepaint).toHaveBeenCalledTimes(2));
+
+    expect(mocks.localRepaint.mock.calls[0][0].sourcePng[0]).toBe(10);
+    expect(mocks.localRepaint.mock.calls[1][0].sourcePng[0]).toBe(20);
+  });
+
+  it('can cancel an active repaint without clearing the current mask', async () => {
+    let resolveJob: ((value: unknown) => void) | null = null;
+    mocks.localRepaint.mockReturnValueOnce(new Promise((resolve) => { resolveJob = resolve; }));
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    await paintMaskAndPrompt('long repaint');
+    await applyRepaint();
+
+    const cancel = await screen.findByRole('button', { name: 'Cancel repaint' });
+    fireEvent.click(cancel);
+    await waitFor(() => expect(mocks.cancelLocalRepaint).toHaveBeenCalledTimes(1));
+
+    resolveJob?.({ ok: false, error: 'Local Repaint was cancelled.', errorKind: 'cancelled' });
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Clear mask' }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('enables textured GLB export after repainting an original atlas', async () => {
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    const exportButton = await screen.findByRole('button', { name: 'Export textured GLB' }) as HTMLButtonElement;
+    expect(exportButton.disabled).toBe(true);
+
+    await paintMaskAndPrompt('red leather');
+    await applyRepaint();
+    await screen.findByText('Local repaint applied.');
+
+    expect(exportButton.disabled).toBe(false);
   });
 });
