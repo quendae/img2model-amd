@@ -502,10 +502,10 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     for (let index = 0; index < mask.data.length; index += 1) {
       const value = mask.data[index];
       const offset = index * 4;
-      imageData.data[offset] = value;
-      imageData.data[offset + 1] = value;
-      imageData.data[offset + 2] = value;
-      imageData.data[offset + 3] = 255;
+      imageData.data[offset] = 255;
+      imageData.data[offset + 1] = 255;
+      imageData.data[offset + 2] = 255;
+      imageData.data[offset + 3] = value;
     }
     context.putImageData(imageData, 0, 0);
     texture.needsUpdate = true;
@@ -527,7 +527,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         color: 0xff6655,
         transparent: true,
         opacity: 0.55,
-        alphaMap: texture,
+        map: texture,
         depthWrite: false,
         side: THREE.DoubleSide,
         polygonOffset: true,
@@ -747,7 +747,6 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         setUvTextureStatus('Textured GLB export cancelled.');
         return;
       }
-
       setUvTextureStatus('Textured GLB saved.');
       void writeDiagnosticLog('info', 'uv', 'Direct UV textured GLB exported.', {
         path: savedPath,
