@@ -60,10 +60,21 @@ def make_images(root: Path, *, mask_size=(4, 4), non_empty=True) -> tuple[Path, 
 
 
 def repaint_args(root: Path, **overrides) -> argparse.Namespace:
-    source, mask = make_images(root)
+    source_override = overrides.pop("source", None)
+    mask_override = overrides.pop("mask", None)
+    if (source_override is None) != (mask_override is None):
+        raise ValueError("Test helper requires both source and mask overrides, or neither.")
+    if source_override is None:
+        source, mask = make_images(root)
+        source_value = str(source)
+        mask_value = str(mask)
+    else:
+        source_value = str(source_override)
+        mask_value = str(mask_override)
+
     values = {
-        "source": str(source),
-        "mask": str(mask),
+        "source": source_value,
+        "mask": mask_value,
         "output": str(root / "edited.png"),
         "prompt": "red leather",
         "reference_image": None,
