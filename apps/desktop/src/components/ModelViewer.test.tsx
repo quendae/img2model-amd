@@ -7,9 +7,10 @@ const mocks = vi.hoisted(() => ({
   loadedUrls: [] as string[],
   rendererShouldThrow: false,
   rendererInstances: 0,
-  materials: [] as Array<{ wireframe: boolean; needsUpdate: boolean }>,
+  materials: [] as Array<{ wireframe: boolean; needsUpdate: boolean; map?: unknown }>,
   overlays: [] as Array<{ visible: boolean }>,
   makeLoadedRoot: null as null | (() => unknown),
+  textureMode: 'single' as 'single' | 'multiple' | 'none',
 }));
 
 vi.mock('three', () => {
@@ -17,13 +18,16 @@ vi.mock('three', () => {
     children: any[] = [];
     userData: Record<string, unknown> = {};
     renderOrder = 0;
-    position = { y: 0, sub() { return this; } };
-    scale = { setScalar() {} };
+    visible = true;
+    position = { x: 0, y: 0, z: 0, set() {}, sub() { return this; } };
+    quaternion = { x: 0, y: 0, z: 0, w: 1, set() {} };
+    scale = { x: 1, y: 1, z: 1, setScalar() {}, set() {} };
     add(child: any) { this.children.push(child); }
     traverse(callback: (object: any) => void) {
       callback(this);
       for (const child of this.children) child.traverse?.(callback) ?? callback(child);
     }
+    updateMatrixWorld() {}
   }
 
   class Scene extends Object3D {
@@ -32,6 +36,12 @@ vi.mock('three', () => {
 
   class Color {
     constructor(_value: number) {}
+  }
+
+  class Vector2 {
+    x = 0;
+    y = 0;
+    set(x: number, y: number) { this.x = x; this.y = y; return this; }
   }
 
   class Vector3 {
@@ -83,31 +93,79 @@ vi.mock('three', () => {
     constructor(_size: number, _divisions: number, _color1: number, _color2: number) {}
   }
 
+  class Attribute {
+    count = 3;
+    getX(index: number) { return index === 1 ? 1 : 0; }
+    getY(index: number) { return index === 2 ? 1 : 0; }
+  }
+
   class Geometry {
     dispose() {}
+    getAttribute(name: string) { return name === 'uv' || name === 'position' ? new Attribute() : null; }
+    getIndex() { return null; }
+  }
+
+  class Texture {
+    isTexture = true;
+    image: any = { width: 2048, height: 2048 };
+    flipY = false;
+    name = 'base-color';
+    colorSpace: unknown = 'srgb';
+    wrapS: unknown;
+    wrapT: unknown;
+    magFilter: unknown;
+    minFilter: unknown;
+    generateMipmaps = true;
+    needsUpdate = false;
+    rotation = 0;
+    offset = { x: 0, y: 0, set(x: number, y: number) { this.x = x; this.y = y; } };
+    repeat = { x: 1, y: 1, set(x: number, y: number) { this.x = x; this.y = y; } };
+    center = { x: 0, y: 0, set(x: number, y: number) { this.x = x; this.y = y; } };
+    updateMatrix() {}
+    dispose() {}
+  }
+
+  class CanvasTexture extends Texture {
+    constructor(image: any) { super(); this.image = image; }
   }
 
   class Material {
     wireframe = false;
     needsUpdate = false;
+    map: Texture | null;
+    transparent = false;
+    opacity = 1;
+    depthWrite = true;
+    polygonOffset = false;
+    polygonOffsetFactor = 0;
+    polygonOffsetUnits = 0;
+    alphaMap: Texture | null = null;
+    constructor(options: any = {}) {
+      this.map = options.map ?? null;
+      Object.assign(this, options);
+      mocks.materials.push(this);
+    }
     dispose() {}
-    constructor() { mocks.materials.push(this); }
   }
+
+  class ShaderMaterial extends Material {}
+  class MeshBasicMaterial extends Material {}
 
   class Mesh extends Object3D {
     isMesh = true;
     geometry = new Geometry();
-    material: Material | Material[] = new Material();
+    material: Material | Material[];
+    constructor(texture: Texture | null = null) {
+      super();
+      this.material = new Material({ map: texture });
+    }
   }
 
   class WireframeGeometry extends Geometry {
     constructor(_geometry: unknown) { super(); }
   }
 
-  class LineBasicMaterial {
-    dispose() {}
-    constructor(_options: unknown) {}
-  }
+  class LineBasicMaterial extends Material {}
 
   class LineSegments extends Object3D {
     visible = false;
@@ -121,9 +179,25 @@ vi.mock('three', () => {
     }
   }
 
+  class Raycaster {
+    setFromCamera() {}
+    intersectObjects() { return []; }
+  }
+
+  class TextureLoader {
+    load(_url: string, onLoad: (texture: Texture) => void) { onLoad(new Texture()); }
+  }
+
   mocks.makeLoadedRoot = () => {
     const root = new Object3D();
-    root.add(new Mesh());
+    if (mocks.textureMode === 'none') {
+      root.add(new Mesh(null));
+    } else if (mocks.textureMode === 'multiple') {
+      root.add(new Mesh(new Texture()));
+      root.add(new Mesh(new Texture()));
+    } else {
+      root.add(new Mesh(new Texture()));
+    }
     return root;
   };
 
@@ -131,6 +205,7 @@ vi.mock('three', () => {
     Object3D,
     Scene,
     Color,
+    Vector2,
     Vector3,
     Box3,
     PerspectiveCamera,
@@ -139,17 +214,30 @@ vi.mock('three', () => {
     DirectionalLight,
     GridHelper,
     Mesh,
+    Texture,
+    CanvasTexture,
+    TextureLoader,
+    ShaderMaterial,
+    MeshBasicMaterial,
     WireframeGeometry,
     LineBasicMaterial,
     LineSegments,
+    Raycaster,
+    DoubleSide: 'double-side',
     SRGBColorSpace: 'srgb',
     ACESFilmicToneMapping: 'aces',
+    ClampToEdgeWrapping: 'clamp',
+    NearestFilter: 'nearest',
+    LinearFilter: 'linear',
+    LinearMipmapLinearFilter: 'linear-mipmap',
+    MathUtils: { degToRad: (value: number) => value * Math.PI / 180 },
   };
 });
 
 vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
   OrbitControls: class {
     enableDamping = false;
+    enabled = true;
     target = { set() {} };
     update() {}
     dispose() {}
@@ -181,6 +269,7 @@ beforeEach(() => {
   mocks.overlays.length = 0;
   mocks.rendererShouldThrow = false;
   mocks.rendererInstances = 0;
+  mocks.textureMode = 'single';
   Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
@@ -280,5 +369,31 @@ describe('ModelViewer mesh comparison', () => {
     expect(screen.getByText('Cleaning mesh…')).toBeTruthy();
     expect(mocks.rendererInstances).toBe(0);
     expect(mocks.loadedUrls).toEqual([]);
+  });
+
+  it('offers Local Repaint brush controls and keeps Apply disabled for an empty mask', async () => {
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+
+    const entry = await screen.findByRole('button', { name: 'Local Repaint' });
+    fireEvent.click(entry);
+
+    expect(screen.getByRole('button', { name: 'Paint' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Erase' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Clear mask' })).toBeTruthy();
+    expect(screen.getByRole('slider', { name: 'Local Repaint brush size' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Local Repaint prompt' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Choose reference image' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Apply repaint' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('rejects models with multiple distinct base-color atlases', async () => {
+    mocks.textureMode = 'multiple';
+    render(<ModelViewer modelUrl="multi-atlas.glb" busy={false} />);
+
+    const entry = await screen.findByRole('button', { name: 'Local Repaint' });
+    fireEvent.click(entry);
+
+    expect(await screen.findByText('Local Repaint v1 supports one base-color atlas at a time.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Paint' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
