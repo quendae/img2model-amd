@@ -124,6 +124,17 @@ def _release_torch_memory() -> None:
         pass
 
 
+def _emit(
+    emit_fn: Callable[[dict[str, Any]], None] | None,
+    event: str,
+    **values: Any,
+) -> None:
+    payload = {"event": event, **values}
+    if emit_fn is None:
+        return
+    emit_fn(payload)
+
+
 class SdxlLocalRepaintBackend:
     """SDXL inpainting backend with optional IP-Adapter image guidance."""
 
@@ -139,7 +150,16 @@ class SdxlLocalRepaintBackend:
         *,
         allow_download: bool = True,
         use_ip_adapter: bool = True,
+        emit_fn: Callable[[dict[str, Any]], None] | None = None,
     ) -> "SdxlLocalRepaintBackend":
+        _emit(
+            emit_fn,
+            "progress",
+            ok=True,
+            stage="resolving_repaint_sdxl",
+            progress=0.12,
+            model=DEFAULT_LOCAL_REPAINT_MODEL,
+        )
         model_path, _ = resolve_model_snapshot(
             DEFAULT_LOCAL_REPAINT_MODEL,
             allow_download=allow_download,
@@ -147,11 +167,28 @@ class SdxlLocalRepaintBackend:
         )
         adapter_path: str | None = None
         if use_ip_adapter:
+            _emit(
+                emit_fn,
+                "progress",
+                ok=True,
+                stage="resolving_repaint_ip_adapter",
+                progress=0.17,
+                model=DEFAULT_IP_ADAPTER_MODEL,
+            )
             adapter_path, _ = resolve_model_snapshot(
                 DEFAULT_IP_ADAPTER_MODEL,
                 allow_download=allow_download,
                 allow_patterns=IP_ADAPTER_REQUIRED_PATTERNS,
             )
+
+        _emit(
+            emit_fn,
+            "progress",
+            ok=True,
+            stage="loading_repaint_weights",
+            progress=0.23,
+            model=DEFAULT_LOCAL_REPAINT_MODEL,
+        )
         torch, auto_pipeline, clip_vision = _load_repaint_runtime()
 
         pipeline_kwargs: dict[str, Any] = {
@@ -297,10 +334,14 @@ class LocalRepaintCache:
         self._event("evicted_local_repaint" if evicted else "cache_cleared")
 
 
-def get_sdxl_backend(*, use_ip_adapter: bool = True) -> LocalRepaintBackend:
+def get_sdxl_backend(
+    *,
+    use_ip_adapter: bool = True,
+    emit_fn: Callable[[dict[str, Any]], None] | None = None,
+) -> LocalRepaintBackend:
     """Production backend factory for the persistent worker cache."""
 
-    return SdxlLocalRepaintBackend.load(use_ip_adapter=use_ip_adapter)
+    return SdxlLocalRepaintBackend.load(use_ip_adapter=use_ip_adapter, emit_fn=emit_fn)
 
 
 def classify_local_repaint_error(exc: Exception) -> str:
@@ -319,17 +360,6 @@ def classify_local_repaint_error(exc: Exception) -> str:
     if isinstance(exc, (FileNotFoundError, ValueError)):
         return "invalid_input"
     return "local_repaint_error"
-
-
-def _emit(
-    emit_fn: Callable[[dict[str, Any]], None] | None,
-    event: str,
-    **values: Any,
-) -> None:
-    payload = {"event": event, **values}
-    if emit_fn is None:
-        return
-    emit_fn(payload)
 
 
 def _invalid(
@@ -429,7 +459,9 @@ def run_local_repaint(
             clear_texture(evicted=True)
 
     use_ip_adapter = reference is not None
-    factory = backend_factory or (lambda: get_sdxl_backend(use_ip_adapter=use_ip_adapter))
+    factory = backend_factory or (
+        lambda: get_sdxl_backend(use_ip_adapter=use_ip_adapter, emit_fn=emit_fn)
+    )
     cache_key = (
         DEFAULT_LOCAL_REPAINT_MODEL,
         DEFAULT_IP_ADAPTER_MODEL if use_ip_adapter else None,
@@ -446,7 +478,7 @@ def run_local_repaint(
             "progress",
             ok=True,
             stage="loading_repaint_model",
-            progress=0.15,
+            progress=0.10,
             model=model_id,
         )
         backend, cache_hit = repaint_cache.get_or_create(cache_key, factory)
