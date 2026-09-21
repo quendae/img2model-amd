@@ -7,6 +7,7 @@ import './qhd.css';
 import './progress.css';
 import './runtime-ui.css';
 import './viewport-scroll.css';
+import './local-repaint.css';
 
 installGlobalDiagnostics();
 
