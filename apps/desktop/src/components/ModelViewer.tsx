@@ -4,6 +4,14 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { writeDiagnosticLog } from '../lib/diagnosticLog';
+import {
+  createRepaintMask,
+  maskBounds,
+  stampMaskSamples,
+  textureUvToAtlasPixel,
+  type RepaintMask,
+  type TextureUvTransform as RepaintTextureUvTransform,
+} from '../lib/localRepaintMask';
 import { exportTexturedGlb } from '../lib/modelExport';
 import { chooseInputImage, localAssetUrl } from '../lib/tauri';
 import { exportUvTemplate } from '../lib/uvExport';
@@ -26,6 +34,8 @@ export interface ModelComparison {
 }
 
 type InspectionMode = 'solid' | 'wireframe' | 'solid-wire' | 'uv-checker';
+type RepaintBrushMode = 'paint' | 'erase';
+type RepaintAtlasError = 'no_albedo' | 'multiple_albedo';
 
 interface ModelViewerProps {
   modelUrl: string | null;
@@ -60,9 +70,16 @@ interface InternalViewerDataSnapshot {
   checker: unknown;
 }
 
+interface EditableAtlasResolution {
+  texture: THREE.Texture | null;
+  meshes: THREE.Mesh[];
+  error: RepaintAtlasError | null;
+}
+
 const WIRE_OVERLAY_KEY = 'img2modelWireOverlay';
 const ORIGINAL_MATERIAL_KEY = 'img2modelOriginalMaterial';
 const UV_CHECKER_MATERIAL_KEY = 'img2modelUvCheckerMaterial';
+const REPAINT_OVERLAY_KEY = 'img2modelRepaintOverlay';
 const UV_TEMPLATE_RESOLUTION = 2048;
 
 function setMaterialWireframe(material: THREE.Material, enabled: boolean) {
@@ -95,6 +112,10 @@ function ensureWireOverlay(mesh: THREE.Mesh): THREE.LineSegments {
   overlay.visible = false;
   mesh.add(overlay);
   return overlay;
+}
+
+function isRepaintOverlay(object: THREE.Object3D): boolean {
+  return object.userData?.[REPAINT_OVERLAY_KEY] === true;
 }
 
 function originalMaterialFor(mesh: THREE.Mesh): THREE.Material | THREE.Material[] {
@@ -150,7 +171,7 @@ function meshHasUv(mesh: THREE.Mesh): boolean {
 
 function applyInspectionMode(root: THREE.Object3D, mode: InspectionMode) {
   root.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
+    if (!(object instanceof THREE.Mesh) || isRepaintOverlay(object)) return;
 
     const original = originalMaterialFor(object);
     restoreOriginalMaterial(object);
@@ -184,6 +205,10 @@ function disposeLoadedRoot(root: THREE.Object3D) {
   const disposedMaterials = new Set<THREE.Material>();
   root.traverse((object) => {
     if (object instanceof THREE.Mesh) {
+      if (isRepaintOverlay(object)) {
+        disposeMaterialValue(object.material as THREE.Material | THREE.Material[], disposedMaterials);
+        return;
+      }
       object.geometry?.dispose();
       disposeMaterialValue(object.material as THREE.Material | THREE.Material[], disposedMaterials);
       disposeMaterialValue(
@@ -202,6 +227,76 @@ function disposeLoadedRoot(root: THREE.Object3D) {
       disposeMaterialValue(object.material as THREE.Material | THREE.Material[], disposedMaterials);
     }
   });
+}
+
+function materialsForMesh(mesh: THREE.Mesh): THREE.Material[] {
+  const source = mesh.userData[ORIGINAL_MATERIAL_KEY] ?? mesh.material;
+  return (Array.isArray(source) ? source : [source]).filter(Boolean) as THREE.Material[];
+}
+
+function materialBaseColorTexture(material: THREE.Material): THREE.Texture | null {
+  const candidate = material as THREE.Material & { map?: THREE.Texture | null };
+  return 'map' in candidate && candidate.map ? candidate.map : null;
+}
+
+function resolveEditableBaseColorTexture(root: THREE.Object3D, preferred: THREE.Texture | null = null): EditableAtlasResolution {
+  const byTexture = new Map<THREE.Texture, THREE.Mesh[]>();
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || isRepaintOverlay(object) || !meshHasUv(object)) return;
+    for (const material of materialsForMesh(object)) {
+      const texture = materialBaseColorTexture(material);
+      if (!texture) continue;
+      const meshes = byTexture.get(texture) ?? [];
+      if (!meshes.includes(object)) meshes.push(object);
+      byTexture.set(texture, meshes);
+    }
+  });
+
+  if (preferred && byTexture.has(preferred)) {
+    return { texture: preferred, meshes: byTexture.get(preferred) ?? [], error: null };
+  }
+  if (byTexture.size === 0) return { texture: null, meshes: [], error: 'no_albedo' };
+  if (byTexture.size > 1) return { texture: null, meshes: [], error: 'multiple_albedo' };
+  const [texture, meshes] = [...byTexture.entries()][0];
+  return { texture, meshes, error: null };
+}
+
+function repaintTextureTransform(texture: THREE.Texture): RepaintTextureUvTransform {
+  return {
+    offsetX: texture.offset?.x ?? 0,
+    offsetY: texture.offset?.y ?? 0,
+    repeatX: texture.repeat?.x ?? 1,
+    repeatY: texture.repeat?.y ?? 1,
+    rotationRad: texture.rotation ?? 0,
+    centerX: texture.center?.x ?? 0,
+    centerY: texture.center?.y ?? 0,
+    flipY: texture.flipY ?? false,
+  };
+}
+
+function brushDiskSamples(sizePx: number): Array<readonly [number, number]> {
+  const radius = Math.max(0, sizePx / 2);
+  const step = Math.max(1, Math.floor(radius / 5));
+  const samples: Array<readonly [number, number]> = [];
+  for (let y = -radius; y <= radius; y += step) {
+    for (let x = -radius; x <= radius; x += step) {
+      if (x * x + y * y <= radius * radius) samples.push([x, y]);
+    }
+  }
+  if (!samples.some(([x, y]) => x === 0 && y === 0)) samples.push([0, 0]);
+  return samples;
+}
+
+function copyTextureSampling(source: THREE.Texture, target: THREE.Texture) {
+  target.flipY = source.flipY;
+  target.wrapS = source.wrapS;
+  target.wrapT = source.wrapT;
+  target.offset.copy(source.offset);
+  target.repeat.copy(source.repeat);
+  target.center.copy(source.center);
+  target.rotation = source.rotation;
+  target.updateMatrix();
+  target.needsUpdate = true;
 }
 
 function modelStem(modelUrl: string | null): string {
@@ -264,7 +359,7 @@ function updateWorldMatrix(root: THREE.Object3D) {
 function detachInternalViewerData(root: THREE.Object3D): InternalViewerDataSnapshot[] {
   const snapshots: InternalViewerDataSnapshot[] = [];
   root.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
+    if (!(object instanceof THREE.Mesh) || isRepaintOverlay(object)) return;
     const hadOriginal = Object.prototype.hasOwnProperty.call(object.userData, ORIGINAL_MATERIAL_KEY);
     const hadChecker = Object.prototype.hasOwnProperty.call(object.userData, UV_CHECKER_MATERIAL_KEY);
     snapshots.push({
@@ -313,7 +408,7 @@ function applyUvTexture(root: THREE.Object3D, texture: THREE.Texture): { meshCou
   const changedMaterials = new Set<THREE.Material>();
 
   root.traverse((object) => {
-    if (!(object instanceof THREE.Mesh) || !meshHasUv(object)) return;
+    if (!(object instanceof THREE.Mesh) || isRepaintOverlay(object) || !meshHasUv(object)) return;
     const baseMaterials = originalMaterialFor(object);
     const materials = Array.isArray(baseMaterials) ? baseMaterials : [baseMaterials];
     let changedMesh = false;
@@ -338,6 +433,16 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const loadedRootRef = useRef<THREE.Object3D | null>(null);
   const originalTransformRef = useRef<TransformSnapshot | null>(null);
   const importedTextureRef = useRef<THREE.Texture | null>(null);
+  const repaintModeRef = useRef(false);
+  const repaintBrushModeRef = useRef<RepaintBrushMode>('paint');
+  const repaintBrushSizeRef = useRef(32);
+  const repaintMaskRef = useRef<RepaintMask | null>(null);
+  const repaintTextureRef = useRef<THREE.Texture | null>(null);
+  const repaintEditableMeshesRef = useRef<THREE.Mesh[]>([]);
+  const repaintOverlayMeshesRef = useRef<THREE.Mesh[]>([]);
+  const repaintOverlayTextureRef = useRef<THREE.CanvasTexture | null>(null);
+  const repaintOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comparisonSide, setComparisonSide] = useState<'before' | 'after'>('after');
   const [inspectionMode, setInspectionMode] = useState<InspectionMode>('solid');
@@ -349,6 +454,93 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const [uvTextureTransform, setUvTextureTransform] = useState<UvTextureTransform>(() => ({
     ...DEFAULT_UV_TEXTURE_TRANSFORM,
   }));
+  const [repaintMode, setRepaintMode] = useState(false);
+  const [repaintBrushMode, setRepaintBrushMode] = useState<RepaintBrushMode>('paint');
+  const [repaintBrushSizePx, setRepaintBrushSizePx] = useState(32);
+  const [, setRepaintMask] = useState<RepaintMask | null>(null);
+  const [repaintHasMask, setRepaintHasMask] = useState(false);
+  const [repaintPrompt, setRepaintPrompt] = useState('');
+  const [repaintReferencePath, setRepaintReferencePath] = useState<string | null>(null);
+  const [repaintBusy] = useState(false);
+  const [repaintStatus, setRepaintStatus] = useState<string | null>(null);
+  const [repaintAtlasError, setRepaintAtlasError] = useState<RepaintAtlasError | null>(null);
+
+  const disposeRepaintOverlay = () => {
+    for (const overlay of repaintOverlayMeshesRef.current) {
+      overlay.parent?.remove(overlay);
+      const material = overlay.material;
+      (Array.isArray(material) ? material : [material]).forEach((entry) => entry.dispose());
+    }
+    repaintOverlayMeshesRef.current = [];
+    repaintOverlayTextureRef.current?.dispose();
+    repaintOverlayTextureRef.current = null;
+    repaintOverlayCanvasRef.current = null;
+  };
+
+  const refreshRepaintOverlay = (mask: RepaintMask) => {
+    const canvas = repaintOverlayCanvasRef.current;
+    const texture = repaintOverlayTextureRef.current;
+    if (!canvas || !texture) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const imageData = context.createImageData(mask.width, mask.height);
+    for (let index = 0; index < mask.data.length; index += 1) {
+      const value = mask.data[index];
+      const offset = index * 4;
+      imageData.data[offset] = value;
+      imageData.data[offset + 1] = value;
+      imageData.data[offset + 2] = value;
+      imageData.data[offset + 3] = 255;
+    }
+    context.putImageData(imageData, 0, 0);
+    texture.needsUpdate = true;
+  };
+
+  const installRepaintOverlay = (meshes: THREE.Mesh[], sourceTexture: THREE.Texture, mask: RepaintMask) => {
+    disposeRepaintOverlay();
+    const canvas = document.createElement('canvas');
+    canvas.width = mask.width;
+    canvas.height = mask.height;
+    const texture = new THREE.CanvasTexture(canvas);
+    copyTextureSampling(sourceTexture, texture);
+    repaintOverlayCanvasRef.current = canvas;
+    repaintOverlayTextureRef.current = texture;
+
+    const overlays: THREE.Mesh[] = [];
+    for (const mesh of meshes) {
+      const material = new THREE.MeshBasicMaterial({
+        color: 0xff6655,
+        transparent: true,
+        opacity: 0.55,
+        alphaMap: texture,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+      const overlay = new THREE.Mesh(mesh.geometry, material);
+      overlay.userData[REPAINT_OVERLAY_KEY] = true;
+      overlay.renderOrder = 3;
+      mesh.add(overlay);
+      overlays.push(overlay);
+    }
+    repaintOverlayMeshesRef.current = overlays;
+    refreshRepaintOverlay(mask);
+  };
+
+  const resetRepaintSession = (closePanel = true) => {
+    disposeRepaintOverlay();
+    repaintMaskRef.current = null;
+    repaintTextureRef.current = null;
+    repaintEditableMeshesRef.current = [];
+    repaintModeRef.current = false;
+    setRepaintMask(null);
+    setRepaintHasMask(false);
+    setRepaintAtlasError(null);
+    setRepaintStatus(null);
+    if (closePanel) setRepaintMode(false);
+  };
 
   useEffect(() => {
     setComparisonSide('after');
@@ -365,6 +557,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     : modelUrl;
 
   useEffect(() => {
+    resetRepaintSession();
     importedTextureRef.current?.dispose();
     importedTextureRef.current = null;
     originalTransformRef.current = null;
@@ -382,6 +575,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   }, [uvTextureTransform, textureStylePreset]);
 
   useEffect(() => () => {
+    disposeRepaintOverlay();
     importedTextureRef.current?.dispose();
     importedTextureRef.current = null;
   }, []);
@@ -456,6 +650,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         return;
       }
 
+      resetRepaintSession();
       const previous = importedTextureRef.current;
       importedTextureRef.current = texture;
       texture = null;
@@ -554,6 +749,81 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     }
   };
 
+  const handleToggleLocalRepaint = () => {
+    if (repaintModeRef.current) {
+      resetRepaintSession();
+      return;
+    }
+
+    const root = loadedRootRef.current;
+    setRepaintMode(true);
+    repaintModeRef.current = true;
+    setInspectionMode('solid');
+    setRepaintStatus(null);
+    setRepaintAtlasError(null);
+    if (!root) {
+      setRepaintStatus('Local Repaint requires a loaded model.');
+      return;
+    }
+
+    const resolved = resolveEditableBaseColorTexture(root, importedTextureRef.current);
+    if (resolved.error) {
+      setRepaintAtlasError(resolved.error);
+      setRepaintStatus(
+        resolved.error === 'multiple_albedo'
+          ? 'Local Repaint v1 supports one base-color atlas at a time.'
+          : 'Local Repaint requires a base-color texture.',
+      );
+      repaintTextureRef.current = null;
+      repaintEditableMeshesRef.current = [];
+      repaintMaskRef.current = null;
+      setRepaintMask(null);
+      setRepaintHasMask(false);
+      return;
+    }
+
+    const texture = resolved.texture;
+    if (!texture) return;
+    const [width, height] = imageDimensions(texture);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      setRepaintStatus('Local Repaint needs a loaded base-color image.');
+      return;
+    }
+
+    const mask = createRepaintMask(Math.round(width), Math.round(height));
+    repaintTextureRef.current = texture;
+    repaintEditableMeshesRef.current = resolved.meshes;
+    repaintMaskRef.current = mask;
+    setRepaintMask(mask);
+    setRepaintHasMask(false);
+    installRepaintOverlay(resolved.meshes, texture, mask);
+    setRepaintStatus('Paint the area to change directly on the model.');
+  };
+
+  const handleBrushMode = (mode: RepaintBrushMode) => {
+    repaintBrushModeRef.current = mode;
+    setRepaintBrushMode(mode);
+  };
+
+  const handleBrushSize = (value: number) => {
+    const resolved = Math.min(120, Math.max(4, Math.round(value)));
+    repaintBrushSizeRef.current = resolved;
+    setRepaintBrushSizePx(resolved);
+  };
+
+  const handleClearRepaintMask = () => {
+    const mask = repaintMaskRef.current;
+    if (!mask) return;
+    mask.data.fill(0);
+    setRepaintHasMask(false);
+    refreshRepaintOverlay(mask);
+  };
+
+  const handleChooseRepaintReference = async () => {
+    const path = await chooseInputImage();
+    if (path) setRepaintReferencePath(path);
+  };
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host || busy) return undefined;
@@ -612,6 +882,62 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     let loadedRoot: THREE.Object3D | null = null;
     let disposed = false;
     let renderFailed = false;
+    let repaintDrawing = false;
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+
+    const paintAtPointer = (event: PointerEvent) => {
+      const mask = repaintMaskRef.current;
+      const texture = repaintTextureRef.current;
+      const meshes = repaintEditableMeshesRef.current;
+      if (!repaintModeRef.current || !mask || !texture || meshes.length === 0) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const transform = repaintTextureTransform(texture);
+      const samples = [] as Array<{ x: number; y: number }>;
+      for (const [dx, dy] of brushDiskSamples(repaintBrushSizeRef.current)) {
+        const x = event.clientX + dx;
+        const y = event.clientY + dy;
+        ndc.set(
+          ((x - rect.left) / rect.width) * 2 - 1,
+          -(((y - rect.top) / rect.height) * 2 - 1),
+        );
+        raycaster.setFromCamera(ndc, camera);
+        const hit = raycaster.intersectObjects(meshes, false).find((entry) => Boolean(entry.uv));
+        if (!hit?.uv) continue;
+        samples.push(textureUvToAtlasPixel(hit.uv, mask.width, mask.height, transform));
+      }
+      if (samples.length === 0) return;
+      stampMaskSamples(mask, samples, repaintBrushModeRef.current, 0);
+      setRepaintHasMask(maskBounds(mask) !== null);
+      refreshRepaintOverlay(mask);
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || !repaintModeRef.current || !repaintMaskRef.current) return;
+      repaintDrawing = true;
+      controls.enabled = false;
+      renderer.domElement.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      paintAtPointer(event);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (!repaintDrawing) return;
+      event.preventDefault();
+      paintAtPointer(event);
+    };
+    const finishPointerStroke = (event?: PointerEvent) => {
+      if (!repaintDrawing) return;
+      repaintDrawing = false;
+      controls.enabled = true;
+      if (event) renderer.domElement.releasePointerCapture?.(event.pointerId);
+    };
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerup', finishPointerStroke);
+    renderer.domElement.addEventListener('pointercancel', finishPointerStroke);
+    renderer.domElement.addEventListener('pointerleave', finishPointerStroke);
 
     const onContextLost = (event: Event) => {
       event.preventDefault();
@@ -686,9 +1012,15 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
 
     return () => {
       disposed = true;
+      finishPointerStroke();
       cancelAnimationFrame(frame);
       observer.disconnect();
       controls.dispose();
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      renderer.domElement.removeEventListener('pointerup', finishPointerStroke);
+      renderer.domElement.removeEventListener('pointercancel', finishPointerStroke);
+      renderer.domElement.removeEventListener('pointerleave', finishPointerStroke);
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       if (loadedRoot) disposeLoadedRoot(loadedRoot);
       if (loadedRootRef.current === loadedRoot) loadedRootRef.current = null;
@@ -702,6 +1034,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   }, [activeModelUrl, busy]);
 
   const uvAvailable = Boolean(uvLayout && uvLayout.triangleCount > 0);
+  const repaintCanPaint = repaintMode && !repaintBusy && repaintAtlasError === null && Boolean(repaintMaskRef.current);
+  const repaintCanApply = repaintCanPaint && repaintHasMask && Boolean(repaintPrompt.trim() || repaintReferencePath);
 
   return (
     <section className="viewer-shell" aria-label="3D model preview">
@@ -764,21 +1098,95 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
 
       {uvAvailable && activeModelUrl && !busy && (
         <div className="viewer-uv-tools" aria-label="Direct UV texture tools">
-          <button type="button" disabled={uvTextureBusy} onClick={() => void handleImportUvTexture()}>
+          <button type="button" disabled={uvTextureBusy || repaintBusy} onClick={() => void handleImportUvTexture()}>
             {uvTextureBusy && !uvTextureInfo ? 'Loading…' : 'Import UV texture'}
           </button>
           <button
             type="button"
-            disabled={uvTextureBusy || !uvTextureInfo}
+            disabled={uvTextureBusy || repaintBusy || !uvTextureInfo}
             onClick={() => void handleExportTexturedGlb()}
           >
             Export textured GLB
+          </button>
+          <button
+            type="button"
+            aria-pressed={repaintMode}
+            disabled={uvTextureBusy || repaintBusy}
+            onClick={handleToggleLocalRepaint}
+          >
+            Local Repaint
           </button>
           {uvTextureInfo && (
             <span title={uvTextureInfo.path}>
               {uvTextureInfo.name} · {uvTextureInfo.width}×{uvTextureInfo.height}
             </span>
           )}
+        </div>
+      )}
+
+      {repaintMode && activeModelUrl && !busy && (
+        <div className="viewer-local-repaint" aria-label="Local Repaint controls">
+          <div className="viewer-local-repaint-heading">
+            <strong>Local Repaint</strong>
+            <button type="button" disabled={repaintBusy} onClick={() => resetRepaintSession()}>
+              Close
+            </button>
+          </div>
+          <div className="viewer-local-repaint-modes">
+            <button
+              type="button"
+              aria-pressed={repaintBrushMode === 'paint'}
+              disabled={!repaintCanPaint}
+              onClick={() => handleBrushMode('paint')}
+            >
+              Paint
+            </button>
+            <button
+              type="button"
+              aria-pressed={repaintBrushMode === 'erase'}
+              disabled={!repaintCanPaint}
+              onClick={() => handleBrushMode('erase')}
+            >
+              Erase
+            </button>
+            <button type="button" disabled={!repaintCanPaint || !repaintHasMask} onClick={handleClearRepaintMask}>
+              Clear mask
+            </button>
+          </div>
+          <label className="viewer-local-repaint-range">
+            <span>Brush <output>{repaintBrushSizePx}px</output></span>
+            <input
+              aria-label="Local Repaint brush size"
+              type="range"
+              min="4"
+              max="120"
+              step="2"
+              value={repaintBrushSizePx}
+              disabled={!repaintCanPaint}
+              onChange={(event) => handleBrushSize(Number(event.currentTarget.value))}
+            />
+          </label>
+          <label className="viewer-local-repaint-prompt">
+            <span>Prompt</span>
+            <textarea
+              aria-label="Local Repaint prompt"
+              value={repaintPrompt}
+              disabled={!repaintCanPaint}
+              placeholder="Describe only the local change…"
+              rows={2}
+              onChange={(event) => setRepaintPrompt(event.currentTarget.value)}
+            />
+          </label>
+          <div className="viewer-local-repaint-reference">
+            <button type="button" disabled={!repaintCanPaint} onClick={() => void handleChooseRepaintReference()}>
+              Choose reference image
+            </button>
+            {repaintReferencePath && <span title={repaintReferencePath}>{inputFilename(repaintReferencePath)}</span>}
+          </div>
+          <button type="button" className="viewer-local-repaint-apply" disabled={!repaintCanApply}>
+            Apply repaint
+          </button>
+          {repaintStatus && <div className={repaintAtlasError ? 'viewer-local-repaint-error' : 'viewer-local-repaint-status'}>{repaintStatus}</div>}
         </div>
       )}
 
@@ -875,7 +1283,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         </div>
       )}
       {loadError && <div className="viewer-error">{loadError}</div>}
-      <div className="viewer-hint">Drag to orbit · wheel to zoom · right drag to pan</div>
+      <div className="viewer-hint">{repaintMode ? 'Left drag to paint mask · wheel/right drag to navigate' : 'Drag to orbit · wheel to zoom · right drag to pan'}</div>
     </section>
   );
 }
