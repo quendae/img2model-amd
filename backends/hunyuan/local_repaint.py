@@ -19,6 +19,25 @@ from PIL import Image
 DEFAULT_LOCAL_REPAINT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 DEFAULT_IP_ADAPTER_MODEL = "h94/IP-Adapter"
 IP_ADAPTER_WEIGHT = "ip-adapter-plus_sdxl_vit-h.safetensors"
+SDXL_REQUIRED_PATTERNS = (
+    "model_index.json",
+    "scheduler/*",
+    "tokenizer/*",
+    "tokenizer_2/*",
+    "text_encoder/config.json",
+    "text_encoder/model.fp16.safetensors",
+    "text_encoder_2/config.json",
+    "text_encoder_2/model.fp16.safetensors",
+    "unet/config.json",
+    "unet/diffusion_pytorch_model.fp16.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.fp16.safetensors",
+)
+IP_ADAPTER_REQUIRED_PATTERNS = (
+    "models/image_encoder/config.json",
+    "models/image_encoder/model.safetensors",
+    f"sdxl_models/{IP_ADAPTER_WEIGHT}",
+)
 REPAINT_MODEL_SIZE = (1024, 1024)
 REPAINT_STEPS = 20
 REPAINT_GUIDANCE_SCALE = 7.0
@@ -50,23 +69,34 @@ def snapshot_download(repo_id: str, **kwargs: Any) -> str:
     return str(hf_snapshot_download(repo_id=repo_id, **kwargs))
 
 
-def resolve_model_snapshot(repo_id: str, allow_download: bool = True) -> tuple[str, bool]:
-    """Resolve a model from the persistent HF cache, downloading only if absent.
+def resolve_model_snapshot(
+    repo_id: str,
+    allow_download: bool = True,
+    *,
+    allow_patterns: tuple[str, ...] | list[str] | None = None,
+) -> tuple[str, bool]:
+    """Resolve only the required model files from the persistent HF cache.
 
     Returns ``(snapshot_path, disk_cache_hit)``. The first probe is always
     local-only so callers can report whether first-use network acquisition was
-    required without performing a separate Hub metadata request.
+    required without performing a separate Hub metadata request. ``allow_patterns``
+    is forwarded to both the local probe and the first download so large model
+    repositories do not pull unused precision variants or adapter families.
     """
 
+    scope: dict[str, Any] = {}
+    if allow_patterns is not None:
+        scope["allow_patterns"] = allow_patterns
+
     try:
-        return snapshot_download(repo_id, local_files_only=True), True
+        return snapshot_download(repo_id, local_files_only=True, **scope), True
     except Exception as local_error:
         if not allow_download:
             raise RuntimeError(
                 f"Model '{repo_id}' is not available in the local Hugging Face cache."
             ) from local_error
 
-    return snapshot_download(repo_id), False
+    return snapshot_download(repo_id, **scope), False
 
 
 def _load_repaint_runtime() -> tuple[Any, Any, Any]:
@@ -107,10 +137,12 @@ class SdxlLocalRepaintBackend:
         model_path, _ = resolve_model_snapshot(
             DEFAULT_LOCAL_REPAINT_MODEL,
             allow_download=allow_download,
+            allow_patterns=SDXL_REQUIRED_PATTERNS,
         )
         adapter_path, _ = resolve_model_snapshot(
             DEFAULT_IP_ADAPTER_MODEL,
             allow_download=allow_download,
+            allow_patterns=IP_ADAPTER_REQUIRED_PATTERNS,
         )
         torch, auto_pipeline, clip_vision = _load_repaint_runtime()
 
