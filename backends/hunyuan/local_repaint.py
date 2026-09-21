@@ -1,8 +1,8 @@
-"""Local Repaint validation, cache lifecycle and backend adapter seam.
+"""Local Repaint validation, cache lifecycle and SDXL/IP-Adapter backend.
 
-The real SDXL/IP-Adapter implementation is intentionally loaded lazily by
-``get_sdxl_backend``.  This module owns the stable worker contract so protocol,
-validation and cache behavior remain testable without torch/diffusers.
+Heavy ML dependencies are imported lazily so worker protocol/validation tests do
+not need torch, Diffusers or Transformers installed. Model weights are resolved
+through the normal Hugging Face cache and downloaded only when they are absent.
 """
 
 from __future__ import annotations
@@ -17,6 +17,12 @@ from PIL import Image
 
 
 DEFAULT_LOCAL_REPAINT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
+DEFAULT_IP_ADAPTER_MODEL = "h94/IP-Adapter"
+IP_ADAPTER_WEIGHT = "ip-adapter-plus_sdxl_vit-h.safetensors"
+REPAINT_MODEL_SIZE = (1024, 1024)
+REPAINT_STEPS = 20
+REPAINT_GUIDANCE_SCALE = 7.0
+IP_ADAPTER_SCALE = 0.6
 
 
 class LocalRepaintBackend(Protocol):
@@ -32,6 +38,51 @@ class LocalRepaintBackend(Protocol):
     ) -> Image.Image: ...
 
 
+def snapshot_download(repo_id: str, **kwargs: Any) -> str:
+    """Lazy Hugging Face wrapper kept patchable for download-free tests."""
+
+    try:
+        from huggingface_hub import snapshot_download as hf_snapshot_download  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "Local Repaint requires huggingface_hub. Install requirements-repaint.txt."
+        ) from exc
+    return str(hf_snapshot_download(repo_id=repo_id, **kwargs))
+
+
+def resolve_model_snapshot(repo_id: str, allow_download: bool = True) -> tuple[str, bool]:
+    """Resolve a model from the persistent HF cache, downloading only if absent.
+
+    Returns ``(snapshot_path, disk_cache_hit)``. The first probe is always
+    local-only so callers can report whether first-use network acquisition was
+    required without performing a separate Hub metadata request.
+    """
+
+    try:
+        return snapshot_download(repo_id, local_files_only=True), True
+    except Exception as local_error:
+        if not allow_download:
+            raise RuntimeError(
+                f"Model '{repo_id}' is not available in the local Hugging Face cache."
+            ) from local_error
+
+    return snapshot_download(repo_id), False
+
+
+def _load_repaint_runtime() -> tuple[Any, Any, Any]:
+    """Import the heavyweight runtime only on the production load path."""
+
+    try:
+        import torch  # type: ignore
+        from diffusers import AutoPipelineForInpainting  # type: ignore
+        from transformers import CLIPVisionModelWithProjection  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "Local Repaint runtime dependencies are missing. Install requirements-repaint.txt."
+        ) from exc
+    return torch, AutoPipelineForInpainting, CLIPVisionModelWithProjection
+
+
 def _release_torch_memory() -> None:
     gc.collect()
     try:
@@ -41,6 +92,107 @@ def _release_torch_memory() -> None:
             torch.cuda.empty_cache()
     except Exception:
         pass
+
+
+class SdxlLocalRepaintBackend:
+    """SDXL inpainting backend with optional IP-Adapter image guidance."""
+
+    model_id = DEFAULT_LOCAL_REPAINT_MODEL
+
+    def __init__(self, pipeline: Any) -> None:
+        self.pipeline = pipeline
+
+    @classmethod
+    def load(cls, *, allow_download: bool = True) -> "SdxlLocalRepaintBackend":
+        model_path, _ = resolve_model_snapshot(
+            DEFAULT_LOCAL_REPAINT_MODEL,
+            allow_download=allow_download,
+        )
+        adapter_path, _ = resolve_model_snapshot(
+            DEFAULT_IP_ADAPTER_MODEL,
+            allow_download=allow_download,
+        )
+        torch, auto_pipeline, clip_vision = _load_repaint_runtime()
+
+        image_encoder = clip_vision.from_pretrained(
+            adapter_path,
+            subfolder="models/image_encoder",
+            torch_dtype=torch.float16,
+        )
+        pipe = auto_pipeline.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            variant="fp16",
+            use_safetensors=True,
+            image_encoder=image_encoder,
+        )
+        pipe.load_ip_adapter(
+            adapter_path,
+            subfolder="sdxl_models",
+            weight_name=IP_ADAPTER_WEIGHT,
+        )
+        pipe.set_ip_adapter_scale(IP_ADAPTER_SCALE)
+        pipe.enable_attention_slicing()
+        pipe.enable_vae_slicing()
+        pipe.enable_vae_tiling()
+        pipe.to("cuda")
+        return cls(pipe)
+
+    def repaint(
+        self,
+        source: Image.Image,
+        mask: Image.Image,
+        *,
+        prompt: str | None,
+        reference: Image.Image | None,
+    ) -> Image.Image:
+        if not prompt and reference is None:
+            raise ValueError("Local Repaint requires a prompt or reference image.")
+
+        source_rgba = source.convert("RGBA")
+        mask_l = mask.convert("L")
+        if source_rgba.size != mask_l.size:
+            raise ValueError(
+                f"Local Repaint mask dimensions {mask_l.size} do not match source dimensions {source_rgba.size}."
+            )
+        if mask_l.getbbox() is None:
+            raise ValueError("Local Repaint mask is empty.")
+
+        model_image = source_rgba.convert("RGB").resize(REPAINT_MODEL_SIZE, Image.Resampling.LANCZOS)
+        model_mask = mask_l.resize(REPAINT_MODEL_SIZE, Image.Resampling.NEAREST)
+        call_kwargs: dict[str, Any] = {
+            "prompt": prompt or "",
+            "image": model_image,
+            "mask_image": model_mask,
+            "num_inference_steps": REPAINT_STEPS,
+            "guidance_scale": REPAINT_GUIDANCE_SCALE,
+            "strength": 1.0,
+        }
+        if reference is not None:
+            call_kwargs["ip_adapter_image"] = reference.convert("RGB").resize(
+                REPAINT_MODEL_SIZE,
+                Image.Resampling.LANCZOS,
+            )
+
+        pipeline_result = self.pipeline(**call_kwargs)
+        images = getattr(pipeline_result, "images", None)
+        if not images:
+            raise RuntimeError("SDXL Local Repaint returned no image.")
+        generated = images[0]
+        if not isinstance(generated, Image.Image):
+            raise TypeError("SDXL Local Repaint returned a non-image result.")
+
+        generated_rgba = generated.convert("RGBA").resize(source_rgba.size, Image.Resampling.LANCZOS)
+
+        # The model sees the binary mask, then we enforce the same boundary a
+        # second time here. The frontend compositor performs the final
+        # mask+feather transaction when the patch is accepted into the atlas.
+        binary_mask = mask_l.point(lambda value: 255 if value > 0 else 0)
+        return Image.composite(generated_rgba, source_rgba, binary_mask)
+
+    def close(self) -> None:
+        self.pipeline = None
+        _release_torch_memory()
 
 
 class LocalRepaintCache:
@@ -97,11 +249,9 @@ class LocalRepaintCache:
 
 
 def get_sdxl_backend() -> LocalRepaintBackend:
-    """Production backend factory; Task 6 replaces this placeholder lazily."""
+    """Production backend factory for the persistent worker cache."""
 
-    raise RuntimeError(
-        "Local Repaint model backend is not installed yet. Install the repaint runtime dependencies."
-    )
+    return SdxlLocalRepaintBackend.load()
 
 
 def classify_local_repaint_error(exc: Exception) -> str:
@@ -190,11 +340,15 @@ def run_local_repaint(
         return _invalid(emit_fn, f"Could not decode Local Repaint source or mask: {type(exc).__name__}: {exc}")
 
     if mask.size != source.size:
+        source.close()
+        mask.close()
         return _invalid(
             emit_fn,
             f"Local Repaint mask dimensions {mask.size} do not match source dimensions {source.size}.",
         )
     if mask.getbbox() is None:
+        source.close()
+        mask.close()
         return _invalid(emit_fn, "Local Repaint mask is empty.")
 
     reference: Image.Image | None = None
@@ -202,6 +356,8 @@ def run_local_repaint(
         try:
             reference = _open_rgba(reference_path)
         except Exception as exc:
+            source.close()
+            mask.close()
             return _invalid(
                 emit_fn,
                 f"Could not decode Local Repaint reference image: {type(exc).__name__}: {exc}",
@@ -229,6 +385,8 @@ def run_local_repaint(
     backend: LocalRepaintBackend | None = None
     model_id = DEFAULT_LOCAL_REPAINT_MODEL
     try:
+        # This is deliberately emitted before the factory is called because the
+        # factory may perform the first-use Hugging Face download.
         _emit(
             emit_fn,
             "progress",
@@ -238,7 +396,7 @@ def run_local_repaint(
             model=model_id,
         )
         backend, cache_hit = repaint_cache.get_or_create(
-            (DEFAULT_LOCAL_REPAINT_MODEL,),
+            (DEFAULT_LOCAL_REPAINT_MODEL, DEFAULT_IP_ADAPTER_MODEL),
             factory,
         )
         model_id = str(getattr(backend, "model_id", DEFAULT_LOCAL_REPAINT_MODEL))
