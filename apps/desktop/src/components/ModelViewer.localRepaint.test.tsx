@@ -18,6 +18,48 @@ vi.mock('../lib/tauri', () => ({
   cancelLocalRepaint: mocks.cancelLocalRepaint,
 }));
 
+vi.mock('../lib/localRepaintAtlas', () => ({
+  captureEditableAtlas: () => ({
+    width: 16,
+    height: 16,
+    rgba: new Uint8ClampedArray(16 * 16 * 4).fill(10),
+    flipY: false,
+    name: 'fixture-atlas',
+  }),
+  extractRepaintPatch: (atlas: any) => ({
+    sourcePatch: {
+      width: 1,
+      height: 1,
+      rgba: new Uint8ClampedArray([atlas.rgba[0], 0, 0, 255]),
+      flipY: false,
+      name: 'fixture-patch',
+    },
+    maskPatch: { width: 1, height: 1, data: new Uint8ClampedArray([255]) },
+    rect: { x: 8, y: 8, width: 1, height: 1 },
+  }),
+  repaintMaskToEditableAtlas: () => ({
+    width: 1,
+    height: 1,
+    rgba: new Uint8ClampedArray([255, 255, 255, 255]),
+    flipY: false,
+    name: 'fixture-mask',
+  }),
+  editableAtlasToPng: async (atlas: any) => new Uint8Array([atlas.rgba[0] ?? 0, 1]),
+  pngBytesToEditableAtlas: async (bytes: Uint8Array) => ({
+    width: 1,
+    height: 1,
+    rgba: new Uint8ClampedArray([bytes[0] ?? 0, 0, 0, 255]),
+    flipY: false,
+    name: 'fixture-result',
+  }),
+  compositeRepaintPatch: (source: any, edited: any) => {
+    const rgba = new Uint8ClampedArray(source.rgba);
+    rgba[0] = edited.rgba[0];
+    return { ...source, rgba };
+  },
+  atlasToCanvasTexture: (_atlas: any, sourceTexture: any) => sourceTexture,
+}));
+
 vi.mock('three', () => {
   class Object3D {
     children: any[] = [];
