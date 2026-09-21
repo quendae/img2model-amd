@@ -1,7 +1,7 @@
 use crate::diagnostics::configured_python;
 use crate::worker::{
-    backend_is_implemented, configured_worker_path, texture_arguments, GenerateRequest, GenerateResult,
-    MeshCleanupRequest, TextureRequest, WorkerProgressEvent,
+    backend_is_implemented, configure_background_process, configured_worker_path, texture_arguments,
+    GenerateRequest, GenerateResult, MeshCleanupRequest, TextureRequest, WorkerProgressEvent,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -173,8 +173,10 @@ impl WorkerSession {
         let worker = configured_worker_path()?;
         let allocator = std::env::var("PYTORCH_CUDA_ALLOC_CONF")
             .unwrap_or_else(|_| "expandable_segments:True".to_string());
+        let mut command = Command::new(&python);
+        configure_background_process(&mut command);
 
-        let mut child = Command::new(&python)
+        let mut child = command
             .arg(worker)
             .arg("serve")
             .env("PYTORCH_CUDA_ALLOC_CONF", allocator)
