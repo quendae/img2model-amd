@@ -60,6 +60,33 @@ class LocalRepaintDownloadScopeTests(unittest.TestCase):
             },
         )
 
+    def test_prompt_only_loader_skips_ip_adapter_download_and_setup(self) -> None:
+        fake_torch = types.SimpleNamespace(float16=object())
+        pipeline = mock.Mock()
+        auto_pipeline = mock.Mock()
+        auto_pipeline.from_pretrained.return_value = pipeline
+        clip_vision = mock.Mock()
+        calls: list[dict] = []
+
+        def fake_resolve(repo_id: str, allow_download: bool = True, **kwargs):
+            calls.append({"repo_id": repo_id, "allow_download": allow_download, **kwargs})
+            return "/models/sdxl", False
+
+        with mock.patch.object(
+            local_repaint_module,
+            "resolve_model_snapshot",
+            side_effect=fake_resolve,
+        ), mock.patch.object(
+            local_repaint_module,
+            "_load_repaint_runtime",
+            return_value=(fake_torch, auto_pipeline, clip_vision),
+        ):
+            SdxlLocalRepaintBackend.load(use_ip_adapter=False)
+
+        self.assertEqual([call["repo_id"] for call in calls], [local_repaint_module.DEFAULT_LOCAL_REPAINT_MODEL])
+        clip_vision.from_pretrained.assert_not_called()
+        pipeline.load_ip_adapter.assert_not_called()
+
     def test_snapshot_scope_is_used_for_cache_probe_and_first_download(self) -> None:
         calls: list[dict] = []
 
