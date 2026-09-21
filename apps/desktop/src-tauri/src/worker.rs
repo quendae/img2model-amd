@@ -5,6 +5,23 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+pub(crate) const WINDOWS_CREATE_NO_WINDOW: u32 = 0x08000000;
+
+pub(crate) fn configure_background_process(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(WINDOWS_CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerHealth {
     pub ok: bool,
@@ -260,8 +277,10 @@ pub fn backend_is_implemented(backend: &str) -> bool {
 fn run_worker(arguments: &[String]) -> Result<Output, String> {
     let python = configured_python();
     let worker = configured_worker_path()?;
+    let mut command = Command::new(&python);
+    configure_background_process(&mut command);
 
-    Command::new(&python)
+    command
         .arg(worker)
         .args(arguments)
         .output()
@@ -276,8 +295,10 @@ where
     let worker = configured_worker_path()?;
     let allocator = std::env::var("PYTORCH_CUDA_ALLOC_CONF")
         .unwrap_or_else(|_| "expandable_segments:True".to_string());
+    let mut command = Command::new(&python);
+    configure_background_process(&mut command);
 
-    let mut child = Command::new(&python)
+    let mut child = command
         .arg(worker)
         .args(arguments)
         .env("PYTORCH_CUDA_ALLOC_CONF", allocator)
