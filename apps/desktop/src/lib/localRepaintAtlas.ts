@@ -107,6 +107,32 @@ export function extractRepaintPatch(
   };
 }
 
+export function repaintMaskToEditableAtlas(mask: RepaintMask): EditableAtlas {
+  requirePositiveInteger(mask.width, 'Local Repaint mask width');
+  requirePositiveInteger(mask.height, 'Local Repaint mask height');
+  if (mask.data.length !== mask.width * mask.height) {
+    throw new Error('Local Repaint mask storage does not match its dimensions.');
+  }
+
+  const rgba = new Uint8ClampedArray(mask.width * mask.height * 4);
+  for (let index = 0; index < mask.data.length; index += 1) {
+    const value = mask.data[index];
+    const offset = index * 4;
+    rgba[offset] = value;
+    rgba[offset + 1] = value;
+    rgba[offset + 2] = value;
+    rgba[offset + 3] = 255;
+  }
+
+  return {
+    width: mask.width,
+    height: mask.height,
+    rgba,
+    flipY: false,
+    name: 'local-repaint-mask',
+  };
+}
+
 function featherAlpha(mask: RepaintMask, featherPx: number): Float32Array {
   const total = mask.width * mask.height;
   const alpha = new Float32Array(total);
