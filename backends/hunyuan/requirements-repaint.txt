@@ -1,4 +1,4 @@
-# Local Repaint runtime dependencies. PyTorch is provided by the native Radeon runtime.
+# Local Repaint packages layered onto the existing native Radeon runtime.
 diffusers>=0.36,<0.38
 transformers>=4.48,<5
 accelerate>=1.2,<2
