@@ -316,6 +316,18 @@ async fn local_repaint(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+fn cancel_local_repaint(app: tauri::AppHandle) -> Result<(), String> {
+    let result = app
+        .state::<worker_session::WorkerSessionManager>()
+        .cancel_local_repaint();
+    let level = if result.is_ok() { "info" } else { "error" };
+    let details = result.as_ref().err().map(String::as_str);
+    let _ = diagnostics::append_diagnostic_log(level, "tauri", "cancel_local_repaint", details);
+    result
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 fn restart_hunyuan_worker(app: tauri::AppHandle) -> Result<(), String> {
     let result = app
         .state::<worker_session::WorkerSessionManager>()
@@ -365,6 +377,7 @@ pub fn run() {
             texture_mesh,
             cleanup_mesh,
             local_repaint,
+            cancel_local_repaint,
             restart_hunyuan_worker,
             clear_hunyuan_worker_cache
         ])
