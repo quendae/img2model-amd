@@ -17,7 +17,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   save: vi.fn(),
 }));
 
-import { localRepaint } from './tauri';
+import { cancelLocalRepaint, localRepaint } from './tauri';
 
 const valid = {
   sourcePng: [1, 2, 3],
@@ -63,5 +63,12 @@ describe('localRepaint Tauri contract', () => {
       referenceImage: 'reference.png',
       featherPx: 8,
     });
+  });
+
+  it('cancels through a dedicated Tauri command', async () => {
+    invoke.mockResolvedValueOnce(undefined);
+    await cancelLocalRepaint();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('cancel_local_repaint');
   });
 });
