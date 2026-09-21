@@ -4,6 +4,7 @@ import {
   compositeRepaintPatch,
   expandMaskBounds,
   extractRepaintPatch,
+  repaintMaskToEditableAtlas,
   type EditableAtlas,
 } from './localRepaintAtlas';
 
@@ -50,6 +51,23 @@ describe('Local Repaint atlas patching', () => {
     expect(extracted.maskPatch.height).toBe(3);
     expect(extracted.maskPatch.data[1 * 3 + 1]).toBe(255);
     expect(extracted.sourcePatch.rgba.slice(0, 4)).toEqual(source.rgba.slice((1 * 6 + 3) * 4, (1 * 6 + 3) * 4 + 4));
+  });
+
+  it('converts a repaint mask into opaque grayscale RGBA for PNG encoding', () => {
+    const mask = createRepaintMask(2, 2);
+    mask.data.set([0, 64, 128, 255]);
+
+    const encoded = repaintMaskToEditableAtlas(mask);
+
+    expect(encoded.width).toBe(2);
+    expect(encoded.height).toBe(2);
+    expect(encoded.flipY).toBe(false);
+    expect(encoded.rgba).toEqual(new Uint8ClampedArray([
+      0, 0, 0, 255,
+      64, 64, 64, 255,
+      128, 128, 128, 255,
+      255, 255, 255, 255,
+    ]));
   });
 
   it('changes exactly the selected pixel when feather is zero', () => {
