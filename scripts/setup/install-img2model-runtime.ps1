@@ -25,15 +25,18 @@ $LogDir = Join-Path $env:LOCALAPPDATA "Img2ModelAMD\logs"
 $LogPath = Join-Path $LogDir "installer-runtime.log"
 $NativeSetup = Join-Path $PayloadRoot "scripts\setup\windows-native-rocm.ps1"
 $TextureSetup = Join-Path $PayloadRoot "scripts\setup\windows-hunyuan-texture.ps1"
+$RepaintRequirements = Join-Path $PayloadRoot "backends\hunyuan\requirements-repaint.txt"
 $PythonExe = Join-Path $RuntimeDir "Scripts\python.exe"
 $InstalledWorker = Join-Path $RuntimeDir "worker.py"
 $InstalledWorkerBase = Join-Path $RuntimeDir "worker_base.py"
 $InstalledTextureStylizer = Join-Path $RuntimeDir "texture_stylizer.py"
+$InstalledLocalRepaint = Join-Path $RuntimeDir "local_repaint.py"
 $InstalledBackendsRoot = Join-Path $RuntimeDir "backends"
 $InstalledMeshProcessing = Join-Path $InstalledBackendsRoot "mesh_processing"
 $WorkerSource = Join-Path $PayloadRoot "backends\hunyuan\worker.py"
 $WorkerBaseSource = Join-Path $PayloadRoot "backends\hunyuan\worker_base.py"
 $TextureStylizerSource = Join-Path $PayloadRoot "backends\hunyuan\texture_stylizer.py"
+$LocalRepaintSource = Join-Path $PayloadRoot "backends\hunyuan\local_repaint.py"
 $MeshProcessingSource = Join-Path $PayloadRoot "backends\mesh_processing"
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -86,10 +89,40 @@ function Test-ExistingRuntimeHealth {
     }
 }
 
+function Test-RepaintDependencies {
+    if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+    try {
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & $PythonExe -c "import diffusers, transformers, accelerate, safetensors" 2>$null
+            $DependencyExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+        }
+        return $DependencyExitCode -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Install-RepaintDependencies {
+    Assert-File $RepaintRequirements "Local Repaint Python requirements"
+    Write-Host "Installing missing Local Repaint Python dependencies..." -ForegroundColor Cyan
+    & $PythonExe -m pip install --upgrade-strategy only-if-needed -r $RepaintRequirements
+    if ($LASTEXITCODE -ne 0) {
+        throw "Local Repaint dependency installation failed with exit code $LASTEXITCODE."
+    }
+    if (-not (Test-RepaintDependencies)) {
+        throw "Local Repaint dependencies are still unavailable after installation."
+    }
+}
+
 function Sync-RuntimeSources {
     Assert-File $WorkerSource "Bundled Img2Model worker"
     Assert-File $WorkerBaseSource "Bundled Img2Model worker base"
     Assert-File $TextureStylizerSource "Bundled texture stylizer"
+    Assert-File $LocalRepaintSource "Bundled Local Repaint backend"
     if (-not (Test-Path -LiteralPath $MeshProcessingSource -PathType Container)) {
         throw "Bundled mesh processing backend was not found: $MeshProcessingSource"
     }
@@ -97,6 +130,7 @@ function Sync-RuntimeSources {
     Copy-Item -Force $WorkerSource $InstalledWorker
     Copy-Item -Force $WorkerBaseSource $InstalledWorkerBase
     Copy-Item -Force $TextureStylizerSource $InstalledTextureStylizer
+    Copy-Item -Force $LocalRepaintSource $InstalledLocalRepaint
     New-Item -ItemType Directory -Force -Path $InstalledBackendsRoot | Out-Null
     Set-Content -Path (Join-Path $InstalledBackendsRoot "__init__.py") -Value "" -Encoding utf8
     if (Test-Path -LiteralPath $InstalledMeshProcessing) {
@@ -170,6 +204,8 @@ function Assert-Health([string]$CommandName) {
 
 Assert-File $NativeSetup "Native ROCm setup script"
 Assert-File $TextureSetup "Hunyuan texture setup script"
+Assert-File $RepaintRequirements "Local Repaint Python requirements"
+Assert-File $LocalRepaintSource "Bundled Local Repaint backend"
 
 Write-Host "Img2Model AMD runtime installer" -ForegroundColor Cyan
 Write-Host "  Payload : $PayloadRoot"
@@ -190,10 +226,17 @@ try {
         Write-Host "Reusing healthy existing Img2Model AMD runtime; refreshing version-matched worker sources only." -ForegroundColor Green
         Sync-RuntimeSources
 
-        if (Test-ExistingRuntimeHealth) {
+        if (-not (Test-RepaintDependencies)) {
+            if ($VerifyOnly) {
+                throw "Existing Img2Model AMD runtime is healthy but Local Repaint dependencies are missing. VerifyOnly does not modify the runtime."
+            }
+            Install-RepaintDependencies
+        }
+
+        if ((Test-ExistingRuntimeHealth) -and (Test-RepaintDependencies)) {
             Persist-RuntimeEnvironment
-            Write-Host "Existing runtime remains healthy after worker refresh." -ForegroundColor Green
-            Write-Host "Model and Hugging Face caches were left untouched."
+            Write-Host "Existing runtime remains healthy after worker and Local Repaint refresh." -ForegroundColor Green
+            Write-Host "Native Radeon and Hunyuan Paint components were reused; model and Hugging Face caches were left untouched."
             exit 0
         }
 
@@ -225,11 +268,17 @@ try {
         throw "Native Radeon runtime setup failed with exit code $LASTEXITCODE."
     }
     Invoke-TextureSetup $VsDevCmd
+    Sync-RuntimeSources
+    Install-RepaintDependencies
 
     Assert-File $PythonExe "Installed Python runtime"
     Assert-File $InstalledWorker "Installed Img2Model worker"
+    Assert-File $InstalledLocalRepaint "Installed Local Repaint backend"
     Assert-Health "health"
     Assert-Health "texture-health"
+    if (-not (Test-RepaintDependencies)) {
+        throw "Local Repaint dependency verification failed."
+    }
     Persist-RuntimeEnvironment
 
     Write-Host ""
