@@ -2,8 +2,8 @@
 """Img2Model AMD worker entry point with reusable mesh-cleanup orchestration.
 
 The legacy Hunyuan shape/texture implementation lives in ``worker_base``.
-This entry point keeps that behavior intact while adding CPU-side mesh cleanup
-and persistent Shape preloading without embedding those concerns into Hunyuan.
+This entry point keeps that behavior intact while adding CPU-side mesh cleanup,
+persistent Shape preloading and Local Repaint lifecycle orchestration.
 """
 
 from __future__ import annotations
@@ -34,8 +34,10 @@ _ensure_backend_package_path()
 
 if __package__:
     from . import worker_base as _base
+    from .local_repaint import LocalRepaintCache, run_local_repaint
 else:
     import worker_base as _base  # type: ignore
+    from local_repaint import LocalRepaintCache, run_local_repaint  # type: ignore
 
 # Preserve the established worker module surface for existing imports/tests.
 for _name in dir(_base):
@@ -272,14 +274,34 @@ _base.run_texture = run_texture
 
 
 class PipelineCache(_BasePipelineCache):
-    """Existing Hunyuan caches plus a distinct one-entry cleanup cache."""
+    """Hunyuan, cleanup and Local Repaint caches with bounded GPU residency."""
 
     def __init__(self, event_sink: Callable[[dict[str, Any]], None] | None = None) -> None:
         super().__init__(event_sink=event_sink)
         self.cleanup_mesh_cache = CleanupMeshCache()
+        self.local_repaint_cache = LocalRepaintCache(event_sink=event_sink)
+
+    def get_shape_pipeline(
+        self,
+        loader: Callable[[], Any],
+        key: tuple[Any, ...] = (),
+    ) -> tuple[Any, bool]:
+        if self.local_repaint_cache.backend is not None:
+            self.local_repaint_cache.clear(evicted=True)
+        return super().get_shape_pipeline(loader, key)
+
+    def get_texture_pipeline(
+        self,
+        loader: Callable[[], Any],
+        key: tuple[Any, ...] = (),
+    ) -> tuple[Any, bool]:
+        if self.local_repaint_cache.backend is not None:
+            self.local_repaint_cache.clear(evicted=True)
+        return super().get_texture_pipeline(loader, key)
 
     def clear(self) -> None:
         self.cleanup_mesh_cache.clear()
+        self.local_repaint_cache.clear()
         super().clear()
 
 
@@ -369,6 +391,7 @@ def run_mesh_cleanup(args: argparse.Namespace, cache: PipelineCache | None = Non
         if cache is not None:
             cache.clear_shape(evicted=True)
             cache.clear_texture(evicted=True)
+            cache.local_repaint_cache.clear(evicted=True)
 
         config = resolve_cleanup_config(args.preset, args.overrides)
         emit("progress", ok=True, stage="cleaning_mesh", progress=0.20)
@@ -434,6 +457,17 @@ def _mesh_cleanup_namespace(request: dict[str, Any]) -> argparse.Namespace:
     )
 
 
+def _local_repaint_namespace(request: dict[str, Any]) -> argparse.Namespace:
+    return argparse.Namespace(
+        source=request["source"],
+        mask=request["mask"],
+        output=request["output"],
+        prompt=request.get("prompt"),
+        reference_image=request.get("referenceImage", request.get("reference_image")),
+        feather_px=int(request.get("featherPx", request.get("feather_px", 0))),
+    )
+
+
 def dispatch_serve_command(
     message: dict[str, Any],
     *,
@@ -441,7 +475,7 @@ def dispatch_serve_command(
     emit_fn: Callable[[dict[str, Any]], None] | None = None,
 ) -> bool:
     command = message.get("command")
-    if command not in {"mesh_cleanup", "preload_shape"}:
+    if command not in {"mesh_cleanup", "preload_shape", "local_repaint"}:
         return _original_dispatch_serve_command(message, cache=cache, emit_fn=emit_fn)
 
     job_id = message.get("job_id")
@@ -467,6 +501,12 @@ def dispatch_serve_command(
             raise ValueError(f"{command} command requires a request object")
         if command == "preload_shape":
             run_preload_shape(_preload_shape_namespace(request), cache)
+        elif command == "local_repaint":
+            run_local_repaint(
+                _local_repaint_namespace(request),
+                cache=cache,
+                emit_fn=_base._emit_payload,
+            )
         else:
             run_mesh_cleanup(_mesh_cleanup_namespace(request), cache=cache)
         return True
@@ -543,6 +583,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="game-ready",
     )
     mesh_cleanup.set_defaults(overrides={}, func=run_mesh_cleanup)
+
+    local_repaint = subparsers_action.add_parser(
+        "local-repaint",
+        help="Repaint a masked local texture patch",
+    )
+    local_repaint.add_argument("--source", required=True)
+    local_repaint.add_argument("--mask", required=True)
+    local_repaint.add_argument("--output", required=True)
+    local_repaint.add_argument("--prompt")
+    local_repaint.add_argument("--reference-image")
+    local_repaint.add_argument("--feather-px", type=int, default=0)
+    local_repaint.set_defaults(func=run_local_repaint)
     return parser
 
 
