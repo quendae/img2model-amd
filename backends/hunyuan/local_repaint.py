@@ -129,46 +129,61 @@ class SdxlLocalRepaintBackend:
 
     model_id = DEFAULT_LOCAL_REPAINT_MODEL
 
-    def __init__(self, pipeline: Any) -> None:
+    def __init__(self, pipeline: Any, *, ip_adapter_enabled: bool = True) -> None:
         self.pipeline = pipeline
+        self.ip_adapter_enabled = ip_adapter_enabled
 
     @classmethod
-    def load(cls, *, allow_download: bool = True) -> "SdxlLocalRepaintBackend":
+    def load(
+        cls,
+        *,
+        allow_download: bool = True,
+        use_ip_adapter: bool = True,
+    ) -> "SdxlLocalRepaintBackend":
         model_path, _ = resolve_model_snapshot(
             DEFAULT_LOCAL_REPAINT_MODEL,
             allow_download=allow_download,
             allow_patterns=SDXL_REQUIRED_PATTERNS,
         )
-        adapter_path, _ = resolve_model_snapshot(
-            DEFAULT_IP_ADAPTER_MODEL,
-            allow_download=allow_download,
-            allow_patterns=IP_ADAPTER_REQUIRED_PATTERNS,
-        )
+        adapter_path: str | None = None
+        if use_ip_adapter:
+            adapter_path, _ = resolve_model_snapshot(
+                DEFAULT_IP_ADAPTER_MODEL,
+                allow_download=allow_download,
+                allow_patterns=IP_ADAPTER_REQUIRED_PATTERNS,
+            )
         torch, auto_pipeline, clip_vision = _load_repaint_runtime()
 
-        image_encoder = clip_vision.from_pretrained(
-            adapter_path,
-            subfolder="models/image_encoder",
-            torch_dtype=torch.float16,
-        )
-        pipe = auto_pipeline.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            variant="fp16",
-            use_safetensors=True,
-            image_encoder=image_encoder,
-        )
-        pipe.load_ip_adapter(
-            adapter_path,
-            subfolder="sdxl_models",
-            weight_name=IP_ADAPTER_WEIGHT,
-        )
-        pipe.set_ip_adapter_scale(IP_ADAPTER_SCALE)
+        pipeline_kwargs: dict[str, Any] = {
+            "torch_dtype": torch.float16,
+            "variant": "fp16",
+            "use_safetensors": True,
+        }
+        if use_ip_adapter:
+            if adapter_path is None:
+                raise RuntimeError("IP-Adapter path was not resolved.")
+            image_encoder = clip_vision.from_pretrained(
+                adapter_path,
+                subfolder="models/image_encoder",
+                torch_dtype=torch.float16,
+            )
+            pipeline_kwargs["image_encoder"] = image_encoder
+
+        pipe = auto_pipeline.from_pretrained(model_path, **pipeline_kwargs)
+        if use_ip_adapter:
+            if adapter_path is None:
+                raise RuntimeError("IP-Adapter path was not resolved.")
+            pipe.load_ip_adapter(
+                adapter_path,
+                subfolder="sdxl_models",
+                weight_name=IP_ADAPTER_WEIGHT,
+            )
+            pipe.set_ip_adapter_scale(IP_ADAPTER_SCALE)
         pipe.enable_attention_slicing()
         pipe.enable_vae_slicing()
         pipe.enable_vae_tiling()
         pipe.to("cuda")
-        return cls(pipe)
+        return cls(pipe, ip_adapter_enabled=use_ip_adapter)
 
     def repaint(
         self,
@@ -180,6 +195,8 @@ class SdxlLocalRepaintBackend:
     ) -> Image.Image:
         if not prompt and reference is None:
             raise ValueError("Local Repaint requires a prompt or reference image.")
+        if reference is not None and not self.ip_adapter_enabled:
+            raise RuntimeError("Reference-guided Local Repaint requires the IP-Adapter backend.")
 
         source_rgba = source.convert("RGBA")
         mask_l = mask.convert("L")
@@ -280,10 +297,10 @@ class LocalRepaintCache:
         self._event("evicted_local_repaint" if evicted else "cache_cleared")
 
 
-def get_sdxl_backend() -> LocalRepaintBackend:
+def get_sdxl_backend(*, use_ip_adapter: bool = True) -> LocalRepaintBackend:
     """Production backend factory for the persistent worker cache."""
 
-    return SdxlLocalRepaintBackend.load()
+    return SdxlLocalRepaintBackend.load(use_ip_adapter=use_ip_adapter)
 
 
 def classify_local_repaint_error(exc: Exception) -> str:
@@ -411,7 +428,12 @@ def run_local_repaint(
         if callable(clear_texture):
             clear_texture(evicted=True)
 
-    factory = backend_factory or get_sdxl_backend
+    use_ip_adapter = reference is not None
+    factory = backend_factory or (lambda: get_sdxl_backend(use_ip_adapter=use_ip_adapter))
+    cache_key = (
+        DEFAULT_LOCAL_REPAINT_MODEL,
+        DEFAULT_IP_ADAPTER_MODEL if use_ip_adapter else None,
+    )
     model_load_started = time.perf_counter()
     cache_hit = False
     backend: LocalRepaintBackend | None = None
@@ -427,10 +449,7 @@ def run_local_repaint(
             progress=0.15,
             model=model_id,
         )
-        backend, cache_hit = repaint_cache.get_or_create(
-            (DEFAULT_LOCAL_REPAINT_MODEL, DEFAULT_IP_ADAPTER_MODEL),
-            factory,
-        )
+        backend, cache_hit = repaint_cache.get_or_create(cache_key, factory)
         model_id = str(getattr(backend, "model_id", DEFAULT_LOCAL_REPAINT_MODEL))
         model_load_ms = (time.perf_counter() - model_load_started) * 1000.0
         _emit(
