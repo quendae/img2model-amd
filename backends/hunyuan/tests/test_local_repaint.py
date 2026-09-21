@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import argparse
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from PIL import Image
 
+from backends.hunyuan import local_repaint as local_repaint_module
 from backends.hunyuan import worker
-from backends.hunyuan.local_repaint import LocalRepaintCache, run_local_repaint
+from backends.hunyuan.local_repaint import (
+    LocalRepaintCache,
+    SdxlLocalRepaintBackend,
+    resolve_model_snapshot,
+    run_local_repaint,
+)
 
 
 class FakeLocalRepaintBackend:
@@ -229,6 +236,132 @@ class LocalRepaintWorkerTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(events[-1]["job_id"], "job-repaint-77")
         self.assertEqual(events[-1]["event"], "completed")
+
+
+class LocalRepaintSdxlBackendTests(unittest.TestCase):
+    def test_model_snapshot_downloads_once_then_reuses_disk_cache(self):
+        downloaded = False
+        calls: list[dict] = []
+
+        def fake_snapshot_download(repo_id, **kwargs):
+            nonlocal downloaded
+            calls.append({"repo_id": repo_id, **kwargs})
+            if kwargs.get("local_files_only") and not downloaded:
+                raise FileNotFoundError("not cached")
+            downloaded = True
+            return f"/hf-cache/{repo_id.replace('/', '--')}"
+
+        with mock.patch.object(local_repaint_module, "snapshot_download", side_effect=fake_snapshot_download):
+            first_path, first_hit = resolve_model_snapshot("demo/model", allow_download=True)
+            second_path, second_hit = resolve_model_snapshot("demo/model", allow_download=True)
+
+        self.assertEqual(first_path, second_path)
+        self.assertFalse(first_hit)
+        self.assertTrue(second_hit)
+        self.assertEqual([call.get("local_files_only", False) for call in calls], [True, False, True])
+
+    def test_model_snapshot_can_forbid_network_download(self):
+        with mock.patch.object(
+            local_repaint_module,
+            "snapshot_download",
+            side_effect=FileNotFoundError("not cached"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not available in the local Hugging Face cache"):
+                resolve_model_snapshot("demo/model", allow_download=False)
+
+    def test_backend_loads_fp16_sdxl_and_ip_adapter_for_radeon(self):
+        fake_torch = types.SimpleNamespace(float16=object())
+        pipeline = mock.Mock()
+        encoder = mock.Mock()
+        auto_pipeline = mock.Mock()
+        auto_pipeline.from_pretrained.return_value = pipeline
+        clip_vision = mock.Mock()
+        clip_vision.from_pretrained.return_value = encoder
+
+        with mock.patch.object(
+            local_repaint_module,
+            "resolve_model_snapshot",
+            side_effect=[("/models/sdxl", True), ("/models/ip-adapter", True)],
+        ), mock.patch.object(
+            local_repaint_module,
+            "_load_repaint_runtime",
+            return_value=(fake_torch, auto_pipeline, clip_vision),
+        ):
+            backend = SdxlLocalRepaintBackend.load()
+
+        self.assertEqual(backend.model_id, "diffusers/stable-diffusion-xl-1.0-inpainting-0.1")
+        clip_vision.from_pretrained.assert_called_once_with(
+            "/models/ip-adapter",
+            subfolder="models/image_encoder",
+            torch_dtype=fake_torch.float16,
+        )
+        auto_pipeline.from_pretrained.assert_called_once_with(
+            "/models/sdxl",
+            torch_dtype=fake_torch.float16,
+            variant="fp16",
+            use_safetensors=True,
+            image_encoder=encoder,
+        )
+        pipeline.load_ip_adapter.assert_called_once_with(
+            "/models/ip-adapter",
+            subfolder="sdxl_models",
+            weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+        )
+        pipeline.set_ip_adapter_scale.assert_called_once_with(0.6)
+        pipeline.enable_attention_slicing.assert_called_once_with()
+        pipeline.enable_vae_slicing.assert_called_once_with()
+        pipeline.enable_vae_tiling.assert_called_once_with()
+        pipeline.to.assert_called_once_with("cuda")
+
+    def make_recording_backend(self):
+        pipeline = mock.Mock()
+        pipeline.return_value = types.SimpleNamespace(
+            images=[Image.new("RGB", (1024, 1024), (220, 30, 40))]
+        )
+        return SdxlLocalRepaintBackend(pipeline), pipeline
+
+    def test_prompt_only_does_not_pass_ip_adapter_image(self):
+        backend, pipeline = self.make_recording_backend()
+        source = Image.new("RGBA", (4, 4), (10, 20, 30, 255))
+        mask = Image.new("L", (4, 4), 0)
+        mask.putpixel((1, 1), 255)
+
+        edited = backend.repaint(source, mask, prompt="red leather", reference=None)
+
+        kwargs = pipeline.call_args.kwargs
+        self.assertEqual(kwargs["prompt"], "red leather")
+        self.assertNotIn("ip_adapter_image", kwargs)
+        self.assertEqual(kwargs["image"].size, (1024, 1024))
+        self.assertEqual(kwargs["mask_image"].size, (1024, 1024))
+        self.assertEqual(kwargs["num_inference_steps"], 20)
+        self.assertEqual(kwargs["guidance_scale"], 7.0)
+        self.assertEqual(edited.size, source.size)
+        self.assertEqual(edited.getpixel((0, 0)), source.getpixel((0, 0)))
+        self.assertEqual(edited.getpixel((1, 1)), (220, 30, 40, 255))
+
+    def test_reference_only_uses_empty_prompt_and_ip_adapter_image(self):
+        backend, pipeline = self.make_recording_backend()
+        source = Image.new("RGBA", (4, 4), (10, 20, 30, 255))
+        mask = Image.new("L", (4, 4), 255)
+        reference = Image.new("RGBA", (8, 6), (30, 180, 70, 255))
+
+        backend.repaint(source, mask, prompt=None, reference=reference)
+
+        kwargs = pipeline.call_args.kwargs
+        self.assertEqual(kwargs["prompt"], "")
+        self.assertEqual(kwargs["ip_adapter_image"].size, (1024, 1024))
+
+    def test_prompt_and_reference_are_forwarded_together(self):
+        backend, pipeline = self.make_recording_backend()
+        source = Image.new("RGBA", (4, 4), (10, 20, 30, 255))
+        mask = Image.new("L", (4, 4), 255)
+        reference = Image.new("RGBA", (4, 4), (30, 180, 70, 255))
+
+        backend.repaint(source, mask, prompt="blue ceramic", reference=reference)
+
+        kwargs = pipeline.call_args.kwargs
+        self.assertEqual(kwargs["prompt"], "blue ceramic")
+        self.assertIn("ip_adapter_image", kwargs)
 
 
 if __name__ == "__main__":
