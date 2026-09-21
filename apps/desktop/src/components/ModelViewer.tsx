@@ -23,7 +23,7 @@ import {
   type TextureUvTransform as RepaintTextureUvTransform,
 } from '../lib/localRepaintMask';
 import { exportTexturedGlb } from '../lib/modelExport';
-import { chooseInputImage, localAssetUrl, localRepaint } from '../lib/tauri';
+import { cancelLocalRepaint, chooseInputImage, localAssetUrl, localRepaint } from '../lib/tauri';
 import { exportUvTemplate } from '../lib/uvExport';
 import type { TextureStylePreset } from '../domain/types';
 import { modelFormatFromUrl } from './modelPreview';
@@ -455,6 +455,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const repaintOverlayMeshesRef = useRef<THREE.Mesh[]>([]);
   const repaintOverlayTextureRef = useRef<THREE.CanvasTexture | null>(null);
   const repaintOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const repaintCancelRequestedRef = useRef(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comparisonSide, setComparisonSide] = useState<'before' | 'after'>('after');
@@ -475,6 +476,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const [repaintPrompt, setRepaintPrompt] = useState('');
   const [repaintReferencePath, setRepaintReferencePath] = useState<string | null>(null);
   const [repaintBusy, setRepaintBusy] = useState(false);
+  const [repaintCanRetry, setRepaintCanRetry] = useState(false);
   const [repaintStatus, setRepaintStatus] = useState<string | null>(null);
   const [repaintAtlasError, setRepaintAtlasError] = useState<RepaintAtlasError | null>(null);
 
@@ -548,8 +550,10 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     repaintTextureRef.current = null;
     repaintEditableMeshesRef.current = [];
     repaintModeRef.current = false;
+    repaintCancelRequestedRef.current = false;
     setRepaintMask(null);
     setRepaintHasMask(false);
+    setRepaintCanRetry(false);
     setRepaintAtlasError(null);
     setRepaintStatus(null);
     if (closePanel) setRepaintMode(false);
@@ -710,7 +714,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   const handleExportTexturedGlb = async () => {
     const root = loadedRootRef.current;
     const originalTransform = originalTransformRef.current;
-    if (!root || !originalTransform || !uvTextureInfo || uvTextureBusy) return;
+    const currentAtlas = currentAtlasRef.current;
+    if (!root || !originalTransform || (!uvTextureInfo && !currentAtlas) || uvTextureBusy) return;
 
     setUvTextureBusy(true);
     setUvTextureStatus('Exporting textured GLB…');
@@ -746,9 +751,9 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       setUvTextureStatus('Textured GLB saved.');
       void writeDiagnosticLog('info', 'uv', 'Direct UV textured GLB exported.', {
         path: savedPath,
-        texture: uvTextureInfo.path,
-        width: uvTextureInfo.width,
-        height: uvTextureInfo.height,
+        texture: uvTextureInfo?.path ?? currentAtlas?.name ?? 'local-repaint-atlas',
+        width: uvTextureInfo?.width ?? currentAtlas?.width,
+        height: uvTextureInfo?.height ?? currentAtlas?.height,
         textureTransform: uvTextureTransform,
         bytes: exported.byteLength,
       });
@@ -775,6 +780,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     setRepaintMode(true);
     repaintModeRef.current = true;
     setInspectionMode('solid');
+    setRepaintCanRetry(false);
     setRepaintStatus(null);
     setRepaintAtlasError(null);
     if (!root) {
@@ -832,12 +838,25 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     if (!mask) return;
     mask.data.fill(0);
     setRepaintHasMask(false);
+    setRepaintCanRetry(false);
     refreshRepaintOverlay(mask);
   };
 
   const handleChooseRepaintReference = async () => {
     const path = await chooseInputImage();
     if (path) setRepaintReferencePath(path);
+  };
+
+  const handleCancelLocalRepaint = async () => {
+    if (!repaintBusy) return;
+    repaintCancelRequestedRef.current = true;
+    setRepaintStatus('Cancelling local repaint…');
+    try {
+      await cancelLocalRepaint();
+    } catch (error) {
+      repaintCancelRequestedRef.current = false;
+      setRepaintStatus(`Cancel failed: ${String(error)}`);
+    }
   };
 
   const handleApplyLocalRepaint = async () => {
@@ -848,6 +867,8 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
     const referenceImage = repaintReferencePath;
     if (!root || !mask || !sourceTexture || repaintBusy || !repaintHasMask || (!prompt && !referenceImage)) return;
 
+    repaintCancelRequestedRef.current = false;
+    setRepaintCanRetry(false);
     setRepaintBusy(true);
     setRepaintStatus('Preparing UV patch…');
     try {
@@ -879,6 +900,11 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       );
 
       if (!response.ok) {
+        if (response.errorKind === 'cancelled' || repaintCancelRequestedRef.current) {
+          setRepaintCanRetry(true);
+          setRepaintStatus('Local repaint cancelled.');
+          return;
+        }
         throw new Error(response.error || 'Local Repaint worker returned an error.');
       }
       if (!response.editedPng?.length) {
@@ -906,6 +932,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       importedTextureRef.current = replacementTexture;
       mask.data.fill(0);
       setRepaintHasMask(false);
+      setRepaintCanRetry(false);
       refreshRepaintOverlay(mask);
       setRepaintStatus('Local repaint applied.');
       void writeDiagnosticLog('info', 'local-repaint', 'Local Repaint applied transactionally.', {
@@ -916,10 +943,17 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
         rect: extracted.rect,
       });
     } catch (error) {
-      const message = `Local Repaint failed: ${String(error)}`;
-      setRepaintStatus(message);
-      void writeDiagnosticLog('error', 'local-repaint', message, { activeModelUrl });
+      if (repaintCancelRequestedRef.current) {
+        setRepaintCanRetry(true);
+        setRepaintStatus('Local repaint cancelled.');
+      } else {
+        const message = `Local Repaint failed: ${String(error)}`;
+        setRepaintCanRetry(true);
+        setRepaintStatus(message);
+        void writeDiagnosticLog('error', 'local-repaint', message, { activeModelUrl });
+      }
     } finally {
+      repaintCancelRequestedRef.current = false;
       setRepaintBusy(false);
     }
   };
@@ -1010,6 +1044,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       if (samples.length === 0) return;
       stampMaskSamples(mask, samples, repaintBrushModeRef.current, 0);
       setRepaintHasMask(maskBounds(mask) !== null);
+      setRepaintCanRetry(false);
       refreshRepaintOverlay(mask);
     };
 
@@ -1134,6 +1169,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
   }, [activeModelUrl, busy]);
 
   const uvAvailable = Boolean(uvLayout && uvLayout.triangleCount > 0);
+  const hasEditableTexture = Boolean(uvTextureInfo || currentAtlasRef.current);
   const repaintCanPaint = repaintMode && !repaintBusy && repaintAtlasError === null && Boolean(repaintMaskRef.current);
   const repaintCanApply = repaintCanPaint && repaintHasMask && Boolean(repaintPrompt.trim() || repaintReferencePath);
 
@@ -1203,7 +1239,7 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
           </button>
           <button
             type="button"
-            disabled={uvTextureBusy || repaintBusy || !uvTextureInfo}
+            disabled={uvTextureBusy || repaintBusy || !hasEditableTexture}
             onClick={() => void handleExportTexturedGlb()}
           >
             Export textured GLB
@@ -1283,14 +1319,29 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
             </button>
             {repaintReferencePath && <span title={repaintReferencePath}>{inputFilename(repaintReferencePath)}</span>}
           </div>
-          <button
-            type="button"
-            className="viewer-local-repaint-apply"
-            disabled={!repaintCanApply}
-            onClick={() => void handleApplyLocalRepaint()}
-          >
-            {repaintBusy ? 'Applying…' : 'Apply repaint'}
-          </button>
+          {repaintBusy ? (
+            <button type="button" className="viewer-local-repaint-apply" onClick={() => void handleCancelLocalRepaint()}>
+              Cancel repaint
+            </button>
+          ) : repaintCanRetry ? (
+            <button
+              type="button"
+              className="viewer-local-repaint-apply"
+              disabled={!repaintCanApply}
+              onClick={() => void handleApplyLocalRepaint()}
+            >
+              Retry repaint
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="viewer-local-repaint-apply"
+              disabled={!repaintCanApply}
+              onClick={() => void handleApplyLocalRepaint()}
+            >
+              Apply repaint
+            </button>
+          )}
           {repaintStatus && <div className={repaintAtlasError ? 'viewer-local-repaint-error' : 'viewer-local-repaint-status'}>{repaintStatus}</div>}
         </div>
       )}
