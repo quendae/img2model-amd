@@ -523,16 +523,38 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
 
     const overlays: THREE.Mesh[] = [];
     for (const mesh of meshes) {
-      const material = new THREE.MeshBasicMaterial({
-        color: 0xff6655,
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          maskMap: { value: texture },
+          overlayColor: { value: new THREE.Color(0xff6655) },
+          overlayOpacity: { value: 0.72 },
+        },
         transparent: true,
-        opacity: 0.55,
-        map: texture,
+        depthTest: true,
         depthWrite: false,
         side: THREE.DoubleSide,
+        toneMapped: false,
         polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D maskMap;
+          uniform vec3 overlayColor;
+          uniform float overlayOpacity;
+          varying vec2 vUv;
+          void main() {
+            float maskAlpha = texture2D(maskMap, vUv).a;
+            if (maskAlpha <= 0.001) discard;
+            gl_FragColor = vec4(overlayColor, maskAlpha * overlayOpacity);
+          }
+        `,
       });
       const overlay = new THREE.Mesh(mesh.geometry, material);
       overlay.userData[REPAINT_OVERLAY_KEY] = true;
