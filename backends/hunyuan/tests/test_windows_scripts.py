@@ -136,10 +136,9 @@ class WindowsScriptRegressionTests(unittest.TestCase):
 
     def test_installer_payload_staging_is_wired_into_desktop_package(self) -> None:
         package = json.loads(DESKTOP_PACKAGE.read_text(encoding="utf-8"))
-        self.assertEqual(
-            package["scripts"]["prepare-installer"],
-            "node ../../scripts/setup/prepare-installer-resources.mjs",
-        )
+        prepare_installer = package["scripts"]["prepare-installer"]
+        self.assertIn("prepare-branding", prepare_installer)
+        self.assertIn("prepare-installer-resources.mjs", prepare_installer)
         text = PREPARE_INSTALLER.read_text(encoding="utf-8")
         self.assertIn("installer-payload", text)
         self.assertIn("backends/hunyuan", text)
