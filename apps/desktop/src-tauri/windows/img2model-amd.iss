@@ -114,4 +114,4 @@ begin
   end;
 end;
 
-{ Persistent runtime/cache lives under {localappdata}\Img2ModelAMD\runtime and is intentionally never deleted by this installer. }
+{ Persistent runtime/cache lives under the per-user LocalAppData Img2ModelAMD runtime directory and is intentionally never deleted by this installer. }
