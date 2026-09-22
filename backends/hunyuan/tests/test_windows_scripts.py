@@ -13,7 +13,7 @@ SMOKE = ROOT / "scripts" / "smoke" / "windows-native-rocm.ps1"
 BASE_REQUIREMENTS = ROOT / "backends" / "hunyuan" / "requirements-base.txt"
 DESKTOP_PACKAGE = ROOT / "apps" / "desktop" / "package.json"
 TAURI_CONFIG = ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json"
-INSTALLER_HOOKS = ROOT / "apps" / "desktop" / "src-tauri" / "windows" / "installer-hooks.nsh"
+INNO_SETUP = ROOT / "apps" / "desktop" / "src-tauri" / "windows" / "img2model-amd.iss"
 INSTALLER_WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
 
 
@@ -177,31 +177,44 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         self.assertIn("installedTextureStylizer", sync)
         self.assertIn("copyFile(textureStylizerSource, installedTextureStylizer)", sync)
 
-    def test_tauri_config_builds_current_user_nsis_with_installer_payload(self) -> None:
+    def test_tauri_build_is_unbundled_for_custom_inno_packaging(self) -> None:
         config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
         bundle = config["bundle"]
-        self.assertEqual(bundle["targets"], ["nsis"])
-        self.assertIn("resources/installer-payload", " ".join(bundle["resources"]))
-        nsis = bundle["windows"]["nsis"]
-        self.assertEqual(nsis["installMode"], "currentUser")
-        self.assertEqual(nsis["installerHooks"], "./windows/installer-hooks.nsh")
+        self.assertFalse(bundle["active"])
+        self.assertNotIn("nsis", bundle.get("targets", []))
+        self.assertNotIn("nsis", bundle.get("windows", {}))
 
-    def test_nsis_postinstall_runs_runtime_bootstrap_and_checks_exit_code(self) -> None:
-        text = INSTALLER_HOOKS.read_text(encoding="utf-8")
-        self.assertIn("NSIS_HOOK_POSTINSTALL", text)
+    def test_inno_setup_installs_current_user_app_and_runs_runtime_bootstrap(self) -> None:
+        text = INNO_SETUP.read_text(encoding="utf-8")
+        self.assertIn("AppName=Img2Model AMD", text)
+        self.assertIn("DefaultDirName={localappdata}\\Img2Model AMD", text)
+        self.assertIn("PrivilegesRequired=lowest", text)
+        self.assertIn("SetupIconFile=..\\icons\\icon.ico", text)
+        self.assertIn("Source: \"..\\target\\release\\img2model-amd.exe\"", text)
+        self.assertIn("resources\\installer-payload", text)
         self.assertIn("install-img2model-runtime.ps1", text)
-        self.assertIn("ExecWait", text)
-        self.assertIn("$INSTDIR", text)
-        self.assertIn("Abort", text)
-        self.assertNotIn("NSIS_HOOK_POSTUNINSTALL", text)
+        self.assertIn("Exec(", text)
+        self.assertIn("ResultCode", text)
+        self.assertIn("RaiseException", text)
+        self.assertNotIn("PrivilegesRequired=admin", text)
 
-    def test_windows_installer_workflow_builds_and_uploads_nsis_setup(self) -> None:
+    def test_inno_setup_migrates_old_tauri_nsis_registration_without_removing_runtime_cache(self) -> None:
+        text = INNO_SETUP.read_text(encoding="utf-8")
+        self.assertIn("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Img2Model AMD", text)
+        self.assertIn("uninstall.exe", text)
+        self.assertIn("Img2ModelAMD\\runtime", text)
+        self.assertNotIn("DelTree(False, ExpandConstant('{localappdata}\\Img2ModelAMD')", text)
+
+    def test_windows_installer_workflow_builds_and_uploads_inno_setup(self) -> None:
         text = INSTALLER_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("windows-latest", text)
         self.assertIn("prepare-installer", text)
-        self.assertIn("tauri build --bundles nsis", text)
+        self.assertIn("tauri build --no-bundle", text)
+        self.assertIn("ISCC.exe", text)
+        self.assertIn("img2model-amd.iss", text)
         self.assertIn("upload-artifact", text)
-        self.assertIn("*-setup.exe", text)
+        self.assertIn("windows/output/*.exe", text)
+        self.assertNotIn("--bundles nsis", text)
 
 
 if __name__ == "__main__":
