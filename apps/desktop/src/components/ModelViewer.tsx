@@ -559,7 +559,13 @@ export function ModelViewer({ modelUrl, comparison, busy, progress, progressLabe
       const overlay = new THREE.Mesh(mesh.geometry, material);
       overlay.userData[REPAINT_OVERLAY_KEY] = true;
       overlay.renderOrder = 3;
-      mesh.add(overlay);
+      // Keep the overlay as a sibling. If it is nested under the source mesh,
+      // the source mesh transform is applied twice and the overlay can move
+      // away from the visible surface.
+      overlay.position.copy(mesh.position);
+      overlay.quaternion.copy(mesh.quaternion);
+      overlay.scale.copy(mesh.scale);
+      mesh.parent?.add(overlay);
       overlays.push(overlay);
     }
     repaintOverlayMeshesRef.current = overlays;
