@@ -13,7 +13,8 @@ DESKTOP_PACKAGE = ROOT / "apps" / "desktop" / "package.json"
 CARGO_TOML = ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.toml"
 ICON_SOURCE_B64 = ROOT / "apps" / "desktop" / "src-tauri" / "icons" / "icon-source.png.b64"
 PREPARE_BRANDING = ROOT / "scripts" / "setup" / "prepare-branding.mjs"
-EXPECTED_VERSION = "0.1.1"
+INNO_SETUP = ROOT / "apps" / "desktop" / "src-tauri" / "windows" / "img2model-amd.iss"
+EXPECTED_VERSION = "0.1.2"
 EXPECTED_ICON = "icons/icon.ico"
 
 
@@ -48,9 +49,10 @@ class ReleaseBrandingTests(unittest.TestCase):
         config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
         bundle = config["bundle"]
         self.assertIn(EXPECTED_ICON, bundle["icon"])
-        nsis = bundle["windows"]["nsis"]
-        self.assertEqual(nsis["installerIcon"], EXPECTED_ICON)
-        self.assertEqual(nsis["uninstallerIcon"], EXPECTED_ICON)
+
+        inno = INNO_SETUP.read_text(encoding="utf-8")
+        self.assertIn("SetupIconFile=..\\icons\\icon.ico", inno)
+        self.assertIn("UninstallDisplayIcon={app}\\img2model-amd.exe", inno)
 
 
 if __name__ == "__main__":
