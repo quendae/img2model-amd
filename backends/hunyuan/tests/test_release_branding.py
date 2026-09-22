@@ -14,7 +14,7 @@ CARGO_TOML = ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.toml"
 ICON_SOURCE_B64 = ROOT / "apps" / "desktop" / "src-tauri" / "icons" / "icon-source.png.b64"
 PREPARE_BRANDING = ROOT / "scripts" / "setup" / "prepare-branding.mjs"
 INNO_SETUP = ROOT / "apps" / "desktop" / "src-tauri" / "windows" / "img2model-amd.iss"
-EXPECTED_VERSION = "0.1.2"
+EXPECTED_VERSION = "0.1.3"
 EXPECTED_ICON = "icons/icon.ico"
 
 
