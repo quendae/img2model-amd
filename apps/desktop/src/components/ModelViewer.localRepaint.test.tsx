@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   cancelLocalRepaint: vi.fn(),
   chooseInputImage: vi.fn(),
   makeLoadedRoot: null as null | (() => unknown),
+  lastLoadedRoot: null as null | any,
 }));
 
 vi.mock('../lib/tauri', () => ({
@@ -194,6 +195,7 @@ vi.mock('three', () => {
   mocks.makeLoadedRoot = () => {
     const root = new Object3D();
     root.add(new Mesh(new Geometry(), new Material({ map: new Texture() })));
+    mocks.lastLoadedRoot = root;
     return root;
   };
 
@@ -225,6 +227,7 @@ vi.mock('three/examples/jsm/loaders/OBJLoader.js', () => ({
 
 beforeEach(() => {
   mocks.paintHit = false;
+  mocks.lastLoadedRoot = null;
   mocks.localRepaint.mockReset();
   mocks.cancelLocalRepaint.mockReset();
   mocks.chooseInputImage.mockReset();
@@ -328,6 +331,17 @@ describe('ModelViewer Local Repaint apply flow', () => {
       prompt: 'blue ceramic',
       referenceImage: 'C:/fixture/style.png',
     });
+  });
+
+  it('attaches repaint overlay as a sibling so mesh transforms are not applied twice', async () => {
+    render(<ModelViewer modelUrl="textured.glb" busy={false} />);
+    await openAndPaintMask();
+
+    const root = mocks.lastLoadedRoot;
+    expect(root).toBeTruthy();
+    const mesh = root!.children[0] as any;
+    expect(mesh.children.some((child: any) => child.userData?.img2modelRepaintOverlay === true)).toBe(false);
+    expect(root!.children.some((child: any) => child.userData?.img2modelRepaintOverlay === true)).toBe(true);
   });
 
   it('keeps Apply disabled when neither prompt nor reference is provided', async () => {
