@@ -19,11 +19,14 @@ if (sourcePng.length < 8_000 || !sourcePng.subarray(0, 8).equals(pngSignature)) 
 }
 await writeFile(sourcePngPath, sourcePng);
 
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const generated = spawnSync(
-  npmCommand,
+  "npm",
   ["run", "tauri", "--", "icon", "src-tauri/icons/icon-source.png"],
-  { cwd: desktopDir, stdio: "inherit" },
+  {
+    cwd: desktopDir,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  },
 );
 if (generated.error) {
   throw generated.error;
