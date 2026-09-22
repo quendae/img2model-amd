@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Img2Model AMD",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "dev.quendae.img2modelamd",
   "build": {
     "beforeDevCommand": "npm run sync-dev-runtime && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run prepare-installer && npm run build",
+    "beforeBuildCommand": "npm run prepare-branding && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -30,22 +30,9 @@
     }
   },
   "bundle": {
-    "active": true,
-    "targets": ["nsis"],
+    "active": false,
     "icon": [
       "icons/icon.ico"
-    ],
-    "resources": [
-      "resources/installer-payload/**/*"
-    ],
-    "windows": {
-      "nsis": {
-        "installMode": "currentUser",
-        "installerHooks": "./windows/installer-hooks.nsh",
-        "installerIcon": "icons/icon.ico",
-        "uninstallerIcon": "icons/icon.ico",
-        "languages": ["English", "Polish"]
-      }
-    }
+    ]
   }
 }
