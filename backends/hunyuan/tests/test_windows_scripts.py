@@ -203,8 +203,9 @@ class WindowsScriptRegressionTests(unittest.TestCase):
         text = INNO_SETUP.read_text(encoding="utf-8")
         self.assertIn("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Img2Model AMD", text)
         self.assertIn("uninstall.exe", text)
-        self.assertIn("Img2ModelAMD\\runtime", text)
-        self.assertNotIn("DelTree(False, ExpandConstant('{localappdata}\\Img2ModelAMD')", text)
+        self.assertIn("%LOCALAPPDATA%\\Img2ModelAMD\\logs", text)
+        self.assertNotIn("DelTree(", text)
+        self.assertNotIn("DeleteFile(", text)
 
     def test_windows_installer_workflow_builds_and_uploads_inno_setup(self) -> None:
         text = INSTALLER_WORKFLOW.read_text(encoding="utf-8")
