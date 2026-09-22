@@ -135,6 +135,31 @@ def _emit(
     emit_fn(payload)
 
 
+def _enable_vae_memory_optimizations(pipe: Any) -> None:
+    """Enable VAE slicing/tiling across Diffusers API variants.
+
+    Some Diffusers pipelines expose convenience methods on the pipeline while
+    the installed SDXL inpaint pipeline exposes the same operations directly on
+    ``pipe.vae``. Prefer the pipeline helpers when present and fall back to the
+    VAE component so Local Repaint remains compatible with both shapes.
+    """
+
+    vae = getattr(pipe, "vae", None)
+    pipeline_slicing = getattr(pipe, "enable_vae_slicing", None)
+    vae_slicing = getattr(vae, "enable_slicing", None) if vae is not None else None
+    if callable(pipeline_slicing):
+        pipeline_slicing()
+    elif callable(vae_slicing):
+        vae_slicing()
+
+    pipeline_tiling = getattr(pipe, "enable_vae_tiling", None)
+    vae_tiling = getattr(vae, "enable_tiling", None) if vae is not None else None
+    if callable(pipeline_tiling):
+        pipeline_tiling()
+    elif callable(vae_tiling):
+        vae_tiling()
+
+
 class SdxlLocalRepaintBackend:
     """SDXL inpainting backend with optional IP-Adapter image guidance."""
 
@@ -217,8 +242,7 @@ class SdxlLocalRepaintBackend:
             )
             pipe.set_ip_adapter_scale(IP_ADAPTER_SCALE)
         pipe.enable_attention_slicing()
-        pipe.enable_vae_slicing()
-        pipe.enable_vae_tiling()
+        _enable_vae_memory_optimizations(pipe)
         pipe.to("cuda")
         return cls(pipe, ip_adapter_enabled=use_ip_adapter)
 
