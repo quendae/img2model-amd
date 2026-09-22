@@ -9,7 +9,7 @@ on:
       - 'v*'
 
 jobs:
-  nsis:
+  inno:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +21,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
       - name: Prepare installer payload
         run: npm --workspace @img2model/desktop run prepare-installer
 
@@ -31,15 +35,28 @@ jobs:
           [void][scriptblock]::Create((Get-Content scripts/setup/windows-native-rocm.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content scripts/setup/windows-hunyuan-texture.ps1 -Raw))
 
-      - name: Build NSIS setup
+      - name: Build Tauri application without bundler
         shell: powershell
         run: |
           Set-Location apps/desktop
-          npx tauri build --bundles nsis
+          npx tauri build --no-bundle
+
+      - name: Build Inno Setup installer
+        shell: powershell
+        run: |
+          $version = (Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw "ISCC.exe was not found at $iscc"
+          }
+          & $iscc "/DMyAppVersion=$version" "apps\desktop\src-tauri\windows\img2model-amd.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup build failed with exit code $LASTEXITCODE"
+          }
 
       - name: Upload setup executable
         uses: actions/upload-artifact@v4
         with:
-          name: Img2Model-AMD-Windows-Setup
-          path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          name: Img2Model-AMD-Windows-Inno-Setup
+          path: apps/desktop/src-tauri/windows/output/*.exe
           if-no-files-found: error
