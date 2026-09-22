@@ -186,7 +186,8 @@ class WindowsScriptRegressionTests(unittest.TestCase):
 
     def test_inno_setup_installs_current_user_app_and_runs_runtime_bootstrap(self) -> None:
         text = INNO_SETUP.read_text(encoding="utf-8")
-        self.assertIn("AppName=Img2Model AMD", text)
+        self.assertIn('#define MyAppName "Img2Model AMD"', text)
+        self.assertIn("AppName={#MyAppName}", text)
         self.assertIn("DefaultDirName={localappdata}\\Img2Model AMD", text)
         self.assertIn("PrivilegesRequired=lowest", text)
         self.assertIn("SetupIconFile=..\\icons\\icon.ico", text)
