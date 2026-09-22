@@ -15,8 +15,11 @@ describe('Local Repaint overlay render contract', () => {
     expect(refreshSection).not.toContain('imageData.data[offset + 3] = 255;');
   });
 
-  it('renders the RGBA mask as the material map instead of relying on alphaMap only', () => {
-    expect(installSection).toContain('map: texture');
-    expect(installSection).not.toContain('alphaMap: texture');
+  it('renders the mask with an explicit shader that samples mask alpha', () => {
+    expect(installSection).toContain('new THREE.ShaderMaterial');
+    expect(installSection).toContain('uniform sampler2D maskMap');
+    expect(installSection).toContain('texture2D(maskMap, vUv).a');
+    expect(installSection).toContain('gl_FragColor');
+    expect(installSection).not.toContain('new THREE.MeshBasicMaterial');
   });
 });
